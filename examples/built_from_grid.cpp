@@ -2,7 +2,6 @@
 #include <Cabana_Grid.hpp>
 #include <Kokkos_Core.hpp>
 
-#include <helpers.hpp>
 #include <NuMesh_Core.hpp>
 
 #include <mpi.h>
