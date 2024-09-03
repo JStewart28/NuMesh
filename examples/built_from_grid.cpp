@@ -61,6 +61,8 @@ int main( int argc, char* argv[] )
         is_dim_periodic, partitioner, MPI_COMM_WORLD);
     //nu_mesh->initialize_from_grid();
     nu_mesh->initialize_faces();
+    nu_mesh->gather_edges();
+    nu_mesh->assign_edges_to_faces();
     //nu_mesh->assign_edges_to_faces();
     // int ranks_in_xy = (int) floor(sqrt((float) comm_size));
     // if (ranks_in_xy*ranks_in_xy != comm_size) 

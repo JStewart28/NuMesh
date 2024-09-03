@@ -258,17 +258,19 @@ class Mesh
      */
     void gather_edges()
     {
-         /* Temporary naive solution to store which edges are needed from which processes: 
-         * Create a (comm_size x num_faces) view.
-         * If an edge is needed from another process, set (owner_rank, f_lid) to the 
-         * global edge ID needed from owner_rank.
-         */ 
+        /**
+         * Iterate over the faces to determine how many edges are needed
+         * Keep track of how many edges are needed from each rank and how
+         * many edges are needed in total.
+         */
+
         // Set a counter to count number messages that will be sent
+        // XXX - Use a parallel_reduce here to sum row values instead of an atomic counter?
         using CounterView = Kokkos::View<int, device_type, Kokkos::MemoryTraits<Kokkos::Atomic>>;
         CounterView counter("counter");
         Kokkos::deep_copy(counter, 0);
-        Kokkos::View<int**, device_type> sendvals_unpacked("sendvals_unpacked", _comm_size, _f_array.size());
-        Kokkos::deep_copy(sendvals_unpacked, -1);
+        Kokkos::View<int*, device_type, Kokkos::MemoryTraits<Kokkos::Atomic>> v_sendcounts_d("v_sendcounts", _comm_size);
+        Kokkos::deep_copy(v_sendcounts_d, 0);
 
         // Copy _vef_gid_start to device
         Kokkos::View<int*[3], device_type> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
@@ -276,13 +278,11 @@ class Mesh
         Kokkos::deep_copy(hv_tmp, _vef_gid_start);
         Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
 
-        // Step 2: Iterate over second edges. Populate Face ID that is not filled
+        // Iterate over second edges. Populate Face ID that is not filled
+        auto f_egids = Cabana::slice<S_F_EIDS>(_f_array);
         int rank = _rank, comm_size = _comm_size;
-        Kokkos::parallel_for("find_needed_edge2", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
-            int f_gid, e2_gid, from_rank = -1;
-            f_gid = f_lid + _vef_gid_start_d(rank, 2);
-
-            // Where this edge is the first edge, set its face1
+        Kokkos::parallel_for("count_edges_needed", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
+            int e2_gid, from_rank = -1;
             e2_gid = f_egids(f_lid, 1);
 
             // If e2_gid < (rank GID start) or (> (rank+1) GID start), 
@@ -300,7 +300,7 @@ class Mesh
                         if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1))) from_rank = r;
                     }
                 }
-                sendvals_unpacked(from_rank, f_lid) = e2_gid;
+                v_sendcounts_d(from_rank)++;
                 counter()++;
                 // if (rank == debug_rank) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
 
@@ -316,7 +316,7 @@ class Mesh
                         if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1)))
                         {
                             from_rank = r;
-                            sendvals_unpacked(from_rank, f_lid) = e2_gid;
+                            v_sendcounts_d(from_rank)++;
                             counter()++;
                             // if (rank == debug_rank) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
                         }
@@ -325,11 +325,19 @@ class Mesh
             }
         });
         Kokkos::fence();
-        int len_sendvals = -1;
-        Kokkos::deep_copy(len_sendvals, counter);
-
+        int total_sends = -1;
+        Kokkos::deep_copy(total_sends, counter);
         // Reset counter
         Kokkos::deep_copy(counter, 0);
+        printf("R%d: max sends: %d\n", rank, total_sends);
+        // Copy v_sendcounts to host
+        //auto v_sendcounts_h = Kokkos::create_mirror_view_and_copy(v_sendcounts_d);
+        // Find the max amount of sends 
+        int max_sends;
+        Kokkos::parallel_reduce("ReduceSum: ", Kokkos::RangePolicy<execution_space>(0, v_sendcounts_d.extent(0)), KOKKOS_LAMBDA (const int i, int& val) {
+            val = v_sendcounts_d(i);
+        }, Kokkos::Max<int>(max_sends));
+        printf("R%d: max sends: %d\n", rank, max_sends);
     }
 
     /**
@@ -445,6 +453,7 @@ class Mesh
 
         // Reset counter
         Kokkos::deep_copy(counter, 0);
+        // printf("R%d: counter: %d\n", rank, len_sendvals);
 
         // Send each process the edges it needs
         // Step 1: Count the number of edges needed from each other process
