@@ -1,7 +1,9 @@
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-add_executable( built_from_grid built_from_grid.cpp )
+blt_add_executable( NAME built_from_grid
+                SOURCES built_from_grid.cpp 
+                OUTPUT_DIR ${EXAMPLE_OUTPUT_DIRECTORY})
 
 # Tell CMAKE we need to link with these libraries. Our "FindMPI_Advance" script
 # does not define an explicit target, but it does set the variable below.

@@ -1,6 +1,7 @@
 # Ignore directories
 build
 .vscode
+thirdparty
 
 # Prerequisites
 *.d
