@@ -10,7 +10,7 @@ int main( int argc, char* argv[] )
 {
     using execution_space = Kokkos::DefaultHostExecutionSpace;
     using memory_space = execution_space::memory_space;
-    using nu_mesh_type = NuMesh::Mesh<execution_space, memory_space>;
+    // using nu_mesh_type = NuMesh::Mesh<execution_space, memory_space>;
 
     MPI_Init( &argc, &argv );         // Initialize MPI
     Kokkos::initialize( argc, argv ); // Initialize Kokkos
@@ -55,11 +55,12 @@ int main( int argc, char* argv[] )
     std::array<bool, 2> is_dim_periodic = { periodic, periodic };
     Cabana::Grid::DimBlockPartitioner<2> partitioner;
 
-    std::shared_ptr<nu_mesh_type> nu_mesh;
-    nu_mesh = std::make_shared<nu_mesh_type>(global_low_corner, global_high_corner,
-	        global_num_cell, is_dim_periodic, partitioner, MPI_COMM_WORLD);
+
+    auto nu_mesh = NuMesh::createMesh<execution_space, memory_space>(MPI_COMM_WORLD);
+    nu_mesh->initialize_ve(global_low_corner, global_high_corner, global_num_cell,
+        is_dim_periodic, partitioner, MPI_COMM_WORLD);
     //nu_mesh->initialize_from_grid();
-    //nu_mesh->initialize_faces();
+    nu_mesh->initialize_faces();
     //nu_mesh->assign_edges_to_faces();
     // int ranks_in_xy = (int) floor(sqrt((float) comm_size));
     // if (ranks_in_xy*ranks_in_xy != comm_size) 

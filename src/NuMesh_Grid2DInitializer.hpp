@@ -71,7 +71,7 @@ class Grid2DInitializer
 
     // XXX - Add position initialization functor?
     template <class v_array_type, class e_array_type>
-    void from_grid(v_array_type v_array, e_array_type e_array, int &owned_vertices, int &owned_edges)
+    void from_grid(v_array_type *v_array, e_array_type *e_array, int *owned_vertices, int *owned_edges, int *owned_faces)
     {
         auto own_nodes = _local_grid->indexSpace( Cabana::Grid::Own(), Cabana::Grid::Node(),
                                                     Cabana::Grid::Local() );
@@ -119,29 +119,52 @@ class Grid2DInitializer
         int iend = local_space.max(0), jend = local_space.max(1);
 
         // Create the AoSoA
-        owned_vertices = (iend - istart) * (jend - jstart);
-        owned_edges =  owned_vertices * 3;
-        // int owned_faces =  owned_vertices * 2;
-        v_array.resize(owned_vertices);
-        e_array.resize(owned_edges);
+        int ov = (iend - istart) * (jend - jstart);
+        int oe = ov * 3;
+        int of =  ov * 2;
+        v_array->resize(ov);
+        e_array->resize(oe);
+        *owned_vertices = ov; *owned_edges = oe; *owned_faces = of;
 
-        // Copy _vef_gid_start to device
+        // XXX - Can we avoid copying this code from NuMesh_Core.hpp?
+        // Get the number of vertices (i.e., array size) for each process for global IDs
+        int vef[3] = {ov, oe, of};
+        Kokkos::View<int*[3], Kokkos::HostSpace> vef_gid_start("vef_gid_start", _comm_size);
+
+        MPI_Allgather(vef, 3, MPI_INT, vef_gid_start.data(), 3, MPI_INT, _comm);
+    
+        // Find where each process starts its global IDs
+        for (int i = 1; i < _comm_size; ++i) {
+            vef_gid_start(i, 0) += vef_gid_start(i - 1, 0);
+            vef_gid_start(i, 1) += vef_gid_start(i - 1, 1);
+            vef_gid_start(i, 2) += vef_gid_start(i - 1, 2);
+        }
+        for (int i = _comm_size - 1; i > 0; --i) {
+            vef_gid_start(i, 0) = vef_gid_start(i - 1, 0);
+            vef_gid_start(i, 1) = vef_gid_start(i - 1, 1);
+            vef_gid_start(i, 2) = vef_gid_start(i - 1, 2);
+        }
+        vef_gid_start(0, 0) = 0;
+        vef_gid_start(0, 1) = 0;
+        vef_gid_start(0, 2) = 0;
+
+        // Copy vef_gid_start to device
         Kokkos::View<int*[3], device_type> vef_gid_start_d("vef_gid_start_d", _comm_size);
-        //auto hv_tmp = Kokkos::create_mirror_view(vef_gid_start_d);
-        // Kokkos::deep_copy(hv_tmp, _vef_gid_start);
-        //Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
+        auto hv_tmp = Kokkos::create_mirror_view(vef_gid_start_d);
+        Kokkos::deep_copy(hv_tmp, vef_gid_start);
+        Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
 
         // We should convert the following loops to a Cabana::simd_parallel_for at some point to get better write behavior
 
         // Initialize the vertices, edges, and faces
-        auto v_xyz = Cabana::slice<S_V_XYZ>(v_array);
-        auto v_gid = Cabana::slice<S_V_GID>(v_array);
-        auto v_owner = Cabana::slice<S_V_OWNER>(v_array);
+        auto v_xyz = Cabana::slice<S_V_XYZ>(*v_array);
+        auto v_gid = Cabana::slice<S_V_GID>(*v_array);
+        auto v_owner = Cabana::slice<S_V_OWNER>(*v_array);
 
-        auto e_vid = Cabana::slice<S_E_VIDS>(e_array); // VIDs from south to north, west to east vertices
-        auto e_gid = Cabana::slice<S_E_GID>(e_array);
-        auto e_fids = Cabana::slice<S_E_FIDS>(e_array);
-        auto e_owner = Cabana::slice<S_E_OWNER>(e_array);
+        auto e_vid = Cabana::slice<S_E_VIDS>(*e_array); // VIDs from south to north, west to east vertices
+        auto e_gid = Cabana::slice<S_E_GID>(*e_array);
+        auto e_fids = Cabana::slice<S_E_FIDS>(*e_array);
+        auto e_owner = Cabana::slice<S_E_OWNER>(*e_array);
         int rank = _rank;
         auto topology = Cabana::Grid::getTopology( *_local_grid );
         auto device_topology = vectorToArray<9>( topology );
@@ -382,7 +405,7 @@ class Grid2DInitializer
 };
 
 /**
- *  Return a shared pointer to a Communcation object
+ *  Return a shared pointer to a createGrid2DInitializer object
  */
 template <class ExecutionSpace, class MemorySpace>
 auto createGrid2DInitializer( const std::array<double, 2>& global_low_corner,
