@@ -40,6 +40,13 @@ class Communicator
         MPIX_Info_free(&_xinfo);
         MPIX_Comm_free(&_xcomm);
     }
+
+    void gather()
+    {
+      
+    }
+
+
   private:
     const MPI_Comm _comm;
     MPIX_Comm* _xcomm;

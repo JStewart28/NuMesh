@@ -252,14 +252,93 @@ class Mesh
     }
 
     /**
+     * Gather edges owned on other ranks that are part of faces owned by this rank
+     * For any face a process owns, it will always own its first and third edges.
+     * The second edge needs to be gethered.
+     */
+    void gather_edges()
+    {
+         /* Temporary naive solution to store which edges are needed from which processes: 
+         * Create a (comm_size x num_faces) view.
+         * If an edge is needed from another process, set (owner_rank, f_lid) to the 
+         * global edge ID needed from owner_rank.
+         */ 
+        // Set a counter to count number messages that will be sent
+        using CounterView = Kokkos::View<int, device_type, Kokkos::MemoryTraits<Kokkos::Atomic>>;
+        CounterView counter("counter");
+        Kokkos::deep_copy(counter, 0);
+        Kokkos::View<int**, device_type> sendvals_unpacked("sendvals_unpacked", _comm_size, _f_array.size());
+        Kokkos::deep_copy(sendvals_unpacked, -1);
+
+        // Copy _vef_gid_start to device
+        Kokkos::View<int*[3], device_type> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
+        auto hv_tmp = Kokkos::create_mirror_view(_vef_gid_start_d);
+        Kokkos::deep_copy(hv_tmp, _vef_gid_start);
+        Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
+
+        // Step 2: Iterate over second edges. Populate Face ID that is not filled
+        int rank = _rank, comm_size = _comm_size;
+        Kokkos::parallel_for("find_needed_edge2", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
+            int f_gid, e2_gid, from_rank = -1;
+            f_gid = f_lid + _vef_gid_start_d(rank, 2);
+
+            // Where this edge is the first edge, set its face1
+            e2_gid = f_egids(f_lid, 1);
+
+            // If e2_gid < (rank GID start) or (> (rank+1) GID start), 
+            // this edge is owned by another process 
+            if ((rank != comm_size-1) && ((e2_gid < _vef_gid_start_d(rank, 1)) || (e2_gid >= _vef_gid_start_d(rank+1, 1))))
+            {
+                if (e2_gid < _vef_gid_start_d(0, 1)) from_rank = 0;
+                else if (e2_gid >= _vef_gid_start_d(comm_size-1, 1)) from_rank = comm_size-1;
+                else
+                {
+                    for (int r = 0; r < comm_size-1; r++)
+                    {
+                        if (r == rank) continue;
+                        //printf("checking btw R%d: [%d, %d)\n", r, _vef_gid_start_d(r, 1))
+                        if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1))) from_rank = r;
+                    }
+                }
+                sendvals_unpacked(from_rank, f_lid) = e2_gid;
+                counter()++;
+                // if (rank == debug_rank) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
+
+            }
+            // If rank == comsize-1 we need a seperate condition
+            else if (rank == comm_size-1)
+            {
+                if (e2_gid < _vef_gid_start_d(rank, 1))
+                {
+                    for (int r = 0; r < rank; r++)
+                    {
+                        //printf("checking btw R%d: [%d, %d)\n", r, _vef_gid_start_d(r, 1))
+                        if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1)))
+                        {
+                            from_rank = r;
+                            sendvals_unpacked(from_rank, f_lid) = e2_gid;
+                            counter()++;
+                            // if (rank == debug_rank) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
+                        }
+                    }
+                }
+            }
+        });
+        Kokkos::fence();
+        int len_sendvals = -1;
+        Kokkos::deep_copy(len_sendvals, counter);
+
+        // Reset counter
+        Kokkos::deep_copy(counter, 0);
+    }
+
+    /**
      * After faces have been created, map each edge to its two faces.
      * The face where the edge is the lowest numbered edge, starting
      * at the first vertex and moving clockwise, is the first edge.
      */
     void assign_edges_to_faces()
     {
-        update_vef_counts();
-
         auto e_vid = Cabana::slice<S_E_VIDS>(_e_array);
         auto e_gid = Cabana::slice<S_E_GID>(_e_array);
         auto e_fids = Cabana::slice<S_E_FIDS>(_e_array);
@@ -303,7 +382,7 @@ class Mesh
          * If an edge is needed from another process, set (owner_rank, f_lid) to the 
          * global edge ID needed from owner_rank.
          */ 
-        // Set a counter to count number of ranks that will have a message sent to it
+        // Set a counter to count number messages that will be sent
         using CounterView = Kokkos::View<int, device_type, Kokkos::MemoryTraits<Kokkos::Atomic>>;
         CounterView counter("counter");
         Kokkos::deep_copy(counter, 0);
@@ -450,7 +529,7 @@ class Mesh
         MPIX_Info_free(&xinfo);
         MPIX_Comm_free(&xcomm);
 
-        // Parse the recieved values to send the correct edges to the processes that requested them.
+        // Parse the received values to send the correct edges to the processes that requested them.
         Kokkos::View<Cabana::Tuple<edge_data>*, Kokkos::HostSpace> send_edges(Kokkos::ViewAllocateWithoutInitializing("send_edges"), recv_size);
         Kokkos::View<Cabana::Tuple<edge_data>*, Kokkos::HostSpace> recv_edges(Kokkos::ViewAllocateWithoutInitializing("recv_edges"), len_sendvals);
         MPI_Request* requests = new MPI_Request[send_nnz+recv_nnz];
