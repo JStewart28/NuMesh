@@ -108,7 +108,7 @@ class Mesh
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
 
-        _communicator = std::make_shared(Communicator<execution_space, memory_space>(_comm));
+        //_communicator = std::make_shared(Communicator<execution_space, memory_space>(_comm));
 
         auto global_mesh = Cabana::Grid::createUniformGlobalMesh(
             _global_low_corner, _global_high_corner, _global_num_cell);

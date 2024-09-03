@@ -31,19 +31,19 @@ class Communicator
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
 
-        MPIX_Info_init(*_xinfo);
-        MPIX_Comm_init(*_xcomm, _comm);
+        MPIX_Info_init(&_xinfo);
+        MPIX_Comm_init(&_xcomm, _comm);
     }
 
     ~Communicator()
     {
-        MPIX_Info_free(_xinfo);
-        MPIX_Comm_free(_xcomm);
+        MPIX_Info_free(&_xinfo);
+        MPIX_Comm_free(&_xcomm);
     }
   private:
     MPI_Comm _comm;
-    MPIX_Comm _xcomm;
-    MPIX_Info _xinfo;
+    MPIX_Comm* _xcomm;
+    MPIX_Info* _xinfo;
 
     int _rank, _comm_size;
 
