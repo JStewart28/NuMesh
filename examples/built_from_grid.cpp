@@ -58,9 +58,9 @@ int main( int argc, char* argv[] )
     std::shared_ptr<nu_mesh_type> nu_mesh;
     nu_mesh = std::make_shared<nu_mesh_type>(global_low_corner, global_high_corner,
 	        global_num_cell, is_dim_periodic, partitioner, MPI_COMM_WORLD);
-    nu_mesh->initialize_from_grid();
-    nu_mesh->initialize_faces();
-    nu_mesh->assign_edges_to_faces();
+    //nu_mesh->initialize_from_grid();
+    //nu_mesh->initialize_faces();
+    //nu_mesh->assign_edges_to_faces();
     // int ranks_in_xy = (int) floor(sqrt((float) comm_size));
     // if (ranks_in_xy*ranks_in_xy != comm_size) 
     // {

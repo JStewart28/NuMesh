@@ -25,7 +25,7 @@ class Communicator
     using execution_space = ExecutionSpace;
     using device_type = Kokkos::Device<ExecutionSpace, MemorySpace>;
 
-    Communicator( MPI_Comm comm )
+    Communicator( const MPI_Comm comm )
             : _comm ( comm )
     {
         MPI_Comm_rank( _comm, &_rank );
@@ -41,13 +41,23 @@ class Communicator
         MPIX_Comm_free(&_xcomm);
     }
   private:
-    MPI_Comm _comm;
+    const MPI_Comm _comm;
     MPIX_Comm* _xcomm;
     MPIX_Info* _xinfo;
 
     int _rank, _comm_size;
 
 };
+
+/**
+ *  Return a shared pointer to a Communcation object
+ */
+template <class ExecutionSpace, class MemorySpace>
+auto createCommunicator( const MPI_Comm comm )
+{
+    return std::make_shared<Communicator<ExecutionSpace, MemorySpace>>(
+        comm );
+}
 
 } // end namespace NUMesh
 
