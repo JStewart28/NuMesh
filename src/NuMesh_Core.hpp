@@ -329,7 +329,7 @@ class Mesh
         int num_sends = -1;
         Kokkos::deep_copy(num_sends, counter);
 
-        _communicator->gather<edge_data>(sendvals_unpacked, _e_array, _vef_gid_start_d, num_sends, &_owned_edges, &_ghost_edges);
+        _communicator->gather(sendvals_unpacked, _e_array, _vef_gid_start_d, num_sends, &_owned_edges, &_ghost_edges);
     }
 
     /**

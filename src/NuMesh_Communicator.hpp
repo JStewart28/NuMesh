@@ -41,7 +41,7 @@ class Communicator
         MPIX_Comm_free(&_xcomm);
     }
 
-    template <class Tuple_t, class View_t1, class View_t2, class AoSoA_t>
+    template <class View_t1, class View_t2, class AoSoA_t>
     void gather(View_t1 sendvals_unpacked, AoSoA_t array, View_t2 vef_gid_start_d, int num_sends, int *owned_count, int *ghosted_count)
     {
         // Step 1: Count the number of edges needed from each other process
@@ -125,7 +125,7 @@ class Communicator
         Kokkos::View<typename AoSoA_t::tuple_type*, Kokkos::HostSpace> send_edges(Kokkos::ViewAllocateWithoutInitializing("send_edges"), recv_size);
         Kokkos::View<typename AoSoA_t::tuple_type*, Kokkos::HostSpace> recv_edges(Kokkos::ViewAllocateWithoutInitializing("recv_edges"), num_sends);
         MPI_Request* requests = new MPI_Request[send_nnz+recv_nnz];
-        Cabana::Tuple<Tuple_t> t;
+        Cabana::Tuple<typename AoSoA_t::tuple_type*> t;
         std::pair<std::size_t, std::size_t> range = { 0, 0 };
         for (int s = 0; s < recv_nnz; s++)
         {
