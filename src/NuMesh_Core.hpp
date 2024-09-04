@@ -1,6 +1,7 @@
 #ifndef NUMESH_CORE_HPP
 #define NUMESH_CORE_HPP
 
+// XXX - Add mapping class.
 
 #include <Cabana_Grid.hpp>
 #include <Kokkos_Core.hpp>
@@ -47,6 +48,8 @@ namespace NuMesh
 //         array[i] = vector[i];
 //     return array;
 // }
+
+
 
 //---------------------------------------------------------------------------//
 /*!
@@ -146,8 +149,8 @@ class Mesh
         _grid2DInitializer->from_grid(&_v_array, &_e_array, &_owned_vertices, &_owned_edges, &_owned_faces);
         _ghost_edges = 0;
         update_vef_counts();
-        printf("R%d: owned edges: %d\n", _rank, _owned_edges);
-        //printEdges();
+        // printf("R%d: owned edges: %d\n", _rank, _owned_edges);
+        // printEdges();
     }
 
     /**
@@ -300,7 +303,7 @@ class Mesh
                 }
                 sendvals_unpacked(from_rank, f_lid) = e2_gid;
                 counter()++;
-                // if (rank == debug_rank) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
+                //if (rank == 1) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
 
             }
             // If rank == comsize-1 we need a seperate condition
@@ -316,7 +319,7 @@ class Mesh
                             from_rank = r;
                             sendvals_unpacked(from_rank, f_lid) = e2_gid;
                             counter()++;
-                            // if (rank == debug_rank) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
+                            //if (rank == 1) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
                         }
                     }
                 }
@@ -328,8 +331,90 @@ class Mesh
         Kokkos::fence();
         int num_sends = -1;
         Kokkos::deep_copy(num_sends, counter);
+        _communicator->gather(sendvals_unpacked, _e_array, _vef_gid_start_d, 1, num_sends, _owned_edges, _ghost_edges);
+    }
 
-        _communicator->gather(sendvals_unpacked, _e_array, _vef_gid_start_d, num_sends, &_owned_edges, &_ghost_edges);
+    void assign_edges_to_faces()
+    {
+        auto e_vid = Cabana::slice<S_E_VIDS>(_e_array);
+        auto e_gid = Cabana::slice<S_E_GID>(_e_array);
+        auto e_fids = Cabana::slice<S_E_FIDS>(_e_array);
+        auto e_owner = Cabana::slice<S_E_OWNER>(_e_array);
+
+        auto f_vgids = Cabana::slice<S_F_VIDS>(_f_array);
+        auto f_egids = Cabana::slice<S_F_EIDS>(_f_array);
+        auto f_gid = Cabana::slice<S_F_GID>(_f_array);
+        auto f_parent = Cabana::slice<S_F_PID>(_f_array);
+        auto f_child = Cabana::slice<S_F_CID>(_f_array);
+        auto f_owner = Cabana::slice<S_F_OWNER>(_f_array);
+
+        /* Edges will always be one of the following for faces:
+         * - 1st edge and 2nd edge
+         * - 1st edge and 3rd edge
+         * - 2nd edge and 3rd edge
+         * 
+         * Iterate over faces and assign 1st and 3rd edges' face 1
+         */
+        int rank = _rank;
+        // Copy _vef_gid_start to device
+        Kokkos::View<int*[3], device_type> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
+        auto hv_tmp = Kokkos::create_mirror_view(_vef_gid_start_d);
+        Kokkos::deep_copy(hv_tmp, _vef_gid_start);
+        Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
+        Kokkos::parallel_for("assign_edges13_to_faces", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
+            int f_gid, eX_lid;
+            f_gid = f_lid + _vef_gid_start_d(rank, 2);
+
+            // Where this edge is the first edge, set its face1
+            eX_lid = f_egids(f_lid, 0) - _vef_gid_start_d(rank, 1);
+            e_fids(eX_lid, 0) = f_gid;
+
+            // Where this edge is the third edge, set its face2
+            eX_lid = f_egids(f_lid, 2) - _vef_gid_start_d(rank, 1);
+            e_fids(eX_lid, 1) = f_gid;
+        });
+
+        // Assign the 2nd edges and ghosted edges to their faces
+        int ghosted_edges = _ghost_edges;
+        int owned_edges = _owned_edges;
+        // printf("R%d: o: %d, `g: %d\n", rank, owned_edges, ghosted_edges);
+        // printEdges();
+
+        Kokkos::parallel_for("assign_edge2", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
+            int f_gid, e2_gid, e2_lid;
+            f_gid = f_lid + _vef_gid_start_d(rank, 2);
+            e2_gid = f_egids(f_lid, 1);
+            e2_lid = e2_gid - _vef_gid_start_d(rank, 1);
+            //if (rank == 2) printf("R%d f_gid %d, e2_gid %d, e min/max: (%d, %d)\n", rank, f_gid, e2_gid, _vef_gid_start_d(rank, 1),_vef_gid_start_d(rank+1, 1));
+
+            // Check if edge owned locally
+            if ((e2_lid >= 0) && (e2_lid < owned_edges))
+            {
+                //if (rank == 2) printf("R%d: acessing e_fids(%d)\n", rank, e2_lid);
+                // Check if the first face is set; then this f_gid is the second face
+                if (e_fids(e2_lid, 0) != -1) e_fids(e2_lid, 1) = f_gid;
+                // Otherwise check if the second face is set; then this f_gid is the first face
+                else if (e_fids(e2_lid, 1) != -1) e_fids(e2_lid, 0) = f_gid;
+            }
+            else
+            {
+                //printf("R%d: e_gid not owned locally: %d\n", rank, e2_gid);
+                // Find the local_id of edge to set its face id(s)
+                for (e2_lid = owned_edges; e2_lid < owned_edges+ghosted_edges; e2_lid++)
+                {
+                    int e2_gid_owned = e_gid(e2_lid);
+                    if (e2_gid_owned == e2_gid)
+                    {
+                        //printf("R%d: ghosted e2_lid %d = e_gid %d\n", rank, e2_lid, e2_gid);
+                        if (e_fids(e2_lid, 0) != -1) e_fids(e2_lid, 1) = f_gid;
+                        // Otherwise check if the second face is set; then this f_gid is the first face
+                        else if (e_fids(e2_lid, 1) != -1) e_fids(e2_lid, 0) = f_gid;
+                    }
+                }
+            }
+        });
+        // Any edge-face mappings that are -1 at this point are for faces not owned by the process
+        //printEdges();
     }
 
     /**
@@ -337,7 +422,7 @@ class Mesh
      * The face where the edge is the lowest numbered edge, starting
      * at the first vertex and moving clockwise, is the first edge.
      */
-    void assign_edges_to_faces()
+    void assign_edges_to_faces_orig()
     {
         auto e_vid = Cabana::slice<S_E_VIDS>(_e_array);
         auto e_gid = Cabana::slice<S_E_GID>(_e_array);

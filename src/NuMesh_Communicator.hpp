@@ -41,8 +41,9 @@ class Communicator
         MPIX_Comm_free(&_xcomm);
     }
 
+    // XXX - Change vef argument to an enum: Vertex, Edge, or Face
     template <class View_t1, class View_t2, class AoSoA_t>
-    void gather(View_t1 sendvals_unpacked, AoSoA_t array, View_t2 vef_gid_start_d, int num_sends, int *owned_count, int *ghosted_count)
+    void gather(const View_t1 sendvals_unpacked, AoSoA_t &array, const View_t2 vef_gid_start_d, int vef, int num_sends, int &owned_count, int &ghosted_count)
     {
         // Step 1: Count the number of edges needed from each other process
         using CounterView = Kokkos::View<int, device_type, Kokkos::MemoryTraits<Kokkos::Atomic>>;
@@ -50,39 +51,43 @@ class Communicator
         Kokkos::deep_copy(counter, 0);
         Kokkos::View<int*, device_type> sendcounts_unpacked("sendcounts_unpacked", _comm_size);   
         // Parallel reduction to count non -1 values in each row
-        int num_cols = (int) array.size();
+        int sendvals_num_cols = sendvals_unpacked.extent(1);
+        int rank = _rank;
         Kokkos::parallel_for("count_sends", Kokkos::RangePolicy<execution_space>(0, _comm_size), KOKKOS_LAMBDA(const int i) {
             int count = 0;
-            for (int j = 0; j < num_cols; j++) {
+            for (int j = 0; j < sendvals_num_cols; j++) {
                 if (sendvals_unpacked(i, j) != -1) {
+                    // if (rank == 1) printf("R%d G sendvals_unpacked(%d, %d): %d\n", rank, i, j, sendvals_unpacked(i, j));
                     count++;
                 }
             }
             if (count > 0) counter()++;
             sendcounts_unpacked(i) = count;
-            //if (rank == debug_rank) printf("R%d sendcounts_unpacked(%d): %d\n", rank, i, sendcounts_unpacked(i));
+            // if (rank == 1) printf("R%d sendcounts_unpacked(%d): %d\n", rank, i, sendcounts_unpacked(i));
         });
         int send_nnz = 0;
         Kokkos::deep_copy(send_nnz, counter);
+
         // Pack serially for now, for simplicity. XXX - pack on GPU
         auto sendcounts_unpacked_h = Kokkos::create_mirror_view(sendcounts_unpacked);
         Kokkos::deep_copy(sendcounts_unpacked_h, sendcounts_unpacked);
         auto sendvals_unpacked_h = Kokkos::create_mirror_view(sendvals_unpacked);
         Kokkos::deep_copy(sendvals_unpacked_h, sendvals_unpacked);
+
         int* sendcounts = new int[send_nnz];
         int* dest = new int[send_nnz];
         int* sdispls = new int[send_nnz];
         int* sendvals = new int[num_sends];
         int idx = 0;
         sdispls[0] = 0;
-        for (int i = 0; i < sendcounts_unpacked_h.extent(0); i++)
+        for (int i = 0; i < (int)sendcounts_unpacked_h.extent(0); i++)
         {
             if (sendcounts_unpacked_h(i)) 
             {
                 sendcounts[idx] = sendcounts_unpacked_h(i);
                 dest[idx] = i; 
                 if ((idx < send_nnz) && (idx > 0)) sdispls[idx] = sdispls[idx-1] + sendcounts[idx];
-                // if (rank == DEBUG_RANK) printf("R%d: sendcounts[%d]: %d, dest[%d]: %d, sdispls[%d]: %d\n", rank,
+                // if (_rank == 1) printf("R%d: sendcounts[%d]: %d, dest[%d]: %d, sdispls[%d]: %d\n", rank,
                 //     idx, sendcounts[idx], idx, dest[idx], idx, sdispls[idx]);
                 idx++;
             }
@@ -94,12 +99,12 @@ class Communicator
         for (int d = 0; d < send_nnz; d++)
         {
             int dest_rank = dest[d];
-            for (int lid = 0; lid < array.size(); lid++)
+            for (int lid = 0; lid < sendvals_num_cols; lid++)
             {
                 if (sendvals_unpacked_h(dest_rank, lid) != -1)
                 {
                     sendvals[idx] = sendvals_unpacked_h(dest_rank, lid);
-                    //if (rank == DEBUG_RANK) printf("R%d: sendvals[%d]: %d\n", rank, idx, sendvals[idx]);
+                    // if (rank == 1) printf("R%d: sendvals[%d]: %d\n", rank, idx, sendvals[idx]);
                     idx++;
                 }
             }
@@ -111,7 +116,8 @@ class Communicator
         int *src = new int[send_nnz];
         int *recvcounts = new int[send_nnz];
         int *recvvals = new int [num_sends];
-
+        // printf("Before MPI_Alltoall\n");
+        
         MPIX_Alltoallv_crs(send_nnz, num_sends, dest, sendcounts, sdispls, MPI_INT, sendvals, 
             &recv_nnz, &recv_size, src, recvcounts, rdispls, MPI_INT, recvvals, _xinfo, _xcomm);
         // printf("R%d: s_nnz, len: (%d, %d), dest: (%d, %d), sc: (%d, %d), sdispls: (%d, %d), svals: (%d, %d, %d, %d, %d, %d, %d, %d)\n",
@@ -125,7 +131,10 @@ class Communicator
         Kokkos::View<typename AoSoA_t::tuple_type*, Kokkos::HostSpace> send_edges(Kokkos::ViewAllocateWithoutInitializing("send_edges"), recv_size);
         Kokkos::View<typename AoSoA_t::tuple_type*, Kokkos::HostSpace> recv_edges(Kokkos::ViewAllocateWithoutInitializing("recv_edges"), num_sends);
         MPI_Request* requests = new MPI_Request[send_nnz+recv_nnz];
-        Cabana::Tuple<typename AoSoA_t::tuple_type*> t;
+        // AoSoA_t::tuple_type *t;
+        // XXX- Workaround to get tuple size because the above line doesn't work
+        auto t = array.getTuple(0);
+        int tuple_size = sizeof(t);
         std::pair<std::size_t, std::size_t> range = { 0, 0 };
         for (int s = 0; s < recv_nnz; s++)
         {
@@ -134,16 +143,15 @@ class Communicator
             while (counter < (displs+send_count))
             {
                 // if (rank == DEBUG_RANK) printf("R%d: send_to: %d, accessing recvvals[%d]: %d\n", rank, send_to, counter, recvvals[counter]);
-                int e_gid = recvvals[counter];
-                int e_lid = e_gid - vef_gid_start_d(_rank, 1);
+                int gid = recvvals[counter];
+                int lid = gid - vef_gid_start_d(_rank, vef);
                 
                 // Get this edge from the edge AoSoA and set it in the buffer
-                t = array.getTuple(e_lid);
+                auto t = array.getTuple(lid);
                 send_edges(counter) = t;
                 counter++;
             }
             // Post this send
-            // MPI_Isend(send_buffer.data(), num_elements, MPI_INT, 1, tag, MPI_COMM_WORLD, &requests[0]);
             range.first = displs; range.second = range.first + send_count;
             auto send_subview = Kokkos::subview(send_edges, range);
             if (_rank == DEBUG_RANK)
@@ -154,7 +162,7 @@ class Communicator
                 // printf("R%d: sending from send_edges(%d), send_to: %d, gid: %d\n", rank, displs, send_to, Cabana::get<S_E_GID>(send_subview(3)));
 
             }
-            MPI_Isend(send_subview.data(), sizeof(t)*send_subview.size(), MPI_BYTE, send_to, _rank, _comm, &requests[s]);
+            MPI_Isend(send_subview.data(), tuple_size*send_subview.size(), MPI_BYTE, send_to, _rank, _comm, &requests[s]);
         }
 
         // Post receives
@@ -163,9 +171,8 @@ class Communicator
             int recv_from = dest[s], recv_count = sendcounts[s], displs = sdispls[s];
             range.first = displs; range.second = range.first + recv_count;
             auto recv_subview = Kokkos::subview(recv_edges, range);
-            MPI_Irecv(recv_subview.data(), sizeof(t)*recv_subview.size(), MPI_BYTE, recv_from, recv_from, _comm, &requests[recv_nnz+s]);
+            MPI_Irecv(recv_subview.data(), tuple_size*recv_subview.size(), MPI_BYTE, recv_from, recv_from, _comm, &requests[recv_nnz+s]);
         }
-
         MPI_Waitall(send_nnz+recv_nnz, requests, MPI_STATUSES_IGNORE);
         delete[] requests;
 
