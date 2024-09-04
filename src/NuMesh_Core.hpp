@@ -258,31 +258,29 @@ class Mesh
      */
     void gather_edges()
     {
-        /**
-         * Iterate over the faces to determine how many edges are needed
-         * Keep track of how many edges are needed from each rank and how
-         * many edges are needed in total.
-         */
-
+        /* Temporary naive solution to store which edges are needed from which processes: 
+         * Create a (comm_size x num_faces) view.
+         * If an edge is needed from another process, set (owner_rank, f_lid) to the 
+         * global edge ID needed from owner_rank.
+         */ 
         // Set a counter to count number messages that will be sent
-        // XXX - Use a parallel_reduce here to sum row values instead of an atomic counter?
         using CounterView = Kokkos::View<int, device_type, Kokkos::MemoryTraits<Kokkos::Atomic>>;
         CounterView counter("counter");
         Kokkos::deep_copy(counter, 0);
-        Kokkos::View<int*, device_type, Kokkos::MemoryTraits<Kokkos::Atomic>> v_sendcounts_d("v_sendcounts", _comm_size);
-        Kokkos::deep_copy(v_sendcounts_d, 0);
-
+        Kokkos::View<int**, device_type> sendvals_unpacked("sendvals_unpacked", _comm_size, _f_array.size());
+        Kokkos::deep_copy(sendvals_unpacked, -1);
+        // Step 2: Iterate over second edges. Populate Face ID that is not filled
+        int rank = _rank, comm_size = _comm_size;
         // Copy _vef_gid_start to device
         Kokkos::View<int*[3], device_type> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
         auto hv_tmp = Kokkos::create_mirror_view(_vef_gid_start_d);
         Kokkos::deep_copy(hv_tmp, _vef_gid_start);
         Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
-
-        // Iterate over second edges. Populate Face ID that is not filled
         auto f_egids = Cabana::slice<S_F_EIDS>(_f_array);
-        int rank = _rank, comm_size = _comm_size;
-        Kokkos::parallel_for("count_edges_needed", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
+        Kokkos::parallel_for("find_needed_edge2", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
             int e2_gid, from_rank = -1;
+
+            // Where this edge is the first edge, set its face1
             e2_gid = f_egids(f_lid, 1);
 
             // If e2_gid < (rank GID start) or (> (rank+1) GID start), 
@@ -300,7 +298,7 @@ class Mesh
                         if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1))) from_rank = r;
                     }
                 }
-                v_sendcounts_d(from_rank)++;
+                sendvals_unpacked(from_rank, f_lid) = e2_gid;
                 counter()++;
                 // if (rank == debug_rank) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
 
@@ -316,28 +314,22 @@ class Mesh
                         if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1)))
                         {
                             from_rank = r;
-                            v_sendcounts_d(from_rank)++;
+                            sendvals_unpacked(from_rank, f_lid) = e2_gid;
                             counter()++;
                             // if (rank == debug_rank) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
                         }
                     }
                 }
             }
+
+            // if (e_fids(e2_lid, 0) != -1) e_fids(e2_lid, 0) = f_gid;
+            // else if (e_fids(e2_lid, 1) != -1) e_fids(e2_lid, 1) = f_gid;
         });
         Kokkos::fence();
-        int total_sends = -1;
-        Kokkos::deep_copy(total_sends, counter);
-        // Reset counter
-        Kokkos::deep_copy(counter, 0);
-        printf("R%d: max sends: %d\n", rank, total_sends);
-        // Copy v_sendcounts to host
-        //auto v_sendcounts_h = Kokkos::create_mirror_view_and_copy(v_sendcounts_d);
-        // Find the max amount of sends 
-        int max_sends;
-        Kokkos::parallel_reduce("ReduceSum: ", Kokkos::RangePolicy<execution_space>(0, v_sendcounts_d.extent(0)), KOKKOS_LAMBDA (const int i, int& val) {
-            val = v_sendcounts_d(i);
-        }, Kokkos::Max<int>(max_sends));
-        printf("R%d: max sends: %d\n", rank, max_sends);
+        int num_sends = -1;
+        Kokkos::deep_copy(num_sends, counter);
+
+        _communicator->gather<edge_data>(sendvals_unpacked, _e_array, _vef_gid_start_d, num_sends, &_owned_edges, &_ghost_edges);
     }
 
     /**
@@ -397,10 +389,8 @@ class Mesh
         Kokkos::View<int**, device_type> sendvals_unpacked("sendvals_unpacked", _comm_size, _f_array.size());
         Kokkos::deep_copy(sendvals_unpacked, -1);
         // Step 2: Iterate over second edges. Populate Face ID that is not filled
-        int debug_rank = DEBUG_RANK;
         Kokkos::parallel_for("find_needed_edge2", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
-            int f_gid, e2_gid, from_rank = -1;
-            f_gid = f_lid + _vef_gid_start_d(rank, 2);
+            int e2_gid, from_rank = -1;
 
             // Where this edge is the first edge, set its face1
             e2_gid = f_egids(f_lid, 1);
@@ -484,7 +474,7 @@ class Mesh
         int* sendvals = new int[len_sendvals];
         int idx = 0;
         sdispls[0] = 0;
-        for (int i = 0; i < sendcounts_unpacked_h.extent(0); i++)
+        for (int i = 0; i < (int)sendcounts_unpacked_h.extent(0); i++)
         {
             if (sendcounts_unpacked_h(i)) 
             {
@@ -503,7 +493,7 @@ class Mesh
         for (int d = 0; d < send_nnz; d++)
         {
             int dest_rank = dest[d];
-            for (int e_lid = 0; e_lid < _f_array.size(); e_lid++)
+            for (int e_lid = 0; e_lid < (int)_f_array.size(); e_lid++)
             {
                 if (sendvals_unpacked_h(dest_rank, e_lid) != -1)
                 {
@@ -588,7 +578,7 @@ class Mesh
 
         if (_rank == 0)
         {
-            for (int i = 0; i < recv_edges.extent(0); i++)
+            for (int i = 0; i < (int)recv_edges.extent(0); i++)
             {
                 e_tuple = recv_edges(i);
                 //if (rank == 0) printf("R%d: got e_gid: %d\n", _rank, Cabana::get<S_E_GID>(e_tuple));
