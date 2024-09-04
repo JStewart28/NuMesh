@@ -204,6 +204,7 @@ class Grid2DInitializer
                 // Edge 0: north
                 v_gid_other = vef_gid_start_d(rank, 0) + (i - istart) * (jend - jstart) + (j+1 - jstart);
                 e_lid = v_lid * 3;
+                e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                 //printf("R%d: e_gid: %d, e_lid: %d, v_lid: %d\n", rank, vef_gid_start_d(rank, 1) + e_lid, e_lid, v_lid);
                 e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
@@ -212,6 +213,7 @@ class Grid2DInitializer
                 // Edge 1: northeast
                 v_gid_other = vef_gid_start_d(rank, 0) + (i+1 - istart) * (jend - jstart) + (j+1 - jstart);
                 e_lid = v_lid * 3 + 1;
+                e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                 e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 e_owner(e_lid) = rank;
@@ -219,6 +221,7 @@ class Grid2DInitializer
                 // Edge 2: east
                 v_gid_other = vef_gid_start_d(rank, 0) + (i+1 - istart) * (jend - jstart) + (j - jstart);
                 e_lid = v_lid * 3 + 2;
+                e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                 e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 e_owner(e_lid) = rank;
@@ -230,6 +233,7 @@ class Grid2DInitializer
                 // Edge 0: north
                 v_gid_other = vef_gid_start_d(rank, 0) + (i - istart) * (jend - jstart) + (j+1 - jstart);
                 e_lid = v_lid * 3;
+                e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                 e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 e_owner(e_lid) = rank;
@@ -241,12 +245,14 @@ class Grid2DInitializer
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 1;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
 
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 2;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
@@ -258,6 +264,7 @@ class Grid2DInitializer
                     offset = v_lid % (jend-jstart);
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset + 1;
                     e_lid = v_lid * 3 + 1;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                     e_owner(e_lid) = rank;
@@ -265,6 +272,7 @@ class Grid2DInitializer
                     // Edge 2
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset;
                     e_lid = v_lid * 3 + 2;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                     e_owner(e_lid) = rank;
@@ -276,6 +284,7 @@ class Grid2DInitializer
                 // Edge 2: east
                 v_gid_other = vef_gid_start_d(rank, 0) + (i+1 - istart) * (jend - jstart) + (j - jstart);
                 e_lid = v_lid * 3 + 2;
+                e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                 e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 e_owner(e_lid) = rank;
@@ -287,12 +296,14 @@ class Grid2DInitializer
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
 
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 1;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
@@ -304,6 +315,7 @@ class Grid2DInitializer
                     offset = v_lid / (iend-istart);
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset * (iend-istart);
                     e_lid = v_lid * 3;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
@@ -313,6 +325,7 @@ class Grid2DInitializer
                     offset = v_lid / (iend-istart);
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + (offset+1) * (iend-istart);
                     e_lid = v_lid * 3 + 1;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
@@ -330,6 +343,7 @@ class Grid2DInitializer
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
@@ -339,6 +353,7 @@ class Grid2DInitializer
                     offset = v_lid / (iend-istart);
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset * (iend-istart);
                     e_lid = v_lid * 3;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
@@ -352,6 +367,7 @@ class Grid2DInitializer
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 1;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
@@ -360,6 +376,7 @@ class Grid2DInitializer
                 {
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0);
                     e_lid = v_lid * 3 + 1;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
@@ -373,6 +390,7 @@ class Grid2DInitializer
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 2;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
@@ -382,13 +400,12 @@ class Grid2DInitializer
                     offset = v_lid % (jend-jstart);
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset;
                     e_lid = v_lid * 3 + 2;
+                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                     e_owner(e_lid) = rank;
                 }
             }
-
-            e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
         });
         Kokkos::fence();
     }
