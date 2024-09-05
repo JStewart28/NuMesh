@@ -362,14 +362,19 @@ class Mesh
         Kokkos::deep_copy(hv_tmp, _vef_gid_start);
         Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
         Kokkos::parallel_for("assign_edges13_to_faces", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
-            int f_gid, eX_lid;
+            int f_gid, eX_lid, eX_gid;
             f_gid = f_lid + _vef_gid_start_d(rank, 2);
+            eX_gid = f_egids(f_lid, 0);
 
             // Where this edge is the first edge, set its face1
+            eX_gid = f_egids(f_lid, 0);
+            if (eX_gid == 16) printf("R%d: e1_gid: %d, f_gid: %d\n", rank, eX_gid, f_gid);
             eX_lid = f_egids(f_lid, 0) - _vef_gid_start_d(rank, 1);
             e_fids(eX_lid, 0) = f_gid;
-
+            
             // Where this edge is the third edge, set its face2
+            eX_gid = f_egids(f_lid, 2);
+            if (eX_gid == 16) printf("R%d: e1_gid: %d, f_gid: %d\n", rank, eX_gid, f_gid);
             eX_lid = f_egids(f_lid, 2) - _vef_gid_start_d(rank, 1);
             e_fids(eX_lid, 1) = f_gid;
         });
@@ -379,18 +384,17 @@ class Mesh
         int owned_edges = _owned_edges;
         // printf("R%d: o: %d, `g: %d\n", rank, owned_edges, ghosted_edges);
         // printEdges();
-
         Kokkos::parallel_for("assign_edge2", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
             int f_gid, e2_gid, e2_lid;
             f_gid = f_lid + _vef_gid_start_d(rank, 2);
             e2_gid = f_egids(f_lid, 1);
             e2_lid = e2_gid - _vef_gid_start_d(rank, 1);
-            //if (rank == 2) printf("R%d f_gid %d, e2_gid %d, e min/max: (%d, %d)\n", rank, f_gid, e2_gid, _vef_gid_start_d(rank, 1),_vef_gid_start_d(rank+1, 1));
+            //if (e2_gid == 0) printf("R%d f_gid %d, e2_gid %d, e min/max: (%d, %d)\n", rank, f_gid, e2_gid, _vef_gid_start_d(rank, 1),_vef_gid_start_d(rank+1, 1));
 
             // Check if edge owned locally
             if ((e2_lid >= 0) && (e2_lid < owned_edges))
             {
-                //if (rank == 2) printf("R%d: acessing e_fids(%d)\n", rank, e2_lid);
+                //printf("R%d: acessing e_fids(%d)\n", rank, e2_lid);
                 // Check if the first face is set; then this f_gid is the second face
                 if (e_fids(e2_lid, 0) != -1) e_fids(e2_lid, 1) = f_gid;
                 // Otherwise check if the second face is set; then this f_gid is the first face
@@ -414,7 +418,7 @@ class Mesh
             }
         });
         // Any edge-face mappings that are -1 at this point are for faces not owned by the process
-        //printEdges();
+        printEdges();
     }
 
     /**

@@ -186,10 +186,10 @@ class Communicator
         // }
 
         // Put the ghosted edges in the local edge aosoa
-        *ghosted_count = recv_edges.extent(0);
-        array.resize(*owned_count+*ghosted_count);
-        int owned_count1 = *owned_count;
-        Kokkos::parallel_for("add_ghosted_edges", Kokkos::RangePolicy<execution_space>(0, *ghosted_count), KOKKOS_LAMBDA(const int i) {
+        ghosted_count = recv_edges.extent(0);
+        array.resize(owned_count+ghosted_count);
+        int owned_count1 = owned_count;
+        Kokkos::parallel_for("add_ghosted_edges", Kokkos::RangePolicy<execution_space>(0, ghosted_count), KOKKOS_LAMBDA(const int i) {
             int lid = i+owned_count1;
             array.setTuple(lid, recv_edges(i));
         });
