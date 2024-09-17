@@ -8,7 +8,7 @@
 
 #include <mpi.h>
 
-#include <NuMesh_Core.hpp>
+#include <NuMesh_Mesh.hpp>
 
 #include <limits>
 
