@@ -14,7 +14,7 @@ target_link_libraries( build_from_grid PRIVATE ${MPI_Advance_LIBRARY} MPI::MPI_C
 # Finally, we also need to tell CMAKE where the library header is. 
 target_include_directories( build_from_grid PRIVATE ${MPI_Advance_INCLUDE_DIR} )
 
-target_link_libraries( build_from_grid PRIVATE hpctests )
+target_link_libraries( build_from_grid PRIVATE numesh )
 
 
 install(TARGETS build_from_grid DESTINATION ${CMAKE_INSTALL_BINDIR})
