@@ -7,12 +7,22 @@
 
 #include <NuMesh_Mesh.hpp>
 
+#include <cmath>
+#include <memory>
+#include <type_traits>
+#include <vector>
+
 namespace NuMesh
 {
 namespace Array
 {
 
 // Design ideas for the NuMesh::Array taken from Cabana::Grid:Array
+
+/* ArrayOp functions copied directly from Cabana::Grid::Array - can't
+ * use Cabana::Grid::ArrayOp functions because they either type check
+ * for Cabana::Grid::Arrays or take different tags (i.e. Node versus Vertex)
+ */ 
 
 //---------------------------------------------------------------------------//
 /*!
@@ -157,6 +167,26 @@ class ArrayLayout
     // Used to keep ArrayLayout in sync with mesh refinements
     int _version;
     int _owned_vertices, _owned_edges, _owned_faces, _ghost_vertices, _ghost_edges, _ghost_faces;
+};
+
+//! Array static type checker.
+template <class>
+struct is_array_layout : public std::false_type
+{
+};
+
+//! Array static type checker.
+template <class EntityType, class MeshType>
+struct is_array_layout<ArrayLayout<EntityType, MeshType>>
+    : public std::true_type
+{
+};
+
+//! Array static type checker.
+template <class EntityType, class MeshType>
+struct is_array_layout<const ArrayLayout<EntityType, MeshType>>
+    : public std::true_type
+{
 };
 
 //---------------------------------------------------------------------------//
@@ -321,10 +351,6 @@ createArray( const std::string& label,
         label, layout );
 }
 
-
-
-} // end namespace Array
-
 //---------------------------------------------------------------------------//
 // Array operations.
 //---------------------------------------------------------------------------//
@@ -338,7 +364,105 @@ clone( const Array<Scalar, EntityType, MeshType, Params...>& array )
     return createArray<Scalar, Params...>( array.label(), array.layout() );
 }
 
+//---------------------------------------------------------------------------//
+/*!
+  \brief Copy one array into another over the designated decomposition. A <- B
+  \param a The array to which the data will be copied.
+  \param b The array from which the data will be copied.
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+template <class Array_t, class DecompositionTag>
+void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "Cabana::Grid::Array required" );
+    using entity_type = typename Array_t::entity_type;
+    auto a_space = a.layout()->indexSpace( tag, entity_type(), Local() );
+    auto b_space = b.layout()->indexSpace( tag, entity_type(), Local() );
+    if ( a_space != b_space )
+        throw std::logic_error( "Incompatible index spaces" );
+    auto subview_a = Cabana::Grid::createSubview( a.view(), a_space );
+    auto subview_b = Cabana::Grid::createSubview( b.view(), b_space );
+    Kokkos::deep_copy( subview_a, subview_b );
+}
+
+//---------------------------------------------------------------------------//
+/*!
+  \brief Clone an array and copy its contents into the clone.
+  \param array The array to clone.
+  \param tag The tag for the decomposition over which to perform the copy.
+*/
+template <class Array_t, class DecompositionTag>
+std::shared_ptr<Array_t> cloneCopy( const Array_t& array, DecompositionTag tag )
+{
+    auto cln = clone( array );
+    copy( *cln, array, tag );
+    return cln;
+}
+
+/*!
+  \brief Update two vectors such that a = alpha * a + beta * b.
+  \param a The array that will be updated.
+  \param alpha The value to scale a by.
+  \param b The array to add to a.
+  \param beta The value to scale b by.
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+template <class Array_t, class DecompositionTag>
+std::enable_if_t<1 == Array_t::num_space_dim, void>
+update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
+        const typename Array_t::value_type beta, DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using entity_type = typename Array_t::entity_type;
+    auto a_view = a.view();
+    auto b_view = b.view();
+    Kokkos::parallel_for(
+        "ArrayOp::update",
+        createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
+                               typename Array_t::execution_space() ),
+        KOKKOS_LAMBDA( const long i, const long j ) {
+            a_view( i, j ) =
+                alpha * a_view( i, j ) + beta * b_view( i, j );
+        } );
+}
+
+/*!
+  \brief Update three vectors such that a = alpha * a + beta * b + gamma * c.
+  \param a The array that will be updated.
+  \param alpha The value to scale a by.
+  \param b The first array to add to a.
+  \param beta The value to scale b by.
+  \param c The second array to add to a.
+  \param gamma The value to scale b by.
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+template <class Array_t, class DecompositionTag>
+std::enable_if_t<2 == Array_t::num_space_dim, void>
+update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
+        const typename Array_t::value_type beta, const Array_t& c,
+        const typename Array_t::value_type gamma, DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using entity_type = typename Array_t::entity_type;
+    auto a_view = a.view();
+    auto b_view = b.view();
+    auto c_view = c.view();
+    Kokkos::parallel_for(
+        "ArrayOp::update",
+        createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
+                               typename Array_t::execution_space() ),
+        KOKKOS_LAMBDA( const int i, const int j ) {
+            a_view( i, j ) = alpha * a_view( i, j ) +
+                                beta * b_view( i, j ) +
+                                gamma * c_view( i, j );
+        } );
+}
+
+
+
 } // end neamspace ArrayOp
+
+} // end namespace Array
 
 } // end namespace NuMesh
 
