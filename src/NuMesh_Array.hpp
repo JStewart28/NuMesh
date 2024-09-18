@@ -45,6 +45,7 @@ class ArrayLayout
         : _mesh( mesh )
         , _dofs_per_entity( dofs_per_entity )
     {
+        update();
     }
 
     //! Get the local grid over which this layout is defined.
@@ -55,20 +56,107 @@ class ArrayLayout
 
     //! Get the index space of the array elements in the given
     //! decomposition.
-    template <class DecompositionTag, class IndexType>
+    // template <class DecompositionTag, class IndexType>
+    // Cabana::Grid::IndexSpace<num_space_dim + 1>
+    // indexSpace( DecompositionTag decomposition_tag, IndexType index_type ) const
+    // {
+    //     return Cabana::Grid::appendDimension( _mesh->indexSpace( decomposition_tag,
+    //                                                      EntityType(),
+    //                                                      index_type ),
+    //                             _dofs_per_entity );
+    // }
+
+        //---------------------------------------------------------------------------//
+    // Get the local index space of the owned vertices.
     Cabana::Grid::IndexSpace<num_space_dim + 1>
-    indexSpace( DecompositionTag decomposition_tag, IndexType index_type ) const
+    indexSpace( Own, Vertex, Local ) const
     {
-        return Cabana::Grid::appendDimension( _mesh->indexSpace( decomposition_tag,
-                                                         EntityType(),
-                                                         index_type ),
-                                _dofs_per_entity );
+        // Compute the size.
+        std::array<long, 1> size;
+        size[0] = _owned_vertices;
+        auto is = Cabana::Grid::IndexSpace<1>( size );
+        return Cabana::Grid::appendDimension( is, _dofs_per_entity );
+    }
+
+    //---------------------------------------------------------------------------//
+    // Get the local index space of the owned+ghosted vertices.
+    Cabana::Grid::IndexSpace<num_space_dim + 1>
+    indexSpace( Ghost, Vertex, Local ) const
+    {
+        // Compute the lower bound.
+        std::array<long, 1> min;
+        min[0] = 0;
+
+        // Compute the upper bound.
+        std::array<long, 1> max;
+        max[0] = _owned_vertices + _ghost_vertices;
+
+        auto is = Cabana::Grid::IndexSpace<1>( min, max );
+        return Cabana::Grid::appendDimension( is, _dofs_per_entity );
+    }
+
+    //---------------------------------------------------------------------------//
+    // Get the local index space of the owned edges.
+    Cabana::Grid::IndexSpace<num_space_dim + 1>
+    indexSpace( Own, Edge, Local ) const
+    {
+        // Compute the size.
+        std::array<long, 1> size;
+        size[0] = _owned_edges;
+        auto is = Cabana::Grid::IndexSpace<1>( size );
+        return Cabana::Grid::appendDimension( is, _dofs_per_entity );
+    }
+
+    //---------------------------------------------------------------------------//
+    // Get the local index space of the owned+ghosted edges.
+    Cabana::Grid::IndexSpace<num_space_dim + 1>
+    indexSpace( Ghost, Edge, Local ) const
+    {
+        // Compute the lower bound.
+        std::array<long, 1> min;
+        min[0] = 0;
+
+        // Compute the upper bound.
+        std::array<long, 1> max;
+        max[0] = _owned_edges + _ghost_edges;
+
+        auto is = Cabana::Grid::IndexSpace<1>( min, max );
+        return Cabana::Grid::appendDimension( is, _dofs_per_entity );
+    }
+
+    //---------------------------------------------------------------------------//
+    // Get the local index space of the owned faces.
+    Cabana::Grid::IndexSpace<num_space_dim + 1>
+    indexSpace( Own, Face, Local ) const
+    {
+        // Compute the size.
+        std::array<long, 1> size;
+        size[0] = _owned_faces;
+        auto is = Cabana::Grid::IndexSpace<1>( size );
+        return Cabana::Grid::appendDimension( is, _dofs_per_entity );
+    }
+
+    int version() { return _version; }
+
+    /**
+     * Update to the latest owned and ghost counts from the mesh
+     */
+    void update()
+    {
+        _version = _mesh->version();
+        auto counts = _mesh->get_owned_and_ghost_counts();
+        _owned_vertices = counts[0]; _owned_edges = counts[1]; _owned_faces = counts[2];
+        _ghost_vertices = counts[3]; _ghost_edges= counts[4]; _ghost_faces = counts[5];
     }
 
 
   private:
     std::shared_ptr<mesh_type> _mesh;
     int _dofs_per_entity;
+
+    // Used to keep ArrayLayout in sync with mesh refinements
+    int _version;
+    int _owned_vertices, _owned_edges, _owned_faces, _ghost_vertices, _ghost_edges, _ghost_faces;
 };
 
 //---------------------------------------------------------------------------//
@@ -139,8 +227,9 @@ class Array
            const std::shared_ptr<array_layout>& layout )
         : _layout( layout )
         , _data( Cabana::Grid::createView<value_type, Params...>(
-              label, layout->indexSpace( Ghost(), Local() ) ) )
+              label, layout->indexSpace( Ghost(), entity_type(), Local() ) ) )
     {
+        _version = _layout->version();
     }
 
     /*!
@@ -169,14 +258,20 @@ class Array
     //! Get the array label.
     std::string label() const { return _data.label(); }
 
+    //! Get the version of the array
+    int version() { return _version; }
+
   private:
     std::shared_ptr<array_layout> _layout;
     view_type _data;
 
+    // The ArrayLayout version, which points to the mesh version, this array is sized for
+    int _version;
+
   public:
     //! Subview type.
     using subview_type = decltype( createSubview(
-        _data, _layout->indexSpace( Ghost(), Local() ) ) );
+        _data, _layout->indexSpace( Ghost(), entity_type(), Local() ) ) );
     //! Subview array layout type.
     using subview_layout = typename subview_type::array_layout;
     //! Subview memory traits.
@@ -184,6 +279,27 @@ class Array
     //! Subarray type.
     using subarray_type = Array<Scalar, EntityType, MeshType, subview_layout,
                                 memory_space, subview_memory_traits>;
+};
+
+//---------------------------------------------------------------------------//
+// Static type checker.
+//---------------------------------------------------------------------------//
+// Static type checker.
+template <class>
+struct is_array : public std::false_type
+{
+};
+
+template <class Scalar, class EntityType, class MeshType, class... Params>
+struct is_array<Array<Scalar, EntityType, MeshType, Params...>>
+    : public std::true_type
+{
+};
+
+template <class Scalar, class EntityType, class MeshType, class... Params>
+struct is_array<const Array<Scalar, EntityType, MeshType, Params...>>
+    : public std::true_type
+{
 };
 
 //---------------------------------------------------------------------------//
@@ -208,6 +324,21 @@ createArray( const std::string& label,
 
 
 } // end namespace Array
+
+//---------------------------------------------------------------------------//
+// Array operations.
+//---------------------------------------------------------------------------//
+namespace ArrayOp
+{
+
+template <class Scalar, class... Params, class EntityType, class MeshType>
+std::shared_ptr<Array<Scalar, EntityType, MeshType, Params...>>
+clone( const Array<Scalar, EntityType, MeshType, Params...>& array )
+{
+    return createArray<Scalar, Params...>( array.label(), array.layout() );
+}
+
+} // end neamspace ArrayOp
 
 } // end namespace NuMesh
 

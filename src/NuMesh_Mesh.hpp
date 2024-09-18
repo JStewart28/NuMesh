@@ -41,17 +41,6 @@
 namespace NuMesh
 {
 
-// template <std::size_t Size, class Scalar>
-// auto vectorToArray( std::vector<Scalar> vector )
-// {
-//     Kokkos::Array<Scalar, Size> array;
-//     for ( std::size_t i = 0; i < Size; ++i )
-//         array[i] = vector[i];
-//     return array;
-// }
-
-
-
 //---------------------------------------------------------------------------//
 /*!
   \class Mesh
@@ -105,9 +94,10 @@ class Mesh
     {
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
+        _version = 0;
 
         _owned_vertices = -1, _owned_edges = -1, _owned_faces = -1;
-        _ghost_vertices = 0, _ghost_edges = 0;
+        _ghost_vertices = 0, _ghost_edges = 0, _ghost_faces = 0;
         _communicator = createCommunicator<ExecutionSpace, MemorySpace>(_comm);
     };
 
@@ -517,7 +507,15 @@ class Mesh
         return Cabana::Grid::IndexSpace<1>( size );
     }
 
-    
+    std::vector<int> get_owned_and_ghost_counts() const
+    {
+        std::vector<int> out(6);
+        out = {_owned_vertices, _owned_edges, _owned_faces,
+               _ghost_vertices, _ghost_edges, _ghost_faces};
+        return out;
+    }
+
+    int version() {return _version;}
 
     /**
      * After faces have been created, map each edge to its two faces.
@@ -904,11 +902,14 @@ class Mesh
         v_array_type _v_array;
         e_array_type _e_array;
         f_array_type _f_array;
-        int _owned_vertices, _owned_edges, _owned_faces, _ghost_vertices, _ghost_edges;
+        int _owned_vertices, _owned_edges, _owned_faces, _ghost_vertices, _ghost_edges, _ghost_faces;
 
         // How many vertices, edges, and faces each proces owns
         // Index = rank
         Kokkos::View<int*[3], Kokkos::HostSpace> _vef_gid_start;
+
+        // Version number to keep mesh in sync with other objects. Updates on mesh refinement
+        int _version;
         
 
 };
