@@ -72,9 +72,13 @@ int main( int argc, char* argv[] )
 
     auto edge_triple_layout = NuMesh::Array::createArrayLayout(nu_mesh, 3, NuMesh::Vertex());
     auto edge_triple_array = NuMesh::Array::createArray<double, memory_space>("edge_triple_array", edge_triple_layout);
+    auto extent0 = edge_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(0);
+    auto extent1 = edge_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(1);
+    printf("extents: (%d, %d)\n", extent0, extent1);
     auto edge_view = edge_triple_array->view();
-    printf("Edge view extents: (%d, %d)\n", edge_view.extent(0), edge_view.extent(1));
+    //printf("Edge view extents: (%d, %d)\n", edge_view.extent(0), edge_view.extent(1));
     auto copy = NuMesh::Array::ArrayOp::cloneCopy(*edge_triple_array, NuMesh::Own());
+    NuMesh::Array::ArrayOp::assign(*copy, 1.0, NuMesh::Own());
     
     // auto node_triple_layout =
     //     Cabana::Grid::createArrayLayout( pm.mesh().localGrid(), 3, Cabana::Grid::Node() );

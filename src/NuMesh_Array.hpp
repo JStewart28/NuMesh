@@ -410,6 +410,24 @@ std::shared_ptr<Array_t> cloneCopy( const Array_t& array, DecompositionTag tag )
     return cln;
 }
 
+//---------------------------------------------------------------------------//
+/*!
+  \brief Assign a scalar value to every element of an array.
+  \param array The array to assign the value to.
+  \param alpha The value to assign to the array.
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+template <class Array_t, class DecompositionTag>
+void assign( Array_t& array, const typename Array_t::value_type alpha,
+             DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using entity_t = typename Array_t::entity_type;
+    auto subview = createSubview( array.view(),
+                                  array.layout()->indexSpace( tag, entity_t(), Local() ) );
+    Kokkos::deep_copy( subview, alpha );
+}
+
 /*!
   \brief Update two vectors such that a = alpha * a + beta * b.
   \param a The array that will be updated.
