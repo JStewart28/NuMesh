@@ -146,6 +146,17 @@ class ArrayLayout
         return Cabana::Grid::appendDimension( is, _dofs_per_entity );
     }
 
+        // Get the local index space of the owned+ghosted faces.
+    Cabana::Grid::IndexSpace<num_space_dim + 1>
+    indexSpace( Ghost, Face, Local ) const
+    {
+        // Compute the size.
+        std::array<long, 1> size;
+        size[0] = _owned_faces;
+        auto is = Cabana::Grid::IndexSpace<1>( size );
+        return Cabana::Grid::appendDimension( is, _dofs_per_entity );
+    }
+
     int version() { return _version; }
 
     /**
