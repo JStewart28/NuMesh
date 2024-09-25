@@ -1,1 +1,1 @@
-cmake -DMPI_Advance_PREFIX=~/installed-libraries/mpi_advance/ ..
+cmake -DMPI_Advance_PREFIX=~/installed-libraries/mpi_advance/ -DCMAKE_INSTALL_PREFIX:PATH=~/installed-libraries/numesh/ ..
