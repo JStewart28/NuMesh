@@ -6,6 +6,95 @@
 
 #include <mpi.h>
 
+enum InitialConditionModel {IC_COS = 0, IC_SECH2, IC_GAUSSIAN, IC_RANDOM, IC_FILE};
+enum BoundaryType {PERIODIC = 0, FREE = 1};
+
+// Initialize field to a constant quantity and velocity
+struct MeshInitFunc
+{
+    // Initialize Variables
+
+    MeshInitFunc( std::array<double, 6> box, enum InitialConditionModel i,
+                  double t, double m, double v, double p, 
+                  const std::array<int, 2> nodes, enum NuMesh::BoundaryType boundary )
+        : _i(i)
+        , _t( t )
+        , _m( m )
+        , _v( v)
+        , _p( p )
+        , _b( boundary )
+    {
+	    _ncells[0] = nodes[0] - 1;
+        _ncells[1] = nodes[1] - 1;
+
+        _dx = (box[3] - box[0]) / _ncells[0];
+        _dy = (box[4] - box[1]) / _ncells[1]; 
+
+
+    };
+
+    template <class RandNumGenType>
+    KOKKOS_INLINE_FUNCTION
+    bool operator()( Cabana::Grid::Node, NuMesh::Vertex,
+                     RandNumGenType random_pool,
+                     [[maybe_unused]] const int index[2],
+                     const double coord[2],
+                     double &z1, double &z2, double &z3) const
+    {
+        double lcoord[2];
+        /* Compute the physical position of the interface from its global
+         * coordinate in mesh space */
+        for (int i = 0; i < 2; i++) {
+            lcoord[i] = coord[i];
+            if (_b == BoundaryType::FREE && (_ncells[i] % 2 == 1) ) {
+                lcoord[i] += 0.5;
+            }
+        }
+        z1 = _dx * lcoord[0];
+        z2 = _dy * lcoord[1];
+
+        // We don't currently support tilting the initial interface
+
+        /* Need to initialize these values here to avoid "jump to case label "case IC_FILE:"
+         * crosses initialization of ‘double gaussian’, etc." errors */
+        auto generator = random_pool.get_state();
+        double rand_num = generator.drand(-1.0, 1.0);
+        double mean = 0.0;
+        double std_dev = 1.0;
+        double gaussian = (1 / (std_dev * Kokkos::sqrt(2 * Kokkos::numbers::pi_v<double>))) *
+            Kokkos::exp(-0.5 * Kokkos::pow(((rand_num - mean) / std_dev), 2));
+        switch (_i) {
+        case IC_COS:
+            z3 = _m * cos(z1 * (2 * M_PI / _p)) * cos(z2 * (2 * M_PI / _p));
+            break;
+        case IC_SECH2:
+            z3 = _m * pow(1.0 / cosh(_p * (z1 * z1 + z2 * z2)), 2);
+            break;
+        case IC_RANDOM:
+            z3 = _m * (2*rand_num - 1.0);
+            break;
+        case IC_GAUSSIAN:
+            /* The built-in C++ std::normal_distribution<double> doesn't
+             * work here, so coding the gaussian distribution itself.
+             */
+            z3 = _m * gaussian;
+            break;
+        case IC_FILE:
+            break;
+        }
+        
+        random_pool.free_state(generator);
+
+        return true;
+    };
+
+    enum InitialConditionModel _i;
+    double _t, _m, _v, _p;
+    Kokkos::Array<int, 3> _ncells;
+    double _dx, _dy;
+    enum NuMesh::BoundaryType _b;
+};
+
 int main( int argc, char* argv[] )
 {
     using execution_space = Kokkos::DefaultHostExecutionSpace;
@@ -26,16 +115,20 @@ int main( int argc, char* argv[] )
 
     // Convert the first command-line argument to an integer
     int mesh_size = 8;
-    bool periodic = false;
+    enum InitialConditionModel initial_condition;
+    enum BoundaryType boundary_type;
     try {
         mesh_size = std::stoi(argv[1]);  // Convert argument to integer
-        periodic = std::stoi(argv[2]);
+        boundary_type = !(std::stoi(argv[2]));
+        initial_condition = std::stoi(argv[3]);
     } catch (const std::invalid_argument& e) {
+        std::cerr << "Usage: ./build_from_grid [mesh_size] [periodic] [initial_condition]" std::endl;
         std::cerr << "Invalid argument for mesh_size: " << argv[1] << std::endl;
         Kokkos::finalize(); // Finalize Kokkos
         MPI_Finalize();     // Finalize MPI
         return 1;  // Exit with error code
     } catch (const std::out_of_range& e) {
+        std::cerr << "Usage: ./build_from_grid [mesh_size] [periodic] [initial_condition]" std::endl;
         std::cerr << "Argument out of range for mesh_size: " << argv[1] << std::endl;
         Kokkos::finalize(); // Finalize Kokkos
         MPI_Finalize();     // Finalize MPI
@@ -50,10 +143,20 @@ int main( int argc, char* argv[] )
     MPI_Comm_rank( MPI_COMM_WORLD, &rank );      // My Rank
 
     std::array<int, 2> global_num_cell = { mesh_size, mesh_size };
-    std::array<double, 2> global_low_corner = { -1.0, -1.0 };
-    std::array<double, 2> global_high_corner = { 1.0, 1.0 };
-    std::array<bool, 2> is_dim_periodic = { periodic, periodic };
+    std::array<double, 3> global_low_corner = { -1.0, -1.0, -1.0 };
+    std::array<double, 3> global_high_corner = { 1.0, 1.0, 1.0 };
+    std::array<double, 6> global_bounding_box = {-1.0, -1.0, -1.0, 1.0, 1.0, 1.0};
+    std::array<bool, 2> is_dim_periodic = { !(boundary_type), !(boundary_type) };
     Cabana::Grid::DimBlockPartitioner<2> partitioner;
+    double tilt = 0.0;
+    double magnitude = 0.05;
+    double variation = 0.00;
+    double period = 1.0;
+    double num_nodes[2] = { 128, 128 };
+
+    MeshInitFunc initializer( global_bounding_box, initial_condition,
+                              tilt, magnitude, variation, period,
+                              num_nodes, boundary_type );
 
 
     auto nu_mesh = NuMesh::createMesh<execution_space, memory_space>(MPI_COMM_WORLD);

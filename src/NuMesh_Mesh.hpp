@@ -128,10 +128,8 @@ class Mesh
         _vef_gid_start(0, 2) = 0;
     }
 
-    void initialize_ve(const std::array<double, 2>& global_low_corner,
-            const std::array<double, 2>& global_high_corner,
-            const std::array<int, 2>& num_nodes,
-            const std::array<bool, 2>& periodic,
+    template <class InitFunctor>
+    void initialize_ve(const InitFunctor init_functor,
             const Cabana::Grid::BlockPartitioner<2>& partitioner,
             MPI_Comm comm)
     {

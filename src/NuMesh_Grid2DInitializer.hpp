@@ -38,8 +38,8 @@ class Grid2DInitializer
     using node_view = Kokkos::View<double***, device_type>;
     using halo_type = Cabana::Grid::Halo<MemorySpace>;
 
-    Grid2DInitializer( const std::array<double, 2>& global_low_corner,
-            const std::array<double, 2>& global_high_corner,
+    Grid2DInitializer( const std::array<double, 3>& global_low_corner,
+            const std::array<double, 3>& global_high_corner,
             const std::array<int, 2>& num_nodes,
             const std::array<bool, 2>& periodic,
             const Cabana::Grid::BlockPartitioner<2>& partitioner,
@@ -69,9 +69,46 @@ class Grid2DInitializer
 
     ~Grid2DInitializer() {}
 
-    // XXX - Add position initialization functor?
-    template <class v_array_type, class e_array_type>
-    void from_grid(v_array_type *v_array, e_array_type *e_array, int *owned_vertices, int *owned_edges, int *owned_faces)
+    /**
+     * Initializes state values in the cells
+     * Specific for structured grids
+     * @param create_functor Initialization function
+     **/
+    template <class InitFunctor, class Array>
+    void initialize( const InitFunctor& create_functor, Array z )
+    {
+        // Get Local Grid and Local Mesh
+        auto local_grid = *( _surface_mesh.localGrid() );
+        auto local_mesh = Cabana::Grid::createLocalMesh<device_type>( local_grid );
+
+	    // Get State Arrays
+        auto z = get( Field::Position() )->array(Node())->view();
+        auto w = get( Field::Vorticity() )->array(Node())->view();
+
+        // Loop Over All Owned Nodes ( i, j )
+        auto own_nodes = local_grid.indexSpace( Cabana::Grid::Own(), Cabana::Grid::Node(),
+                                                Cabana::Grid::Local() );
+        
+        int seed = (int) (10000000 * _period);
+        Kokkos::Random_XorShift64_Pool<mem_space> random_pool(seed);
+
+        Kokkos::parallel_for(
+            "Initialize Cells`",
+            Cabana::Grid::createExecutionPolicy( own_nodes, ExecutionSpace() ),
+            KOKKOS_LAMBDA( const int i, const int j ) {
+                int index[2] = { i, j };
+                double coords[2];
+                local_mesh.coordinates( Cabana::Grid::Node(), index, coords);
+
+                create_functor( Cabana::Grid::Node(), Field::Position(), random_pool, index, 
+                                coords, z(i, j, 0), z(i, j, 1), z(i, j, 2) );
+                create_functor( Cabana::Grid::Node(), Field::Vorticity(), index, 
+                                coords, w(i, j, 0), w(i, j, 1) );
+            } );
+    };
+
+    template <class v_array_type, class e_array_type, class InitFunc>
+    void from_grid(InitFunc& create_functor, v_array_type *v_array, e_array_type *e_array, int *owned_vertices, int *owned_edges, int *owned_faces)
     {
         auto own_nodes = _local_grid->indexSpace( Cabana::Grid::Own(), Cabana::Grid::Node(),
                                                     Cabana::Grid::Local() );
@@ -411,7 +448,7 @@ class Grid2DInitializer
     }
 
   private:
-    std::array<double, 2> _global_low_corner, _global_high_corner;
+    std::array<double, 3> _global_low_corner, _global_high_corner;
     std::array<int, 2> _global_num_cell;
     const std::array<bool, 2> _periodic;
     std::shared_ptr<Cabana::Grid::LocalGrid<mesh_type>> _local_grid;
@@ -425,8 +462,8 @@ class Grid2DInitializer
  *  Return a shared pointer to a createGrid2DInitializer object
  */
 template <class ExecutionSpace, class MemorySpace>
-auto createGrid2DInitializer( const std::array<double, 2>& global_low_corner,
-            const std::array<double, 2>& global_high_corner,
+auto createGrid2DInitializer( const std::array<double, 3>& global_low_corner,
+            const std::array<double, 3>& global_high_corner,
             const std::array<int, 2>& num_nodes,
             const std::array<bool, 2>& periodic,
             const Cabana::Grid::BlockPartitioner<2>& partitioner,
