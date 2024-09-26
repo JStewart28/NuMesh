@@ -33,6 +33,7 @@ class Communicator
 
         MPIX_Info_init(&_xinfo);
         MPIX_Comm_init(&_xcomm, _comm);
+        MPIX_Comm_topo_init(_xcomm);
     }
 
     ~Communicator()
@@ -52,7 +53,6 @@ class Communicator
         Kokkos::View<int*, device_type> sendcounts_unpacked("sendcounts_unpacked", _comm_size);   
         // Parallel reduction to count non -1 values in each row
         int sendvals_num_cols = sendvals_unpacked.extent(1);
-        int rank = _rank;
         Kokkos::parallel_for("count_sends", Kokkos::RangePolicy<execution_space>(0, _comm_size), KOKKOS_LAMBDA(const int i) {
             int count = 0;
             for (int j = 0; j < sendvals_num_cols; j++) {
@@ -213,6 +213,8 @@ class Communicator
 
     int _rank, _comm_size;
 
+    // Used to keep communicator in sync with mesh refinements
+    int _version;
 };
 
 /**

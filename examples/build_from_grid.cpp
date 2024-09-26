@@ -64,6 +64,34 @@ int main( int argc, char* argv[] )
     nu_mesh->initialize_edges();
     nu_mesh->gather_edges();
     nu_mesh->assign_ghost_edges_to_faces();
+
+    auto index_space_o = nu_mesh->indexSpace(NuMesh::Own(), NuMesh::Vertex(), NuMesh::Local());
+    auto index_space_g = nu_mesh->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local());
+    printf("owned edges: (%d, %d)\n", index_space_o.min(0), index_space_o.max(0));
+    printf("ghost edges: (%d, %d)\n", index_space_g.min(0), index_space_g.max(0));
+
+    auto edge_triple_layout = NuMesh::Array::createArrayLayout(nu_mesh, 3, NuMesh::Vertex());
+    auto edge_triple_array = NuMesh::Array::createArray<double, memory_space>("edge_triple_array", edge_triple_layout);
+    auto extent0 = edge_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(0);
+    auto extent1 = edge_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(1);
+    printf("extents: (%d, %d)\n", extent0, extent1);
+    auto edge_view = edge_triple_array->view();
+    //printf("Edge view extents: (%d, %d)\n", edge_view.extent(0), edge_view.extent(1));
+    auto copy = NuMesh::Array::ArrayOp::cloneCopy(*edge_triple_array, NuMesh::Own());
+    NuMesh::Array::ArrayOp::assign(*copy, 1.0, NuMesh::Own());
+    
+    // auto node_triple_layout =
+    //     Cabana::Grid::createArrayLayout( pm.mesh().localGrid(), 3, Cabana::Grid::Node() );
+    // auto node_pair_layout =
+    //     Cabana::Grid::createArrayLayout( pm.mesh().localGrid(), 2, Cabana::Grid::Node() );
+
+    // _zdot = Cabana::Grid::createArray<double, mem_space>("velocity", 
+    //                                                 node_triple_layout);
+    // _wdot = Cabana::Grid::createArray<double, mem_space>("vorticity derivative",
+    //                                                 node_pair_layout);
+
+
+
     //nu_mesh->assign_edges_to_faces_orig();
     // int ranks_in_xy = (int) floor(sqrt((float) comm_size));
     // if (ranks_in_xy*ranks_in_xy != comm_size) 
