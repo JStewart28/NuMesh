@@ -7,7 +7,6 @@
 #include <mpi.h>
 
 enum InitialConditionModel {IC_COS = 0, IC_SECH2, IC_GAUSSIAN, IC_RANDOM, IC_FILE};
-enum BoundaryType {PERIODIC = 0, FREE = 1};
 
 // Initialize field to a constant quantity and velocity
 struct MeshInitFunc
@@ -46,7 +45,7 @@ struct MeshInitFunc
          * coordinate in mesh space */
         for (int i = 0; i < 2; i++) {
             lcoord[i] = coord[i];
-            if (_b == BoundaryType::FREE && (_ncells[i] % 2 == 1) ) {
+            if (_b == NuMesh::BoundaryType::FREE && (_ncells[i] % 2 == 1) ) {
                 lcoord[i] += 0.5;
             }
         }
@@ -116,19 +115,26 @@ int main( int argc, char* argv[] )
     // Convert the first command-line argument to an integer
     int mesh_size = 8;
     enum InitialConditionModel initial_condition;
-    enum BoundaryType boundary_type;
+    enum NuMesh::BoundaryType boundary_type;
     try {
         mesh_size = std::stoi(argv[1]);  // Convert argument to integer
-        boundary_type = !(std::stoi(argv[2]));
-        initial_condition = std::stoi(argv[3]);
+        int val = std::stoi(argv[2]);
+        if (!val) boundary_type = NuMesh::BoundaryType::PERIODIC;
+        else boundary_type = NuMesh::BoundaryType::FREE;
+        int ic = std::stoi(argv[3]);
+        if (ic == 0) initial_condition = InitialConditionModel::IC_COS;
+        else if (ic == 1) initial_condition = InitialConditionModel::IC_SECH2;
+        else if (ic == 2) initial_condition = InitialConditionModel::IC_GAUSSIAN;
+        else if (ic == 3) initial_condition = InitialConditionModel::IC_RANDOM;
+        else initial_condition = InitialConditionModel::IC_FILE;
     } catch (const std::invalid_argument& e) {
-        std::cerr << "Usage: ./build_from_grid [mesh_size] [periodic] [initial_condition]" std::endl;
+        std::cerr << "Usage: ./build_from_grid [mesh_size] [periodic] [initial_condition]" << std::endl;
         std::cerr << "Invalid argument for mesh_size: " << argv[1] << std::endl;
         Kokkos::finalize(); // Finalize Kokkos
         MPI_Finalize();     // Finalize MPI
         return 1;  // Exit with error code
     } catch (const std::out_of_range& e) {
-        std::cerr << "Usage: ./build_from_grid [mesh_size] [periodic] [initial_condition]" std::endl;
+        std::cerr << "Usage: ./build_from_grid [mesh_size] [periodic] [initial_condition]" << std::endl;
         std::cerr << "Argument out of range for mesh_size: " << argv[1] << std::endl;
         Kokkos::finalize(); // Finalize Kokkos
         MPI_Finalize();     // Finalize MPI
@@ -143,8 +149,8 @@ int main( int argc, char* argv[] )
     MPI_Comm_rank( MPI_COMM_WORLD, &rank );      // My Rank
 
     std::array<int, 2> global_num_cell = { mesh_size, mesh_size };
-    std::array<double, 3> global_low_corner = { -1.0, -1.0, -1.0 };
-    std::array<double, 3> global_high_corner = { 1.0, 1.0, 1.0 };
+    std::array<double, 2> global_low_corner = { -1.0, -1.0 };
+    std::array<double, 2> global_high_corner = { 1.0, 1.0 };
     std::array<double, 6> global_bounding_box = {-1.0, -1.0, -1.0, 1.0, 1.0, 1.0};
     std::array<bool, 2> is_dim_periodic = { !(boundary_type), !(boundary_type) };
     Cabana::Grid::DimBlockPartitioner<2> partitioner;
@@ -152,7 +158,7 @@ int main( int argc, char* argv[] )
     double magnitude = 0.05;
     double variation = 0.00;
     double period = 1.0;
-    double num_nodes[2] = { 128, 128 };
+    std::array<int, 2> num_nodes = { 128, 128 };
 
     MeshInitFunc initializer( global_bounding_box, initial_condition,
                               tilt, magnitude, variation, period,
@@ -160,8 +166,8 @@ int main( int argc, char* argv[] )
 
 
     auto nu_mesh = NuMesh::createMesh<execution_space, memory_space>(MPI_COMM_WORLD);
-    nu_mesh->initialize_ve(global_low_corner, global_high_corner, global_num_cell,
-        is_dim_periodic, partitioner, MPI_COMM_WORLD);
+    nu_mesh->initialize_ve(initializer, global_low_corner, global_high_corner, global_num_cell,
+        is_dim_periodic, partitioner, period, MPI_COMM_WORLD);
     //nu_mesh->initialize_from_grid();
     nu_mesh->initialize_faces();
     nu_mesh->initialize_edges();
