@@ -104,7 +104,7 @@ int main( int argc, char* argv[] )
     Kokkos::initialize( argc, argv ); // Initialize Kokkos
 
     if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <mesh_size> <periodic>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " [mesh_size] [periodic] [initial_condition]" << std::endl;
         
         return 1;  // Exit with error code
     }
