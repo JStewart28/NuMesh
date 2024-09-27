@@ -103,7 +103,7 @@ class Grid2DInitializer
                 local_mesh.coordinates( Cabana::Grid::Node(), index, coords);
 
                 create_functor( Cabana::Grid::Node(), NuMesh::Vertex(), random_pool, index, 
-                                coords, z(i, j, 0), z(i, j, 1), z(i, j, 2) );
+                                coords, z_view(i, j, 0), z_view(i, j, 1), z_view(i, j, 2) );
                 // create_functor( Cabana::Grid::Node(), Field::Vorticity(), index, 
                 //                 coords, w(i, j, 0), w(i, j, 1) );
             } );
