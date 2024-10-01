@@ -128,16 +128,19 @@ class Mesh
         _vef_gid_start(0, 2) = 0;
     }
 
-    void initialize_ve(const std::array<double, 2>& global_low_corner,
-            const std::array<double, 2>& global_high_corner,
-            const std::array<int, 2>& num_nodes,
-            const std::array<bool, 2>& periodic,
-            const Cabana::Grid::BlockPartitioner<2>& partitioner,
-            MPI_Comm comm)
+    template <class InitFunctor>
+    void initialize_ve(const InitFunctor init_functor,
+                       const std::array<double, 2>& global_low_corner,
+                       const std::array<double, 2>& global_high_corner,
+                       const std::array<int, 2>& num_nodes,
+                       const std::array<bool, 2>& periodic,
+                       const Cabana::Grid::BlockPartitioner<2>& partitioner,
+                       const double period,
+                       MPI_Comm comm)
     {
         _grid2DInitializer = createGrid2DInitializer<ExecutionSpace, MemorySpace>(global_low_corner,
-            global_high_corner, num_nodes, periodic, partitioner, comm);
-        _grid2DInitializer->from_grid(&_v_array, &_e_array, &_owned_vertices, &_owned_edges, &_owned_faces);
+            global_high_corner, num_nodes, periodic, partitioner, period, comm);
+        _grid2DInitializer->from_grid(init_functor, &_v_array, &_e_array, &_owned_vertices, &_owned_edges, &_owned_faces);
         _ghost_edges = 0;
         update_vef_counts();
         // printf("R%d: owned edges: %d\n", _rank, _owned_edges);

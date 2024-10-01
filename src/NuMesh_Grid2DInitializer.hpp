@@ -9,6 +9,7 @@
 #include <mpi.h>
 
 #include <NuMesh_Mesh.hpp>
+#include <NuMesh_Types.hpp>
 
 #include <limits>
 
@@ -43,11 +44,13 @@ class Grid2DInitializer
             const std::array<int, 2>& num_nodes,
             const std::array<bool, 2>& periodic,
             const Cabana::Grid::BlockPartitioner<2>& partitioner,
+            const double period,
             MPI_Comm comm )
             : _global_low_corner( global_low_corner)
             , _global_high_corner( global_high_corner )
             , _global_num_cell( num_nodes )
             , _periodic( periodic )
+            , _period( period )
             , _comm ( comm )
     {
         MPI_Comm_rank( _comm, &_rank );
@@ -60,6 +63,7 @@ class Grid2DInitializer
         int halo_width = 0;
         _local_grid = Cabana::Grid::createLocalGrid( global_grid, halo_width );
 
+
         // Get the topology
         // _topology = Kokkos::View<int*[2], Kokkos::HostSpace>("topology", _comm_size);
         // int cart_coords[2] = {-1, -1};
@@ -69,9 +73,44 @@ class Grid2DInitializer
 
     ~Grid2DInitializer() {}
 
-    // XXX - Add position initialization functor?
-    template <class v_array_type, class e_array_type>
-    void from_grid(v_array_type *v_array, e_array_type *e_array, int *owned_vertices, int *owned_edges, int *owned_faces)
+    /**
+     * Initializes state values in the cells
+     * Specific for structured grids
+     * @param create_functor Initialization function
+     **/
+    template <class InitFunctor, class Array>
+    void initialize( const InitFunctor& create_functor, Array z )
+    {
+        // Get Local Grid and Local Mesh
+        auto local_mesh = Cabana::Grid::createLocalMesh<device_type>( *_local_grid );
+
+	    // Get State Arrays
+        auto z_view = z->view();
+
+        // Loop Over All Owned Nodes ( i, j )
+        auto own_nodes = _local_grid->indexSpace( Cabana::Grid::Own(), Cabana::Grid::Node(),
+                                                Cabana::Grid::Local() );
+        
+        int seed = (int) (10000000 * _period);
+        Kokkos::Random_XorShift64_Pool<memory_space> random_pool(seed);
+
+        Kokkos::parallel_for(
+            "Initialize Cells`",
+            Cabana::Grid::createExecutionPolicy( own_nodes, execution_space() ),
+            KOKKOS_LAMBDA( const int i, const int j ) {
+                int index[2] = { i, j };
+                double coords[2];
+                local_mesh.coordinates( Cabana::Grid::Node(), index, coords);
+
+                create_functor( Cabana::Grid::Node(), NuMesh::Vertex(), random_pool, index, 
+                                coords, z_view(i, j, 0), z_view(i, j, 1), z_view(i, j, 2) );
+                // create_functor( Cabana::Grid::Node(), Field::Vorticity(), index, 
+                //                 coords, w(i, j, 0), w(i, j, 1) );
+            } );
+    };
+
+    template <class v_array_type, class e_array_type, class InitFunc>
+    void from_grid(InitFunc& create_functor, v_array_type *v_array, e_array_type *e_array, int *owned_vertices, int *owned_edges, int *owned_faces)
     {
         auto own_nodes = _local_grid->indexSpace( Cabana::Grid::Own(), Cabana::Grid::Node(),
                                                     Cabana::Grid::Local() );
@@ -86,31 +125,8 @@ class Grid2DInitializer
         // 1. The spatial positions of the interface
         auto position = Cabana::Grid::createArray<double, memory_space>(
                 "position", node_triple_layout );
-        Cabana::Grid::ArrayOp::assign( *position, 0.0, Cabana::Grid::Ghost() );
 
-        double dx = (_global_high_corner[0] - _global_low_corner[0]) / _global_num_cell[0];
-        double dy = (_global_high_corner[1] - _global_low_corner[1]) / _global_num_cell[1]; 
-        double p = 0.25;
-        auto z = position->view();
-
-        /* Step 1: Initialize mesh values in a grid format */
-        auto policy = Cabana::Grid::createExecutionPolicy(own_nodes, execution_space());
-        Kokkos::parallel_for("Initialize Cells", policy,
-            KOKKOS_LAMBDA( const int i, const int j ) {
-                int index[2] = { i, j };
-                double coords[2];
-                local_mesh.coordinates( Cabana::Grid::Node(), index, coords);
-                
-                double z1 = dx * coords[0];
-                double z2 = dy * coords[1];
-                double z3 = 0.25 * cos(z1 * (2 * M_PI / p)) * cos(z2 * (2 * M_PI / p));
-                double za[3] = {z1, z2, z3};
-
-                for (int d = 0; d < 3; d++)
-                {
-                    z(i, j, d) = za[d];
-                }
-            });
+        initialize(create_functor, position);
         
         /* Step 2: Iterate over the 2D array to populate AoSoA of vertices */
         auto local_space = _local_grid->indexSpace(Cabana::Grid::Own(), Cabana::Grid::Node(), Cabana::Grid::Local());
@@ -157,6 +173,7 @@ class Grid2DInitializer
         // We should convert the following loops to a Cabana::simd_parallel_for at some point to get better write behavior
 
         // Initialize the vertices, edges, and faces
+        auto z = position->view();
         auto v_xyz = Cabana::slice<S_V_XYZ>(*v_array);
         auto v_gid = Cabana::slice<S_V_GID>(*v_array);
         auto v_owner = Cabana::slice<S_V_OWNER>(*v_array);
@@ -418,6 +435,7 @@ class Grid2DInitializer
     MPI_Comm _comm;
 
     int _rank, _comm_size;
+    const double _period;
 
 };
 
@@ -430,10 +448,11 @@ auto createGrid2DInitializer( const std::array<double, 2>& global_low_corner,
             const std::array<int, 2>& num_nodes,
             const std::array<bool, 2>& periodic,
             const Cabana::Grid::BlockPartitioner<2>& partitioner,
+            const double period,
             MPI_Comm comm )
 {
     return std::make_shared<Grid2DInitializer<ExecutionSpace, MemorySpace>>(
-        global_low_corner, global_high_corner, num_nodes, periodic, partitioner, comm);
+        global_low_corner, global_high_corner, num_nodes, periodic, partitioner, period, comm);
 }
 
 } // end namespace NUMesh
