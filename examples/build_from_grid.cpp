@@ -168,26 +168,26 @@ int main( int argc, char* argv[] )
     auto nu_mesh = NuMesh::createMesh<execution_space, memory_space>(MPI_COMM_WORLD);
     nu_mesh->initialize_ve(initializer, global_low_corner, global_high_corner, global_num_cell,
         is_dim_periodic, partitioner, period, MPI_COMM_WORLD);
-    //nu_mesh->initialize_from_grid();
+    // nu_mesh->initialize_from_grid();
     nu_mesh->initialize_faces();
     nu_mesh->initialize_edges();
-    nu_mesh->gather_edges();
-    nu_mesh->assign_ghost_edges_to_faces();
+    // nu_mesh->gather_edges();
+    // nu_mesh->assign_ghost_edges_to_faces();
 
     auto index_space_o = nu_mesh->indexSpace(NuMesh::Own(), NuMesh::Vertex(), NuMesh::Local());
     auto index_space_g = nu_mesh->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local());
     //printf("owned edges: (%d, %d)\n", index_space_o.min(0), index_space_o.max(0));
     //printf("ghost edges: (%d, %d)\n", index_space_g.min(0), index_space_g.max(0));
 
-    auto edge_triple_layout = NuMesh::Array::createArrayLayout(nu_mesh, 3, NuMesh::Vertex());
-    auto edge_triple_array = NuMesh::Array::createArray<double, memory_space>("edge_triple_array", edge_triple_layout);
-    auto extent0 = edge_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(0);
-    auto extent1 = edge_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(1);
-    //printf("extents: (%d, %d)\n", extent0, extent1);
-    auto edge_view = edge_triple_array->view();
-    //printf("Edge view extents: (%d, %d)\n", edge_view.extent(0), edge_view.extent(1));
-    auto copy = NuMesh::Array::ArrayOp::cloneCopy(*edge_triple_array, NuMesh::Own());
-    NuMesh::Array::ArrayOp::assign(*copy, 1.0, NuMesh::Own());
+    // auto edge_triple_layout = NuMesh::Array::createArrayLayout(nu_mesh, 3, NuMesh::Vertex());
+    // auto edge_triple_array = NuMesh::Array::createArray<double, memory_space>("edge_triple_array", edge_triple_layout);
+    // auto extent0 = edge_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(0);
+    // auto extent1 = edge_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(1);
+    // //printf("extents: (%d, %d)\n", extent0, extent1);
+    // auto edge_view = edge_triple_array->view();
+    // //printf("Edge view extents: (%d, %d)\n", edge_view.extent(0), edge_view.extent(1));
+    // auto copy = NuMesh::Array::ArrayOp::cloneCopy(*edge_triple_array, NuMesh::Own());
+    // NuMesh::Array::ArrayOp::assign(*copy, 1.0, NuMesh::Own());
     
     // auto node_triple_layout =
     //     Cabana::Grid::createArrayLayout( pm.mesh().localGrid(), 3, Cabana::Grid::Node() );

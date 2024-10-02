@@ -280,17 +280,17 @@ class Mesh
         Kokkos::deep_copy(hv_tmp, _vef_gid_start);
         Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
         Kokkos::parallel_for("assign_edges13_to_faces", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
-            int f_gid, eX_lid, eX_gid;
+            int f_gid, eX_lid; // eX_gid;
             f_gid = f_lid + _vef_gid_start_d(rank, 2);
 
             // Where this edge is the first edge, set its face1
-            eX_gid = f_egids(f_lid, 0);
+            // eX_gid = f_egids(f_lid, 0);
             //if (eX_gid == 14) printf("R%d: e1_gid: %d, f_gid: %d\n", rank, eX_gid, f_gid);
             eX_lid = f_egids(f_lid, 0) - _vef_gid_start_d(rank, 1);
             e_fids(eX_lid, 0) = f_gid;
             
             // Where this edge is the third edge, set its face2
-            eX_gid = f_egids(f_lid, 2);
+            // eX_gid = f_egids(f_lid, 2);
             //if (eX_gid == 14) printf("R%d: e3_gid: %d, f_gid: %d\n", rank, eX_gid, f_gid);
             eX_lid = f_egids(f_lid, 2) - _vef_gid_start_d(rank, 1);
             e_fids(eX_lid, 1) = f_gid;
