@@ -917,6 +917,12 @@ class Mesh
 };
 //---------------------------------------------------------------------------//
 
+// Static type checkers
+template <typename T>
+struct is_numesh_mesh : std::false_type {};
+template <typename ExecutionSpace, typename MemSpace>
+struct is_numesh_mesh<NuMesh::Mesh<ExecutionSpace, MemSpace>> : std::true_type {};
+
 /**
  *  Return a shared pointer to a Mesh object
  */
