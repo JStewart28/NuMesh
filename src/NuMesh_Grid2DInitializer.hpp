@@ -112,9 +112,9 @@ class Grid2DInitializer
     template <class v_array_type, class e_array_type, class InitFunc>
     void from_grid(InitFunc& create_functor, v_array_type *v_array, e_array_type *e_array, int *owned_vertices, int *owned_edges, int *owned_faces)
     {
-        auto own_nodes = _local_grid->indexSpace( Cabana::Grid::Own(), Cabana::Grid::Node(),
-                                                    Cabana::Grid::Local() );
-        auto local_mesh = Cabana::Grid::createLocalMesh<memory_space>( *_local_grid );
+        // auto own_nodes = _local_grid->indexSpace( Cabana::Grid::Own(), Cabana::Grid::Node(),
+        //                                             Cabana::Grid::Local() );
+        // auto local_mesh = Cabana::Grid::createLocalMesh<memory_space>( *_local_grid );
         // l2g_type local_L2G = Cabana::Grid::IndexConversion::createL2G<Cabana::Grid::UniformMesh<double, 2>, Cabana::Grid::Node>(*_local_grid, Cabana::Grid::Node());
 
 

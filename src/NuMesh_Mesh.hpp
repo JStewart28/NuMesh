@@ -282,7 +282,6 @@ class Mesh
         Kokkos::parallel_for("assign_edges13_to_faces", Kokkos::RangePolicy<execution_space>(0, _f_array.size()), KOKKOS_LAMBDA(int f_lid) {
             int f_gid, eX_lid, eX_gid;
             f_gid = f_lid + _vef_gid_start_d(rank, 2);
-            eX_gid = f_egids(f_lid, 0);
 
             // Where this edge is the first edge, set its face1
             eX_gid = f_egids(f_lid, 0);
