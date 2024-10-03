@@ -146,7 +146,7 @@ class ArrayLayout
         return Cabana::Grid::appendDimension( is, _dofs_per_entity );
     }
 
-        // Get the local index space of the owned+ghosted faces.
+    // Get the local index space of the owned+ghosted faces.
     Cabana::Grid::IndexSpace<num_space_dim + 1>
     indexSpace( Ghost, Face, Local ) const
     {
@@ -156,6 +156,15 @@ class ArrayLayout
         auto is = Cabana::Grid::IndexSpace<1>( size );
         return Cabana::Grid::appendDimension( is, _dofs_per_entity );
     }
+
+    // Get the local index space of the owned+ghosted ArrayLayout entity type.
+    template <class DecompositionType, class IndexType>
+    Cabana::Grid::IndexSpace<num_space_dim + 1>
+    indexSpace( DecompositionType dt, IndexType it ) const
+    {
+        return indexSpace(dt, entity_type(), it);
+    }
+
 
     int version() { return _version; }
 
