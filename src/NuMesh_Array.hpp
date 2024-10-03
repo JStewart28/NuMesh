@@ -499,6 +499,70 @@ update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
         } );
 }
 
+template <class Array_t, class DecompositionTag>
+std::shared_ptr<Array_t> vector_dot( Array_t& a, const Array_t& b, DecompositionTag tag )
+{
+    using mesh_type = typename Array_t::mesh_type;
+    using entity_type = typename Array_t::entity_type;
+    using value_type = typename  Array_t::value_type;
+    using memory_space = typename Array_t::memory_space;
+    using execution_space = typename Array_t::execution_space;
+
+    // The resulting 'dot' array has the shape (i, j, 1)
+    std::shared_ptr<ArrayLayout<mesh_type, entity_type>> scaler_layout;
+    Kokkos::MDRangePolicy<execution_space, Kokkos::Rank<2U, Kokkos::Iterate::Default, Kokkos::Iterate::Default>> policy;
+    if constexpr (std::is_same_v<entity_type, Cabana::Grid::Node>)
+    {
+        scaler_layout = ArrayUtils::createArrayLayout(a.clayout()->layout()->localGrid(), 1, entity_type());
+        policy = Cabana::Grid::createExecutionPolicy(
+            scaler_layout->layout()->localGrid()->indexSpace( tag, entity_type(), Cabana::Grid::Local() ),
+            execution_space() );
+    }
+    else if constexpr (std::is_same_v<entity_type, NuMesh::Vertex> ||
+              std::is_same_v<entity_type, NuMesh::Edge> ||
+              std::is_same_v<entity_type, NuMesh::Face>) 
+    {
+        scaler_layout = ArrayUtils::createArrayLayout(a.clayout()->layout()->mesh(), 1, entity_type());
+        policy = Cabana::Grid::createExecutionPolicy(
+            scaler_layout->layout()->indexSpace( tag, entity_type(), NuMesh::Local() ),
+            execution_space() );
+    }
+    // auto vertex_triple_layout = Utils::createArrayLayout(nu_mesh, 3, NuMesh::Vertex());
+    auto out = ArrayUtils::createArray<value_type, memory_space>("dot", scaler_layout);
+    auto out_view = out->array()->view();
+
+    // Check dimensions
+    auto a_view = a.array()->view();
+    auto b_view = b.array()->view();
+
+    const int n = a_view.extent(0);
+    const int m = a_view.extent(1);
+    const int w = a_view.extent(2);
+    const int out_n = out_view.extent(0);
+    const int out_m = out_view.extent(1);
+
+    // Ensure the third dimension is 3 for 3D vectors
+    if (w != 3) {
+        throw std::invalid_argument("Third dimension must be 3 for 3D vectors.");
+    }
+    if (out_n != n) {
+        throw std::invalid_argument("First dimension of in and out views do not match.");
+    }
+    if (out_m != m) {
+        throw std::invalid_argument("Second dimension of in and out views do not match.");
+    }
+
+    // Parallel loop to compute the dot product at each (n, m) location
+    Kokkos::parallel_for("compute_dot_product", policy,
+        KOKKOS_LAMBDA(const int i, const int j) {
+            out_view(i, j, 0) = a_view(i, j, 0) * b_view(i, j, 0)
+                              + a_view(i, j, 1) * b_view(i, j, 1)
+                              + a_view(i, j, 2) * b_view(i, j, 2);
+        });
+
+    return out;
+}
+
 } // end neamspace ArrayOp
 
 } // end namespace Array
