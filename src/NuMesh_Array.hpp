@@ -373,6 +373,9 @@ createArray( const std::string& label,
 
 //---------------------------------------------------------------------------//
 // Array operations.
+// NOTE: The functions in this namespace are copied almost identically from
+// Cabana::Array::ArrayOp
+// https://github.com/ECP-copa/Cabana/blob/master/grid/src/Cabana_Grid_Array.hpp
 //---------------------------------------------------------------------------//
 namespace ArrayOp
 {
@@ -495,8 +498,6 @@ update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
                                 gamma * c_view( i, j );
         } );
 }
-
-
 
 } // end neamspace ArrayOp
 
