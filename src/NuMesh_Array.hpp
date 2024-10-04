@@ -150,10 +150,15 @@ class ArrayLayout
     Cabana::Grid::IndexSpace<num_space_dim + 1>
     indexSpace( Ghost, Face, Local ) const
     {
-        // Compute the size.
-        std::array<long, 1> size;
-        size[0] = _owned_faces;
-        auto is = Cabana::Grid::IndexSpace<1>( size );
+        // Compute the lower bound.
+        std::array<long, 1> min;
+        min[0] = 0;
+
+        // Compute the upper bound.
+        std::array<long, 1> max;
+        max[0] = _owned_faces + _ghost_faces;
+
+        auto is = Cabana::Grid::IndexSpace<1>( min, max );
         return Cabana::Grid::appendDimension( is, _dofs_per_entity );
     }
 
@@ -163,6 +168,98 @@ class ArrayLayout
     indexSpace( DecompositionType dt, IndexType it ) const
     {
         return indexSpace(dt, entity_type(), it);
+    }
+
+    //-------------------------------------------------------------------------
+    // Get index spaces for the vertices/edges/faces only, 
+    // and not the values associated with them
+    //-------------------------------------------------------------------------
+
+    // Get the local index space of the owned vertices.
+    Cabana::Grid::IndexSpace<num_space_dim>
+    indexSpace( Own, Vertex, Local, Element ) const
+    {
+        // Compute the size.
+        std::array<long, 1> size;
+        size[0] = _owned_vertices;
+        return Cabana::Grid::IndexSpace<1>( size );
+    }
+
+    //---------------------------------------------------------------------------//
+    // Get the local index space of the owned+ghosted vertices.
+    Cabana::Grid::IndexSpace<num_space_dim>
+    indexSpace( Ghost, Vertex, Local, Element ) const
+    {
+        // Compute the lower bound.
+        std::array<long, 1> min;
+        min[0] = 0;
+
+        // Compute the upper bound.
+        std::array<long, 1> max;
+        max[0] = _owned_vertices + _ghost_vertices;
+
+        return Cabana::Grid::IndexSpace<1>( min, max );
+    }
+
+    //---------------------------------------------------------------------------//
+    // Get the local index space of the owned edges.
+    Cabana::Grid::IndexSpace<num_space_dim>
+    indexSpace( Own, Edge, Local, Element ) const
+    {
+        // Compute the size.
+        std::array<long, 1> size;
+        size[0] = _owned_edges;
+        return Cabana::Grid::IndexSpace<1>( size );
+    }
+
+    //---------------------------------------------------------------------------//
+    // Get the local index space of the owned+ghosted edges.
+    Cabana::Grid::IndexSpace<num_space_dim>
+    indexSpace( Ghost, Edge, Local, Element ) const
+    {
+        // Compute the lower bound.
+        std::array<long, 1> min;
+        min[0] = 0;
+
+        // Compute the upper bound.
+        std::array<long, 1> max;
+        max[0] = _owned_edges + _ghost_edges;
+
+        return Cabana::Grid::IndexSpace<1>( min, max );
+    }
+
+    //---------------------------------------------------------------------------//
+    // Get the local index space of the owned faces.
+    Cabana::Grid::IndexSpace<num_space_dim>
+    indexSpace( Own, Face, Local, Element ) const
+    {
+        // Compute the size.
+        std::array<long, 1> size;
+        size[0] = _owned_faces;
+        return Cabana::Grid::IndexSpace<1>( size );
+    }
+
+    // Get the local index space of the owned+ghosted faces.
+    Cabana::Grid::IndexSpace<num_space_dim>
+    indexSpace( Ghost, Face, Local, Element ) const
+    {
+        // Compute the lower bound.
+        std::array<long, 1> min;
+        min[0] = 0;
+
+        // Compute the upper bound.
+        std::array<long, 1> max;
+        max[0] = _owned_faces + _ghost_faces;
+
+        return Cabana::Grid::IndexSpace<1>( min, max );
+    }
+
+    // Get the local index space of the owned+ghosted ArrayLayout entity type, element version.
+    template <class DecompositionType, class IndexType, class ElementType>
+    Cabana::Grid::IndexSpace<num_space_dim>
+    indexSpace( DecompositionType dt, IndexType it, Element e) const
+    {
+        return indexSpace(dt, entity_type(), it, e);
     }
 
 
@@ -499,8 +596,11 @@ update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
         } );
 }
 
+/**
+ * Element-wise dot product
+ */
 template <class Array_t, class DecompositionTag>
-std::shared_ptr<Array_t> vector_dot( Array_t& a, const Array_t& b, DecompositionTag tag )
+std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
     using mesh_type = typename Array_t::mesh_type;
     using entity_type = typename Array_t::entity_type;
@@ -509,56 +609,136 @@ std::shared_ptr<Array_t> vector_dot( Array_t& a, const Array_t& b, Decomposition
     using execution_space = typename Array_t::execution_space;
 
     // The resulting 'dot' array has the shape (i, j, 1)
-    std::shared_ptr<ArrayLayout<mesh_type, entity_type>> scaler_layout;
-    Kokkos::MDRangePolicy<execution_space, Kokkos::Rank<2U, Kokkos::Iterate::Default, Kokkos::Iterate::Default>> policy;
-    if constexpr (std::is_same_v<entity_type, Cabana::Grid::Node>)
-    {
-        scaler_layout = ArrayUtils::createArrayLayout(a.clayout()->layout()->localGrid(), 1, entity_type());
-        policy = Cabana::Grid::createExecutionPolicy(
-            scaler_layout->layout()->localGrid()->indexSpace( tag, entity_type(), Cabana::Grid::Local() ),
-            execution_space() );
-    }
-    else if constexpr (std::is_same_v<entity_type, NuMesh::Vertex> ||
-              std::is_same_v<entity_type, NuMesh::Edge> ||
-              std::is_same_v<entity_type, NuMesh::Face>) 
-    {
-        scaler_layout = ArrayUtils::createArrayLayout(a.clayout()->layout()->mesh(), 1, entity_type());
-        policy = Cabana::Grid::createExecutionPolicy(
-            scaler_layout->layout()->indexSpace( tag, entity_type(), NuMesh::Local() ),
-            execution_space() );
-    }
-    // auto vertex_triple_layout = Utils::createArrayLayout(nu_mesh, 3, NuMesh::Vertex());
-    auto out = ArrayUtils::createArray<value_type, memory_space>("dot", scaler_layout);
-    auto out_view = out->array()->view();
+    auto scalar_layout = NuMesh::Array::createArrayLayout(a.layout()->mesh(), 1, entity_type());
+    auto dot = NuMesh::Array::createArray<value_type, memory_space>("dot", scalar_layout);
+    auto dot_view = dot->view();
 
     // Check dimensions
-    auto a_view = a.array()->view();
-    auto b_view = b.array()->view();
+    auto a_view = a.view();
+    auto b_view = b.view();
 
-    const int n = a_view.extent(0);
-    const int m = a_view.extent(1);
-    const int w = a_view.extent(2);
-    const int out_n = out_view.extent(0);
-    const int out_m = out_view.extent(1);
+    const int an = a_view.extent(0);
+    const int am = a_view.extent(1);
+    const int bn = b_view.extent(0);
+    const int bm = b_view.extent(1);
 
     // Ensure the third dimension is 3 for 3D vectors
-    if (w != 3) {
-        throw std::invalid_argument("Third dimension must be 3 for 3D vectors.");
+    if (am != 3 || bm != 3) {
+        throw std::invalid_argument("Second dimension must be 3 for 3D vectors.");
     }
-    if (out_n != n) {
-        throw std::invalid_argument("First dimension of in and out views do not match.");
-    }
-    if (out_m != m) {
-        throw std::invalid_argument("Second dimension of in and out views do not match.");
+    if (an != bn) {
+        throw std::invalid_argument("First dimension of a and b views do not match.");
     }
 
-    // Parallel loop to compute the dot product at each (n, m) location
+    auto policy = Cabana::Grid::createExecutionPolicy(
+            scalar_layout->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
+            execution_space() );
     Kokkos::parallel_for("compute_dot_product", policy,
-        KOKKOS_LAMBDA(const int i, const int j) {
-            out_view(i, j, 0) = a_view(i, j, 0) * b_view(i, j, 0)
-                              + a_view(i, j, 1) * b_view(i, j, 1)
-                              + a_view(i, j, 2) * b_view(i, j, 2);
+        KOKKOS_LAMBDA(const int i) {
+            dot_view(i, 0) = a_view(i, 0) * b_view(i, 0)
+                              + a_view(i, 1) * b_view(i, 1)
+                              + a_view(i, 2) * b_view(i, 2);
         });
+
+    return dot;
+}
+
+/**
+ * Element-wise cross product
+ */
+template <class Array_t, class DecompositionTag>
+std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, DecompositionTag tag )
+{
+    using mesh_type = typename Array_t::mesh_type;
+    using entity_type = typename Array_t::entity_type;
+    using value_type = typename  Array_t::value_type;
+    using memory_space = typename Array_t::memory_space;
+    using execution_space = typename Array_t::execution_space;
+
+    // The resulting 'dot' array has the shape (i, j, 1)
+    auto layout = NuMesh::Array::createArrayLayout(a.layout()->mesh(), 3, entity_type());
+    auto cross = NuMesh::Array::createArray<double, memory_space>("cross", layout);
+    auto cross_view = cross->view();
+
+    // Check dimensions
+    auto a_view = a.view();
+    auto b_view = b.view();
+
+    const int an = a_view.extent(0);
+    const int am = a_view.extent(1);
+    const int bn = b_view.extent(0);
+    const int bm = b_view.extent(1);
+
+    // Ensure the third dimension is 3 for 3D vectors
+    if (am != 3 || bm != 3) {
+        throw std::invalid_argument("Second dimension must be 3 for 3D vectors.");
+    }
+    if (an != bn) {
+        throw std::invalid_argument("First dimension of a and b views do not match.");
+    }
+
+    auto policy = Cabana::Grid::createExecutionPolicy(
+            layout->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
+            execution_space() );
+    // Create output view for cross product results
+    Kokkos::parallel_for("CrossProductKernel", policy,
+        KOKKOS_LAMBDA(const int i) {
+        value_type a_x = a_view(i, 0);
+        value_type a_y = a_view(i, 1);
+        value_type a_z = a_view(i, 2);
+        
+        value_type b_x = b_view(i, 0);
+        value_type b_y = b_view(i, 1);
+        value_type b_z = b_view(i, 2);
+
+        // Cross product: a x b = (ay*bz - az*by, az*bx - ax*bz, ax*by - ay*bx)
+        cross_view(i, 0) = a_y * b_z - a_z * b_y;
+        cross_view(i, 1) = a_z * b_x - a_x * b_z;
+        cross_view(i, 2) = a_x * b_y - a_y * b_x;
+    });
+
+    return cross;
+}
+
+/**
+ * Element-wise multiplication, where (1, 3, 6) * (4, 7, 3) = (4, 21, 18)
+ */
+template <class Array_t, class DecompositionTag>
+std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, DecompositionTag tag )
+{
+    using mesh_type = typename Array_t::mesh_type;
+    using entity_type = typename Array_t::entity_type;
+    using value_type = typename  Array_t::value_type;
+    using memory_space = typename Array_t::memory_space;
+    using execution_space = typename Array_t::execution_space;
+
+    // The resulting 'dot' array has the shape (i, j, 1)
+    auto layout = NuMesh::Array::createArrayLayout(a.layout()->mesh(), 3, entity_type());
+    auto out = NuMesh::Array::createArray<double, memory_space>("element_mult", layout);
+    auto out_view = out->view();
+
+    // Check dimensions
+    auto a_view = a.view();
+    auto b_view = b.view();
+
+    const int an = a_view.extent(0);
+    const int bn = b_view.extent(0);
+
+    // Ensure the third dimension is 3 for 3D vectors
+    if (an != bn) {
+        throw std::invalid_argument("First dimension of a and b views do not match.");
+    }
+
+    auto policy = Cabana::Grid::createExecutionPolicy(
+            layout->indexSpace( tag, entity_type(), NuMesh::Local() ),
+            execution_space() );
+     Kokkos::parallel_for(
+        "ArrayOp::update",
+        createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
+                               execution_space() ),
+        KOKKOS_LAMBDA( const int i, const int j ) {
+            out_view( i, j ) = a_view( i, j ) * b_view( i, j );
+        } );
 
     return out;
 }

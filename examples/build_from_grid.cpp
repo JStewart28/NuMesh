@@ -181,12 +181,20 @@ int main( int argc, char* argv[] )
 
     auto vertex_triple_layout = NuMesh::Array::createArrayLayout(nu_mesh, 3, NuMesh::Vertex());
     auto vertex_triple_array = NuMesh::Array::createArray<double, memory_space>("vertex_triple_array", vertex_triple_layout);
-    auto extent0 = vertex_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(0);
-    auto extent1 = vertex_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(1);
-    printf("R%d extents1: (%d, %d)\n", rank, extent0, extent1);
-    auto extent2 = vertex_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Local()).extent(0);
-    auto extent3 = vertex_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Local()).extent(1);
-    printf("R%d extents2: (%d, %d)\n", rank, extent2, extent3);
+    NuMesh::Array::ArrayOp::assign(*vertex_triple_array, 1.2, NuMesh::Own());
+    auto copy = NuMesh::Array::ArrayOp::cloneCopy(*vertex_triple_array, NuMesh::Own());
+    NuMesh::Array::ArrayOp::assign(*copy, 1.9, NuMesh::Own());
+
+    NuMesh::Array::ArrayOp::element_dot(*vertex_triple_array, *copy, NuMesh::Own());
+    NuMesh::Array::ArrayOp::element_cross(*vertex_triple_array, *copy, NuMesh::Own());
+    NuMesh::Array::ArrayOp::element_multiply(*vertex_triple_array, *copy, NuMesh::Own());
+
+    // auto extent0 = vertex_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(0);
+    // auto extent1 = vertex_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Vertex(), NuMesh::Local()).extent(1);
+    // printf("R%d extents1: (%d, %d)\n", rank, extent0, extent1);
+    // auto extent2 = vertex_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Local()).extent(0);
+    // auto extent3 = vertex_triple_layout->indexSpace(NuMesh::Ghost(), NuMesh::Local()).extent(1);
+    // printf("R%d extents2: (%d, %d)\n", rank, extent2, extent3);
     // auto edge_view = edge_triple_array->view();
     // //printf("Edge view extents: (%d, %d)\n", edge_view.extent(0), edge_view.extent(1));
     // auto copy = NuMesh::Array::ArrayOp::cloneCopy(*edge_triple_array, NuMesh::Own());
