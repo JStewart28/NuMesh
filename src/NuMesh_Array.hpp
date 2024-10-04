@@ -712,9 +712,7 @@ std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, Decompo
     using memory_space = typename Array_t::memory_space;
     using execution_space = typename Array_t::execution_space;
 
-    // The resulting 'dot' array has the shape (i, j, 1)
-    auto layout = NuMesh::Array::createArrayLayout(a.layout()->mesh(), 3, entity_type());
-    auto out = NuMesh::Array::createArray<double, memory_space>("element_mult", layout);
+    auto out = clone(a);
     auto out_view = out->view();
 
     // Check dimensions
@@ -730,7 +728,7 @@ std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, Decompo
     }
 
     auto policy = Cabana::Grid::createExecutionPolicy(
-            layout->indexSpace( tag, entity_type(), NuMesh::Local() ),
+            a.layout()->indexSpace( tag, entity_type(), NuMesh::Local() ),
             execution_space() );
      Kokkos::parallel_for(
         "ArrayOp::update",
