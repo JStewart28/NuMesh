@@ -538,6 +538,29 @@ void assign( Array_t& array, const typename Array_t::value_type alpha,
 }
 
 /*!
+  \brief Scale every element of an array by a scalar value. 2D specialization.
+  \param array The array to scale.
+  \param alpha The value to scale the array by.
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+template <class Array_t, class DecompositionTag>
+std::enable_if_t<1 == Array_t::num_space_dim, void>
+scale( Array_t& array, const typename Array_t::value_type alpha,
+       DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using entity_t = typename Array_t::entity_type;
+    auto view = array.view();
+    Kokkos::parallel_for(
+        "ArrayOp::scale",
+        createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
+                               typename Array_t::execution_space() ),
+        KOKKOS_LAMBDA( const int i, const int j ) {
+            view( i, j ) *= alpha;
+        } );
+}
+
+/*!
   \brief Apply some function to every element of an array
   \param array The array to operate on.
   \param function A functor that operates on the array elements.
@@ -615,6 +638,24 @@ update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
             a_view( i, j ) = alpha * a_view( i, j ) +
                                 beta * b_view( i, j ) +
                                 gamma * c_view( i, j );
+        } );
+}
+
+/**
+ * Element-wise inverse: x -> 1/x
+ */
+template <class Array_t, class DecompositionTag>
+std::enable_if_t<1 == Array_t::num_space_dim, void>
+element_inverse( Array_t& array, DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using entity_t = typename Array_t::entity_type;
+    auto view = array.view();
+    Kokkos::parallel_for( "ArrayOp::apply",
+        createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
+                               typename Array_t::execution_space() ),
+        KOKKOS_LAMBDA( const int i, const int j) {
+            view( i, j ) = 1 / view(i, j);
         } );
 }
 
