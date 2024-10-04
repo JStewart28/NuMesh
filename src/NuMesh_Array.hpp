@@ -545,7 +545,7 @@ void assign( Array_t& array, const typename Array_t::value_type alpha,
 */
 template <class Array_t, class Function, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
-apply( Array_t& array, Function function, DecompositionTag tag )
+apply( Array_t& array, Function& function, DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
     using entity_t = typename Array_t::entity_type;
