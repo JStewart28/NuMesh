@@ -540,22 +540,22 @@ void assign( Array_t& array, const typename Array_t::value_type alpha,
 /*!
   \brief Apply some function to every element of an array
   \param array The array to operate on.
-  \param function A functor
+  \param function A functor that operates on the array elements.
   \param tag The tag for the decomposition over which to perform the operation.
 */
-template <class Array_t, class DecompositionTag>
+template <class Array_t, class Function, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
-apply( Array_t& array, const typename Array_t::value_type alpha,
-       DecompositionTag tag )
+apply( Array_t& array, Function function, DecompositionTag tag )
 {
-    static_assert( is_array<Array_t>::value, "Cabana::Grid::Array required" );
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using entity_t = typename Array_t::entity_type;
     auto view = array.view();
     Kokkos::parallel_for(
         "ArrayOp::scale",
-        createExecutionPolicy( array.layout()->indexSpace( tag, Local() ),
+        createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
                                typename Array_t::execution_space() ),
-        KOKKOS_LAMBDA( const int i, const int j, const int l ) {
-            view( i, j, l ) *= alpha;
+        KOKKOS_LAMBDA( const int i, const int j) {
+            view( i, j ) = function(view( i, j ));
         } );
 }
 
