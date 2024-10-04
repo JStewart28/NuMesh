@@ -538,6 +538,28 @@ void assign( Array_t& array, const typename Array_t::value_type alpha,
 }
 
 /*!
+  \brief Apply some function to every element of an array
+  \param array The array to operate on.
+  \param function A functor
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+template <class Array_t, class DecompositionTag>
+std::enable_if_t<1 == Array_t::num_space_dim, void>
+apply( Array_t& array, const typename Array_t::value_type alpha,
+       DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "Cabana::Grid::Array required" );
+    auto view = array.view();
+    Kokkos::parallel_for(
+        "ArrayOp::scale",
+        createExecutionPolicy( array.layout()->indexSpace( tag, Local() ),
+                               typename Array_t::execution_space() ),
+        KOKKOS_LAMBDA( const int i, const int j, const int l ) {
+            view( i, j, l ) *= alpha;
+        } );
+}
+
+/*!
   \brief Update two vectors such that a = alpha * a + beta * b.
   \param a The array that will be updated.
   \param alpha The value to scale a by.
@@ -575,7 +597,7 @@ update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
   \param tag The tag for the decomposition over which to perform the operation.
 */
 template <class Array_t, class DecompositionTag>
-std::enable_if_t<2 == Array_t::num_space_dim, void>
+std::enable_if_t<1 == Array_t::num_space_dim, void>
 update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
         const typename Array_t::value_type beta, const Array_t& c,
         const typename Array_t::value_type gamma, DecompositionTag tag )
