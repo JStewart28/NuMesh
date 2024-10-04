@@ -551,7 +551,7 @@ apply( Array_t& array, Function function, DecompositionTag tag )
     using entity_t = typename Array_t::entity_type;
     auto view = array.view();
     Kokkos::parallel_for(
-        "ArrayOp::scale",
+        "ArrayOp::apply",
         createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
                                typename Array_t::execution_space() ),
         KOKKOS_LAMBDA( const int i, const int j) {
