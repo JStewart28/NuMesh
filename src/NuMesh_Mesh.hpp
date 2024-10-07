@@ -53,10 +53,12 @@ class Mesh
     using memory_space = MemorySpace;
     using execution_space = ExecutionSpace;
     using device_type = Kokkos::Device<ExecutionSpace, MemorySpace>;
-    using mesh_type = Cabana::Grid::UniformMesh<double, 2>;
 
-    using Node = Cabana::Grid::Node;
-    using l2g_type = Cabana::Grid::IndexConversion::L2G<mesh_type, Node>;
+    // Placeholder mesh_type identifier
+    using mesh_type = int;
+
+    //using Node = Cabana::Grid::Node;
+    //using l2g_type = Cabana::Grid::IndexConversion::L2G<mesh_type, Node>;
     using node_view = Kokkos::View<double***, device_type>;
 
     using halo_type = Cabana::Grid::Halo<MemorySpace>;
