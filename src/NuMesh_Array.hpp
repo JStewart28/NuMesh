@@ -499,7 +499,7 @@ void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
     auto a_space = a.layout()->indexSpace( tag, entity_type(), Local() );
     auto b_space = b.layout()->indexSpace( tag, entity_type(), Local() );
     if ( a_space != b_space )
-        throw std::logic_error( "Incompatible index spaces" );
+        throw std::logic_error( "NuMesh::ArrayOp::copy: Incompatible index spaces" );
     auto subview_a = Cabana::Grid::createSubview( a.view(), a_space );
     auto subview_b = Cabana::Grid::createSubview( b.view(), b_space );
     Kokkos::deep_copy( subview_a, subview_b );
@@ -517,6 +517,22 @@ std::shared_ptr<Array_t> cloneCopy( const Array_t& array, DecompositionTag tag )
     auto cln = clone( array );
     copy( *cln, array, tag );
     return cln;
+}
+
+/**
+ * Copy one view into another where the third dimensions to not match
+ * Array b must have the larger third dimension.
+ * Any dimensions in b that are not in a are truncated.
+ */
+template <class Array_t, class DecompositionTag>
+void copy_mismatch( Array_t& a, const Array_t& b, DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using entity_type = typename Array_t::entity_type;
+    auto a_space = a.layout()->indexSpace( tag, entity_type(), Local() );
+    auto subview_a = Cabana::Grid::createSubview( a.view(), a_space );
+    auto subview_b = Cabana::Grid::createSubview( b.view(), a_space );
+    Kokkos::deep_copy( subview_a, subview_b );
 }
 
 //---------------------------------------------------------------------------//
