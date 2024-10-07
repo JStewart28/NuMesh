@@ -746,8 +746,12 @@ std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, Decomposit
 }
 
 /**
- * Element-wise multiplication, where (1, 3, 6) * (4, 7, 3) = (4, 21, 18)
- */
+ * Element-wise multiplication, where (1, 3) * (4, 7) = (4, 21)
+ * If a and b do not have matching second dimensions, place the view with the 
+ * smaller second dimension first.
+ * 
+ * If a has a third dimension of 1, out(x, y) = b(x, y) * a(x, 0) for 0 <= y < b extent
+ */ 
 template <class Array_t, class DecompositionTag>
 std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
@@ -766,24 +770,50 @@ std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, Decompo
 
     const int an = a_view.extent(0);
     const int bn = b_view.extent(0);
+    const int am = a_view.extent(1);
+    const int bm = b_view.extent(1);
 
     // Ensure the third dimension is 3 for 3D vectors
     if (an != bn) {
         throw std::invalid_argument("First dimension of a and b views do not match.");
     }
+    if (am == bm)
+    {
+        auto policy = Cabana::Grid::createExecutionPolicy(
+                a.layout()->indexSpace( tag, entity_type(), NuMesh::Local() ),
+                execution_space() );
+        Kokkos::parallel_for(
+            "ArrayOp::update",
+            createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
+                                execution_space() ),
+            KOKKOS_LAMBDA( const int i, const int j ) {
+                out_view( i, j ) = a_view( i, j ) * b_view( i, j );
+            } );
 
-    auto policy = Cabana::Grid::createExecutionPolicy(
-            a.layout()->indexSpace( tag, entity_type(), NuMesh::Local() ),
+        return out;
+    }
+    // If a has a third dimension of 1
+    if ((am == 1) && (am < bm))
+    {
+        using entity_type = typename Array_t::entity_type;
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            a.layout()->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
             execution_space() );
-     Kokkos::parallel_for(
-        "ArrayOp::update",
-        createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
-                               execution_space() ),
-        KOKKOS_LAMBDA( const int i, const int j ) {
-            out_view( i, j ) = a_view( i, j ) * b_view( i, j );
-        } );
+        Kokkos::parallel_for(
+            "ArrayOp::update", policy,
+            KOKKOS_LAMBDA( const int i) {
+                for (int j = 0; j < bm; j++)
+                {
+                    out_view( i, j ) = a_view( i, 0 ) * b_view( i, j );
+                }
+            } );
 
-    return out;
+        return out;
+    }
+    else
+    {
+        throw std::invalid_argument("First array argument must have equal or smaller third dimension than second array argument.");
+    }
 }
 
 } // end neamspace ArrayOp
