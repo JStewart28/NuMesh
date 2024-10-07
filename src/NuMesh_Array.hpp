@@ -642,24 +642,6 @@ update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
 }
 
 /**
- * Element-wise inverse: x -> 1/x
- */
-template <class Array_t, class DecompositionTag>
-std::enable_if_t<1 == Array_t::num_space_dim, void>
-element_inverse( Array_t& array, DecompositionTag tag )
-{
-    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
-    using entity_t = typename Array_t::entity_type;
-    auto view = array.view();
-    Kokkos::parallel_for( "ArrayOp::apply",
-        createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
-                               typename Array_t::execution_space() ),
-        KOKKOS_LAMBDA( const int i, const int j) {
-            view( i, j ) = 1 / view(i, j);
-        } );
-}
-
-/**
  * Element-wise dot product
  */
 template <class Array_t, class DecompositionTag>
