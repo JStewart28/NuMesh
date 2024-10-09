@@ -2,9 +2,6 @@
 #define NUMESH_TYPES_HPP
 
 
-#include <Cabana_Grid.hpp>
-#include <Kokkos_Core.hpp>
-
 namespace NuMesh
 {
 
