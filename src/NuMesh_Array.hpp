@@ -520,19 +520,75 @@ std::shared_ptr<Array_t> cloneCopy( const Array_t& array, DecompositionTag tag )
 }
 
 /**
- * Copy one view into another where the third dimensions to not match
- * Array b must have the larger third dimension.
- * Any dimensions in b that are not in a are truncated.
+ * Create a copy of one dimension of an array
  */
 template <class Array_t, class DecompositionTag>
-void copy_mismatch( Array_t& a, const Array_t& b, DecompositionTag tag )
+std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
 {
-    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
     using entity_type = typename Array_t::entity_type;
-    auto a_space = a.layout()->indexSpace( tag, entity_type(), Local() );
-    auto subview_a = Cabana::Grid::createSubview( a.view(), a_space );
-    auto subview_b = Cabana::Grid::createSubview( b.view(), a_space );
-    Kokkos::deep_copy( subview_a, subview_b );
+    using value_type = typename  Array_t::value_type;
+    using memory_space = typename Array_t::memory_space;
+    using execution_space = typename Array_t::execution_space;
+
+    auto layout = NuMesh::Array::createArrayLayout( a.layout(), 1, entity_type() );
+    auto out = NuMesh::Array::createArray<value_type, memory_space>("copyDim_out", layout);
+    auto out_view = out->view();
+
+    // Check dimensions
+    auto a_view = a.view();
+
+    const int aw = a_view.extent(1);
+
+    if (dimA >= aw) {
+        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension is larger than the number of dimensions in the array.");
+    }
+
+    auto policy = Cabana::Grid::createExecutionPolicy(
+        a.layout()->indexSpace( tag, entity_type(), Cabana::Grid::Local() ),
+        execution_space() );
+    Kokkos::parallel_for(
+        "NuMesh::ArrayOp::copyDim", policy,
+        KOKKOS_LAMBDA( const int i, const int j) {
+            out_view( i, 0 ) = a_view( i, dimA );
+        } );
+    return out;
+}
+
+/**
+ * Copy dimB from b into dimA from a 
+ */
+template <class Array_t, class DecompositionTag>
+void copyDim( Array_t& a, int dimA, Array_t& b, int dimB, DecompositionTag tag )
+{
+    using entity_type = typename Array_t::entity_type;
+    using execution_space = typename Array_t::execution_space;
+
+    auto a_view = a.view();
+    auto b_view = b.view();
+
+    const int an = a_view.extent(0);
+    const int bn = b_view.extent(0);
+    const int am = a_view.extent(1);
+    const int bm = b_view.extent(1);
+
+    if (an != bn) {
+        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: First dimension of a and b arrays do not match.");
+    }
+    if (dimA >= am) {
+        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension for 'a' is larger than the number of dimensions in the b array.");
+    }
+    if (dimB >= bm) {
+        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension for 'b' is larger than the number of dimensions in the b array.");
+    }
+
+    auto policy = Cabana::Grid::createExecutionPolicy(
+        a.layout()->indexSpace( tag, entity_type(), Cabana::Grid::Local() ),
+        execution_space() );
+    Kokkos::parallel_for(
+        "NuMesh::ArrayOp::copyDim", policy,
+        KOKKOS_LAMBDA( const int i, const int j) {
+            a_view( i, dimA ) = b_view( i, dimB );
+    } );
 }
 
 //---------------------------------------------------------------------------//
