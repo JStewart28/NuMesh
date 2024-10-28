@@ -42,6 +42,12 @@ class Communicator
         MPIX_Comm_free(&_xcomm);
     }
 
+    /**
+     * Find the nieghbors whose edges and vertices need to be gathered 
+     * to fill all face information
+     */
+    void find_neighbors
+
     // XXX - Change vef argument to an enum: Vertex, Edge, or Face
     template <class View_t1, class View_t2, class AoSoA_t>
     void gather(const View_t1 sendvals_unpacked, AoSoA_t &array, const View_t2 vef_gid_start_d, int vef, int num_sends, int &owned_count, int &ghosted_count)
