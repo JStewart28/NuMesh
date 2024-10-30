@@ -23,7 +23,6 @@ class Communicator
   public:
     using memory_space = MemorySpace;
     using execution_space = ExecutionSpace;
-    using device_type = Kokkos::Device<ExecutionSpace, MemorySpace>;
 
     Communicator( const MPI_Comm comm )
             : _comm ( comm )
@@ -42,11 +41,7 @@ class Communicator
         MPIX_Comm_free(&_xcomm);
     }
 
-    /**
-     * Find the nieghbors whose edges and vertices need to be gathered 
-     * to fill all face information
-     */
-    void find_neighbors
+
 
     // XXX - Change vef argument to an enum: Vertex, Edge, or Face
     template <class View_t1, class View_t2, class AoSoA_t>
