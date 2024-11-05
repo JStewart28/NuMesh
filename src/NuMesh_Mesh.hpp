@@ -429,6 +429,25 @@ class Mesh
     }
 
     /**
+     * Refine a face by splitting it into four smaller triangles 
+     * 
+     * XXX - Currently only works on interior faces
+     */
+    void refine(int fid)
+    {
+
+    }
+
+    /**
+     * Refine all faces specified in the fids vector 
+     * Calling this function increments the version of the mesh
+     */
+    void batchRefine(vector<int> fids)
+    {
+        _version++;
+    }
+
+    /**
      * Gather mesh connectivity information for vertices within 'dist'
      * edges away
      */
