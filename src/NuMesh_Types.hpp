@@ -11,7 +11,7 @@ namespace NuMesh
 // Enums
 //---------------------------------------------------------------------------//
 
-enum BoundaryType {PERIODIC = 0, FREE = 1};
+enum BoundaryType {FREE = 0, PERIODIC = 1};
 
 //---------------------------------------------------------------------------//
 // Entity type tags.
