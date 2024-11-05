@@ -31,8 +31,8 @@
     #define S_F_OWNER 5
 #endif
 
-#include <NuMesh_Communicator.hpp>
-#include <NuMesh_Grid2DInitializer.hpp>
+//#include <NuMesh_Communicator.hpp>
+//#include <NuMesh_Grid2DInitializer.hpp>
 #include <NuMesh_Types.hpp>
 
 #include <limits>
@@ -424,8 +424,9 @@ class Mesh
         });
         Kokkos::fence();
 
-        initialize_edges();
-        initialize_faces();
+        printEdges(3);
+        // initialize_edges();
+        // initialize_faces();
     }
 
     /**
@@ -440,6 +441,59 @@ class Mesh
     v_array_type vertices() {return _vertices};
     e_array_type edges() {return _edges};
     f_array_type faces() {return _faces};
+
+    void printVertices()
+    {
+        auto v_xyz = Cabana::slice<S_V_XYZ>(_v_array);
+        auto v_gid = Cabana::slice<S_V_GID>(_v_array);
+        auto v_owner = Cabana::slice<S_V_OWNER>(_v_array);
+        for (int i = 0; i < (int) _v_array.size(); i++)
+        {
+            printf("R%d: [%d, (%0.3lf, %0.3lf, %0.3lf), %d]\n", _rank,
+                v_gid(i), 
+                v_xyz(i, 1), v_xyz(i, 0), v_xyz(i, 2),
+                v_owner(i));
+        }
+    }
+    /**
+     * opt: 1 = owned, 2 = ghost, 3 = all
+     */
+    void printEdges(int opt)
+    {
+        auto e_vid = Cabana::slice<S_E_VIDS>(_e_array);
+        auto e_fids = Cabana::slice<S_E_FIDS>(_e_array);
+        auto e_gid = Cabana::slice<S_E_GID>(_e_array);
+        auto e_owner = Cabana::slice<S_E_OWNER>(_e_array);
+        int start = 0, end = _e_array.size();
+        if (opt == 1) end = _owned_edges;
+        else if (opt == 2) start = _owned_edges;
+        for (int i = start; i < end; i++)
+        {
+            printf("%d, v(%d, %d), f(%d, %d), %d, %d\n",
+                e_gid(i),
+                e_vid(i, 0), e_vid(i, 1),
+                e_fids(i, 0), e_fids(i, 1),
+                e_owner(i), _rank);
+        }
+    }
+
+    void printFaces()
+    {
+        auto f_vgids = Cabana::slice<S_F_VIDS>(_f_array);
+        auto f_egids = Cabana::slice<S_F_EIDS>(_f_array);
+        auto f_gid = Cabana::slice<S_F_GID>(_f_array);
+        auto f_parent = Cabana::slice<S_F_PID>(_f_array);
+        auto f_child = Cabana::slice<S_F_CID>(_f_array);
+        auto f_owner = Cabana::slice<S_F_OWNER>(_f_array);
+        for (int i = 0; i < (int) _f_array.size(); i++)
+        {
+            printf("%d, v(%d, %d, %d), e(%d, %d, %d), %d\n",
+                f_gid(i),
+                f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2),
+                f_egids(i, 0), f_egids(i, 1), f_egids(i, 2), 
+                f_owner(i));
+        }
+    }
 
     // Variables
   private:
