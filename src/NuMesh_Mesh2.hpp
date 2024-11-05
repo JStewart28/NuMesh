@@ -304,10 +304,10 @@ class Mesh
      */
     void gather_edges()
     {
-        /* Temporary naive solution to store which edges are needed from which processes: 
+        /* Temporary naive solution to store which faces are needed from which processes: 
          * Create a (comm_size x num_faces) view.
-         * If an edge is needed from another process, set (owner_rank, f_lid) to the 
-         * global edge ID needed from owner_rank.
+         * If a face is needed from another process, set (owner_rank, f_lid) to the 
+         * global face ID needed from owner_rank.
          */ 
         // Set a counter to count number messages that will be sent
         using CounterView = Kokkos::View<int, device_type, Kokkos::MemoryTraits<Kokkos::Atomic>>;

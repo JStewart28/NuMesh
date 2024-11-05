@@ -30,7 +30,7 @@ int main( int argc, char* argv[] )
     try {
         mesh_size = std::stoi(argv[1]);  // Convert argument to integer
         int val = std::stoi(argv[2]);
-        if (!val) boundary_type = NuMesh::BoundaryType::PERIODIC;
+        if (val) boundary_type = NuMesh::BoundaryType::PERIODIC;
         else boundary_type = NuMesh::BoundaryType::FREE;
     } catch (const std::invalid_argument& e) {
         std::cerr << "Usage: ./build_from_grid [mesh_size] [periodic]" << std::endl;
