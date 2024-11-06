@@ -261,78 +261,78 @@ class Mesh
      * Gather face IDs from remotely owned faces and assign them to
      * locally owned edges
      */
-    void gatherFaces()
-    {
-        /* Temporary naive solution to store which faces are needed from which processes: 
-         * Create a (comm_size x num_faces) view.
-         * If a face is needed from another process, set (owner_rank, f_lid) to the 
-         * global face ID needed from owner_rank.
-         */ 
-        // Set a counter to count number messages that will be sent
-        using CounterView = Kokkos::View<int, device_type, Kokkos::MemoryTraits<Kokkos::Atomic>>;
-        CounterView counter("counter");
-        Kokkos::deep_copy(counter, 0);
-        Kokkos::View<int**, device_type> sendvals_unpacked("sendvals_unpacked", _comm_size, _faces.size());
-        Kokkos::deep_copy(sendvals_unpacked, -1);
-        int rank = _rank, comm_size = _comm_size;
-        // Copy _vef_gid_start to device
-        Kokkos::View<int*[3], device_type> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
-        auto hv_tmp = Kokkos::create_mirror_view(_vef_gid_start_d);
-        Kokkos::deep_copy(hv_tmp, _vef_gid_start);
-        Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
-        auto f_egids = Cabana::slice<S_F_EIDS>(_faces);
-        Kokkos::parallel_for("find_needed_edge2", Kokkos::RangePolicy<execution_space>(0, _faces.size()), KOKKOS_LAMBDA(int f_lid) {
-            int e2_gid, from_rank = -1;
+    // void gatherFaces()
+    // {
+    //     /* Temporary naive solution to store which faces are needed from which processes: 
+    //      * Create a (comm_size x num_faces) view.
+    //      * If a face is needed from another process, set (owner_rank, f_lid) to the 
+    //      * global face ID needed from owner_rank.
+    //      */ 
+    //     // Set a counter to count number messages that will be sent
+    //     using CounterView = Kokkos::View<int, device_type, Kokkos::MemoryTraits<Kokkos::Atomic>>;
+    //     CounterView counter("counter");
+    //     Kokkos::deep_copy(counter, 0);
+    //     Kokkos::View<int**, device_type> sendvals_unpacked("sendvals_unpacked", _comm_size, _faces.size());
+    //     Kokkos::deep_copy(sendvals_unpacked, -1);
+    //     int rank = _rank, comm_size = _comm_size;
+    //     // Copy _vef_gid_start to device
+    //     Kokkos::View<int*[3], device_type> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
+    //     auto hv_tmp = Kokkos::create_mirror_view(_vef_gid_start_d);
+    //     Kokkos::deep_copy(hv_tmp, _vef_gid_start);
+    //     Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
+    //     auto f_egids = Cabana::slice<S_F_EIDS>(_faces);
+    //     Kokkos::parallel_for("find_needed_edge2", Kokkos::RangePolicy<execution_space>(0, _faces.size()), KOKKOS_LAMBDA(int f_lid) {
+    //         int e2_gid, from_rank = -1;
 
-            // Where this edge is the first edge, set its face1
-            e2_gid = f_egids(f_lid, 1);
+    //         // Where this edge is the first edge, set its face1
+    //         e2_gid = f_egids(f_lid, 1);
 
-            // If e2_gid < (rank GID start) or (> (rank+1) GID start), 
-            // this edge is owned by another process 
-            if ((rank != comm_size-1) && ((e2_gid < _vef_gid_start_d(rank, 1)) || (e2_gid >= _vef_gid_start_d(rank+1, 1))))
-            {
-                if (e2_gid < _vef_gid_start_d(0, 1)) from_rank = 0;
-                else if (e2_gid >= _vef_gid_start_d(comm_size-1, 1)) from_rank = comm_size-1;
-                else
-                {
-                    for (int r = 0; r < comm_size-1; r++)
-                    {
-                        if (r == rank) continue;
-                        //printf("checking btw R%d: [%d, %d)\n", r, _vef_gid_start_d(r, 1))
-                        if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1))) from_rank = r;
-                    }
-                }
-                sendvals_unpacked(from_rank, f_lid) = e2_gid;
-                counter()++;
-                //if (rank == 1) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
+    //         // If e2_gid < (rank GID start) or (> (rank+1) GID start), 
+    //         // this edge is owned by another process 
+    //         if ((rank != comm_size-1) && ((e2_gid < _vef_gid_start_d(rank, 1)) || (e2_gid >= _vef_gid_start_d(rank+1, 1))))
+    //         {
+    //             if (e2_gid < _vef_gid_start_d(0, 1)) from_rank = 0;
+    //             else if (e2_gid >= _vef_gid_start_d(comm_size-1, 1)) from_rank = comm_size-1;
+    //             else
+    //             {
+    //                 for (int r = 0; r < comm_size-1; r++)
+    //                 {
+    //                     if (r == rank) continue;
+    //                     //printf("checking btw R%d: [%d, %d)\n", r, _vef_gid_start_d(r, 1))
+    //                     if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1))) from_rank = r;
+    //                 }
+    //             }
+    //             sendvals_unpacked(from_rank, f_lid) = e2_gid;
+    //             counter()++;
+    //             //if (rank == 1) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
 
-            }
-            // If rank == comsize-1 we need a seperate condition
-            else if (rank == comm_size-1)
-            {
-                if (e2_gid < _vef_gid_start_d(rank, 1))
-                {
-                    for (int r = 0; r < rank; r++)
-                    {
-                        //printf("checking btw R%d: [%d, %d)\n", r, _vef_gid_start_d(r, 1))
-                        if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1)))
-                        {
-                            from_rank = r;
-                            sendvals_unpacked(from_rank, f_lid) = e2_gid;
-                            counter()++;
-                            //if (rank == 1) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
-                        }
-                    }
-                }
-            }
+    //         }
+    //         // If rank == comsize-1 we need a seperate condition
+    //         else if (rank == comm_size-1)
+    //         {
+    //             if (e2_gid < _vef_gid_start_d(rank, 1))
+    //             {
+    //                 for (int r = 0; r < rank; r++)
+    //                 {
+    //                     //printf("checking btw R%d: [%d, %d)\n", r, _vef_gid_start_d(r, 1))
+    //                     if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1)))
+    //                     {
+    //                         from_rank = r;
+    //                         sendvals_unpacked(from_rank, f_lid) = e2_gid;
+    //                         counter()++;
+    //                         //if (rank == 1) printf("R%d: sendvals_unpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvals_unpacked(from_rank, f_lid));
+    //                     }
+    //                 }
+    //             }
+    //         }
 
-            // if (e_fids(e2_lid, 0) != -1) e_fids(e2_lid, 0) = f_gid;
-            // else if (e_fids(e2_lid, 1) != -1) e_fids(e2_lid, 1) = f_gid;
-        });
-        Kokkos::fence();
-        int num_sends = -1;
-        Kokkos::deep_copy(num_sends, counter);
-    }
+    //         // if (e_fids(e2_lid, 0) != -1) e_fids(e2_lid, 0) = f_gid;
+    //         // else if (e_fids(e2_lid, 1) != -1) e_fids(e2_lid, 1) = f_gid;
+    //     });
+    //     Kokkos::fence();
+    //     int num_sends = -1;
+    //     Kokkos::deep_copy(num_sends, counter);
+    // }
 
     /**
      * After the vertex and edge connectivity has been set and
@@ -665,17 +665,97 @@ class Mesh
 
     /**
      * Refine a face by splitting it into four smaller triangles 
+     * Refining a face removes all ghosted data in the AoSoA. This
+     * is done in order to maintain the consistency of ghosted data
+     * being placed at the end of the AoSoA.
      * 
      * XXX - Currently only works on interior faces
      */
     void refine(int fid)
     {
+        /*
+        using vertex_data = Cabana::MemberTypes<int,       // Vertex global ID                                 
+                                                int,       // Owning rank
+                                                >;
+        using edge_data = Cabana::MemberTypes<  int[2],    // Vertex global ID endpoints of edge    
+                                                int[2],    // Face global IDs. The face where it is
+                                                           // the lowest edge, starrting at the first
+                                                           // vertex and going clockwise, is the first edge.                      
+                                                int,       // Edge global ID
+                                                int,       // Owning rank
+                                                >;
+        using face_data = Cabana::MemberTypes<  int[3],    // Vertex global IDs that make up face
+                                                int[3],    // Edge global IDs that make up face 
+                                                int,       // Face global ID
+                                                int,       // Parent face global ID
+                                                int,       // Child face global ID                        
+                                                int,       // Owning rank
+                                                >;
+        */
+
+        // Create 4 new faces
+        int f_lid_start = _owned_faces;
+        _owned_faces += 4;
+        _faces.resize(_owned_faces);
+        auto f_vgids = Cabana::slice<S_F_VIDS>(_faces);
+        auto f_egids = Cabana::slice<S_F_EIDS>(_faces);
+        auto f_gids = Cabana::slice<S_F_GID>(_faces);
+        auto f_pgids = Cabana::slice<S_F_PID>(_faces);
+        auto f_cgids = Cabana::slice<S_F_CID>(_faces);
+        auto f_ranks = Cabana::slice<S_F_OWNER>(_faces);
+
+        // Create 9 new edges
+        int e_lid_start = _owned_edges;
+        _owned_edges += 9;
+        _edges.resize(_owned_edges);
+
+        // Create 3 new vertices
+        int v_lid_start = _owned_vertices;
+        _owned_vertices += 3;
+        _vertices.resize(_owned_vertices);
+        auto v_gids = Cabana::slice<S_V_GID>(_vertices);
+        auto v_ranks = Cabana::slice<S_V_OWNER>(_vertices);
+
+        // Global IDs
+        int v_gid = _vef_gid_start(_rank, 0);
+        int e_gid = _vef_gid_start(_rank, 1);
+        int f_gid = _vef_gid_start(_rank, 2);
+
+        int rank = _rank;
+        Kokkos::parallel_for("new_vertices", Kokkos::RangePolicy<execution_space>(0, 9),
+            KOKKOS_LAMBDA(int i) {
+            
+            // Set vertex values
+            if (i < 3)
+            {
+                int v_lid = v_lid_start + i;
+                v_gids(v_lid) = v_gid + v_lid;
+                v_ranks(v_lid) = rank
+            }
+
+            // Set face values
+            if (i < 4)
+            {
+                int f_lid = f_lid_start + i;
+                f_gids(f_lid) = f_gid + i;      // Global ID
+                f_ranks(f_lid) = rank;          // Owning rank
+                f_pgids(f_lid) = fid;           // Parent face
+                f_cgids(f_lid) = -1;            // No children
+            }
+
+            
+
+        });
+
+
+
 
     }
 
     /**
      * Refine all faces specified in the fids vector 
      * Calling this function increments the version of the mesh
+     * and updates global IDS
      */
     void batchRefine(std::vector<int> fids)
     {
