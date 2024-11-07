@@ -77,6 +77,8 @@ int main( int argc, char* argv[] )
     auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
     nu_mesh->initializeFromArray(*array);
+    nu_mesh->refine(10);
+    nu_mesh->printFaces();
 
 
     } // Scope guard
