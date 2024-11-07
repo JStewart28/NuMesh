@@ -9,7 +9,7 @@
 
 #include <mpi.h>
 
-#include <mpi_advance.h>
+// #include <mpi_advance.h>
 
 #ifndef AOSOA_SLICE_INDICES
 #define AOSOA_SLICE_INDICES 1
@@ -25,11 +25,11 @@
     #define S_E_PID 3
     #define S_E_GID 4
     #define S_E_OWNER 5
-    #define S_F_VIDS 0
-    #define S_F_EIDS 1
-    #define S_F_GID 2
-    #define S_F_PID 3
-    #define S_F_CID 4
+    #define S_F_CID 0
+    #define S_F_VIDS 1
+    #define S_F_EIDS 2
+    #define S_F_GID 3
+    #define S_F_PID 4
     #define S_F_OWNER 5
 #endif
 
@@ -86,11 +86,11 @@ class Mesh
                                             int,       // Edge global ID
                                             int,       // Owning rank
                                             >;
-    using face_data = Cabana::MemberTypes<  int[3],    // Vertex global IDs that make up face
+    using face_data = Cabana::MemberTypes<  int[4],    // Child face global IDs
+                                            int[3],    // Vertex global IDs that make up face
                                             int[3],    // Edge global IDs that make up face 
                                             int,       // Face global ID
-                                            int,       // Parent face global ID
-                                            int,       // Child face global ID                        
+                                            int,       // Parent face global ID                        
                                             int,       // Owning rank
                                             >;
                                             
@@ -106,9 +106,9 @@ class Mesh
     {
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
-        MPIX_Info_init(&_xinfo);
-        MPIX_Comm_init(&_xcomm, _comm);
-        MPIX_Comm_topo_init(_xcomm);
+        //MPIX_Info_init(&_xinfo);
+        //MPIX_Comm_init(&_xcomm, _comm);
+        //MPIX_Comm_topo_init(_xcomm);
 
         _version = 0;
 
@@ -118,8 +118,8 @@ class Mesh
 
     ~Mesh()
     {
-        MPIX_Info_free(&_xinfo);
-        MPIX_Comm_free(&_xcomm);
+        //MPIX_Info_free(&_xinfo);
+        //MPIX_Comm_free(&_xcomm);
     }
 
     /**
@@ -175,7 +175,7 @@ class Mesh
             f_egids(f_lid, 0) = e_gid0; f_egids(f_lid, 1) = e_gid1; f_egids(f_lid, 2) = e_gid2;
             f_gid(f_lid) = f_lid + vef_gid_start_d(rank, 2);
             f_parent(f_lid) = -1;
-            f_child(f_lid) = -1;
+            f_child(f_lid, 0) = -1; f_child(f_lid, 1) = -1; f_child(f_lid, 2) = -1; f_child(f_lid, 3) = -1;
             f_owner(f_lid) = rank;
             // printf("v_gl0: (%d, %d), e_gl0: (%d, %d), v_gid1: %d, e_gid1: %d, v_gid2: %d, e_gid2: %d, R%d\n",
             //     v_gid0, v_lid0, e_gid0, e_lid0, v_gid1, e_gid1, v_gid2, e_gid2, rank);
@@ -204,8 +204,9 @@ class Mesh
             f_egids(f_lid, 0) = e_gid0; f_egids(f_lid, 1) = e_gid1; f_egids(f_lid, 2) = e_gid2;
             f_gid(f_lid) = f_lid + vef_gid_start_d(rank, 2);
             f_parent(f_lid) = -1;
-            f_child(f_lid) = -1;
+            f_child(f_lid, 0) = -1; f_child(f_lid, 1) = -1; f_child(f_lid, 2) = -1; f_child(f_lid, 3) = -1;
             f_owner(f_lid) = rank;
+
 
             // if (f_gid(f_lid) == 103)
             // {
@@ -698,27 +699,7 @@ class Mesh
      * XXX - Currently only works on interior faces
      */
     void refine(int p_lfid)
-    {
-        /*
-        using vertex_data = Cabana::MemberTypes<int,       // Vertex global ID                                 
-                                                int,       // Owning rank
-                                                >;
-        using edge_data = Cabana::MemberTypes<  int[2],    // Vertex global ID endpoints of edge    
-                                                int[2],    // Face global IDs. The face where it is
-                                                           // the lowest edge, starrting at the first
-                                                           // vertex and going clockwise, is the first edge.                      
-                                                int,       // Edge global ID
-                                                int,       // Owning rank
-                                                >;
-        using face_data = Cabana::MemberTypes<  int[3],    // Vertex global IDs that make up face
-                                                int[3],    // Edge global IDs that make up face 
-                                                int,       // Face global ID
-                                                int,       // Parent face global ID
-                                                int,       // Child face global ID                        
-                                                int,       // Owning rank
-                                                >;
-        */
-        
+    {        
         /**
          * Determine if neighboring faces have been refined. If so,
          * use those vertices and edges rather than creating new ones.
@@ -764,7 +745,7 @@ class Mesh
         auto e_vids = Cabana::slice<S_E_VIDS>(_edges);
         auto e_fids = Cabana::slice<S_E_FIDS>(_edges);
         auto e_ranks = Cabana::slice<S_E_OWNER>(_edges);
-        auto e_cids = Cabana::slice<S_E_CIDS>(_edges);
+        auto e_cid = Cabana::slice<S_E_CIDS>(_edges);
         auto e_pid = Cabana::slice<S_E_PID>(_edges);
 
         // Create 3 new vertices
@@ -800,30 +781,51 @@ class Mesh
                  *  Edge 0: connects vertex 0 to vertex 1
                  *  Edge 1: vertex 1 to vertex 2
                  *  Edge 2: vertex 0 to vertex 2
+                 * 
+                 * No parent edges
                  */
                 int e_lid = e_lid_start + i;
                 e_gids(e_lid) = e_gid_start + e_lid;
                 e_ranks(e_lid) = rank;
+                e_cid(e_lid, 0) = -1; e_cid(e_lid, 1) = -1;
+                e_pid(e_lid) = -1;
                 if (i < 2) {e_vids(e_lid, 0) = v_gid; e_vids(e_lid, 1) = v_gid+1;}
                 if (i == 2) {e_vids(e_lid, 0) = v_gid-2; e_vids(e_lid, 1) = v_gid;}
             
                 /**
                  * New edges 3, 4, and 5 (of 9)
                  *  Edge 3: 0th vertex of parent face to new vertex 0
+                 *      - Parent: edge 0 of parent face
                  *  Edge 4: 1st vertex of parent face to new vertex 1
+                 *      - Parent: edge 1 of parent face
                  *  Edge 5: 2nd vertex of parent face to new vertex 2
+                 *      - Parent: edge 2 of parent face
+                 * 
+                 * Also, for the parent edges, set these new edges as their children
                  */
                 e_lid += 3;
                 int parent_vertex = f_vgids(p_lfid, i);
                 e_gids(e_lid) = e_gid_start + e_lid;
                 e_ranks(e_lid) = rank;
                 e_vids(e_lid, 0) = parent_vertex; e_vids(e_lid, 1) = v_gid;
+                int parent_egid = f_egids(p_lfid, i);
+                e_pid(e_lid) = parent_egid;
+                e_cid(e_lid, 0) = -1; e_cid(e_lid, 1) = -1;
+                // Parent edges
+                int parent_elid = parent_egid - e_gid_start;
+                e_cid(parent_elid, 0) = e_gid_start + e_lid;
+
 
                 /**
                  * New edges 6, 7, and 8 (of 9, these are the last three)
                  *  Edge 6: new vertex 0 to 1st vertex of parent face
+                 *      - Parent: edge 0 of parent face
                  *  Edge 7: new vertex 1 to 2nd vertex of parent face
+                 *      - Parent: edge 1 of parent face
                  *  Edge 8: new vertex 2 to 0th vertex of parent face
+                 *      - Parent: edge 2 of parent face
+                 * 
+                 * Also, for the parent edges, set these new edges as their children
                  */
                 e_lid += 3;
                 e_gids(e_lid) = e_gid_start + e_lid;
@@ -831,9 +833,14 @@ class Mesh
                 if (i < 2) parent_vertex = f_vgids(p_lfid, i+1);
                 if (i == 2) parent_vertex = f_vgids(p_lfid, 0);
                 e_vids(e_lid, 0) = v_gid; e_vids(e_lid, 1) = parent_vertex;
+                e_pid(e_lid) = parent_egid;
+                e_cid(e_lid, 0) = -1; e_cid(e_lid, 1) = -1;
+                // Parent edges
+                e_cid(parent_elid, 1) = e_gid_start + e_lid;
             });
             Kokkos::fence();
 
+            int owned_edges = _owned_edges;
             Kokkos::parallel_for("new_faces", Kokkos::RangePolicy<execution_space>(0, 4),
             KOKKOS_LAMBDA(int i) {
 
@@ -844,7 +851,7 @@ class Mesh
                 f_gids(f_lid) = f_gid;          // Global ID
                 f_ranks(f_lid) = rank;          // Owning rank
                 f_pgids(f_lid) = f_gid_parent;  // Parent face
-                f_cgids(f_lid) = -1;            // No children
+                for (int j = 0; j < 4; j++) {f_cgids(f_lid, j) = -1;}            // No children
 
                 /**
                  * Set vertices for new faces 0, 1, 2, and 3
@@ -866,7 +873,7 @@ class Mesh
                 {
                     v0 = v_gids(v_lid_start);
                     v1 = f_vgids(p_lfid, 1);
-                    v2 = v1 = v_gids(v_lid_start+1);
+                    v2 = v_gids(v_lid_start+1);
                 }
                 if (i == 2)
                 {
@@ -883,6 +890,28 @@ class Mesh
                 f_vgids(f_lid, 0) = v0;
                 f_vgids(f_lid, 1) = v1;
                 f_vgids(f_lid, 2) = v2;
+
+                /**
+                 * Set these faces as child faces of the face being refined
+                 */
+                f_cgids(p_lfid, i) = f_gid;
+
+                /**
+                 * Assign edges by walking the end of the edge array and
+                 * checking which edges match the correct vertices
+                 */ 
+                int idx = 0;
+                for (int j = e_lid_start; j < owned_edges; j++)
+                {
+                    int ev0 = e_vids(j, 0), ev1 = e_vids(j, 1);
+                    if ((ev0 == v0 || ev0 == v1 || ev0 == v2) && (ev1 == v0 || ev1 == v1 || ev1 == v2))
+                    {
+                        // Both ev0 and ev1 are present in two of either v0, v1, or v2
+                        f_egids(f_lid, idx++) = j;
+                    }
+
+                }
+                
             });
         }
     }
@@ -928,6 +957,8 @@ class Mesh
     {
         auto e_vid = Cabana::slice<S_E_VIDS>(_edges);
         auto e_fids = Cabana::slice<S_E_FIDS>(_edges);
+        auto e_children = Cabana::slice<S_E_CIDS>(_edges);
+        auto e_parent = Cabana::slice<S_E_PID>(_edges);
         auto e_gid = Cabana::slice<S_E_GID>(_edges);
         auto e_owner = Cabana::slice<S_E_OWNER>(_edges);
         int start = 0, end = _edges.size();
@@ -935,10 +966,12 @@ class Mesh
         else if (opt == 2) start = _owned_edges;
         for (int i = start; i < end; i++)
         {
-            printf("%d, v(%d, %d), f(%d, %d), %d, %d\n",
+            printf("%d, v(%d, %d), f(%d, %d), c(%d, %d), p(%d) %d, %d\n",
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1),
                 e_fids(i, 0), e_fids(i, 1),
+                e_children(i, 0), e_children(i, 1),
+                e_parent(i),
                 e_owner(i), _rank);
         }
     }
@@ -953,10 +986,12 @@ class Mesh
         auto f_owner = Cabana::slice<S_F_OWNER>(_faces);
         for (int i = 0; i < (int) _faces.size(); i++)
         {
-            printf("%d, v(%d, %d, %d), e(%d, %d, %d), %d\n",
+            printf("%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), %d\n",
                 f_gid(i),
                 f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2),
-                f_egids(i, 0), f_egids(i, 1), f_egids(i, 2), 
+                f_egids(i, 0), f_egids(i, 1), f_egids(i, 2),
+                f_child(i, 0), f_child(i, 1), f_child(i, 2), f_child(i, 3),
+                f_parent(i),
                 f_owner(i));
         }
     }
@@ -966,8 +1001,8 @@ class Mesh
     MPI_Comm _comm;
     int _rank, _comm_size;
 
-    MPIX_Comm* _xcomm;
-    MPIX_Info* _xinfo;
+    //MPIX_Comm* _xcomm;
+    //MPIX_Info* _xinfo;
 
     // AoSoAs for the mesh
     v_array_type _vertices;

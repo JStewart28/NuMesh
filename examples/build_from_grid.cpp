@@ -72,13 +72,15 @@ int main( int argc, char* argv[] )
     int halo_width = 2;
     auto local_grid = Cabana::Grid::createLocalGrid( global_grid, halo_width );
 
-    auto nu_mesh = NuMesh::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
+    auto numesh = NuMesh::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
 
     auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
-    nu_mesh->initializeFromArray(*array);
-    nu_mesh->refine(10);
-    nu_mesh->printFaces();
+    numesh->initializeFromArray(*array);
+    numesh->refine(12);
+    numesh->printEdges(3);
+    printf("**********\n");
+    numesh->printFaces();
 
 
     } // Scope guard
