@@ -77,9 +77,9 @@ int main( int argc, char* argv[] )
     auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
     numesh->initializeFromArray(*array);
-    numesh->refine(12);
-    numesh->refine(13);
-    //numesh->refine(22);
+    numesh->_refine(12);
+    numesh->_refine(13);
+    //numesh->_refine(22);
     numesh->printEdges(3);
     printf("**********\n");
     numesh->printFaces();

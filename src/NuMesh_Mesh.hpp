@@ -698,7 +698,7 @@ class Mesh
      * 
      * XXX - Currently only works on interior faces
      */
-    void refine(int p_lfid)
+    void _refine(int p_lfid)
     {        
         /**
          * Determine if neighboring faces have been refined. If so,

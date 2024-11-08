@@ -134,7 +134,7 @@ class Mesh2DTest : public ::testing::Test
 
         if (comm_size_ == 1)
         {
-            numesh->refine(12);
+            numesh->_refine(12);
             auto edges = numesh->edges();
             auto faces = numesh->faces();
             
