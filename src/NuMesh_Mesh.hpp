@@ -707,9 +707,36 @@ class Mesh
          */
         int num_new_verts = 0;
         int num_new_edges = 0;
-        auto face_tuple = _faces.getTuple(p_lfid);
         int edge_children[3][2];
         int edge_children_verts[3][2];
+
+        // Global IDs
+        int v_gid_start = _vef_gid_start(_rank, 0);
+        int e_gid_start = _vef_gid_start(_rank, 1);
+        int f_gid_start = _vef_gid_start(_rank, 2);
+
+        int rank = _rank;
+        auto faces = _faces;
+        auto edges = _edges;
+        // This needs to be done in a parallel for loop to avoid memory space errors
+        Kokkos::parallel_for("new_vertices_and_edges", Kokkos::RangePolicy<execution_space>(0, 3),
+            KOKKOS_LAMBDA(int i) {
+                
+            auto face_tuple = faces.getTuple(p_lfid);
+            auto ex_lid = e_lid = Cabana::get<S_F_EIDS>(face_tuple, i) - e_gid_start;
+            if (ex_lid < 0) throw std::runtime_error("NuMesh::refine: Cannot refine face on boundary" );
+            auto edge_tuple = edges.getTuple(e_lid);
+            for (int j = 0; j < 2; j++)
+            {
+                int child_id = Cabana::get<S_E_CIDS>(edge_tuple, j);
+                int vert_id = Cabana::get<S_E_VIDS>(edge_tuple, j);
+                if (child_id == -1) {num_new_edges++;}
+                edge_children[i][j] = child_id;
+                edge_children_verts[i][j] = vert_id;
+            }
+
+        
+        });
         for (int i = 0; i < 3; i++)
         {
             int e_lid = Cabana::get<S_F_EIDS>(face_tuple, i) - _vef_gid_start(_rank, 1);
@@ -756,12 +783,6 @@ class Mesh
         auto v_gids = Cabana::slice<S_V_GID>(_vertices);
         auto v_ranks = Cabana::slice<S_V_OWNER>(_vertices);
 
-        // Global IDs
-        int v_gid_start = _vef_gid_start(_rank, 0);
-        int e_gid_start = _vef_gid_start(_rank, 1);
-        int f_gid_start = _vef_gid_start(_rank, 2);
-
-        int rank = _rank;
         if (num_new_verts == 3)
         {
             // No neighbor faces have been refined and we generate new all new vertices and edges,
