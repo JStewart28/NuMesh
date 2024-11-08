@@ -705,8 +705,12 @@ class Mesh
          * use those vertices and edges rather than creating new ones.
          * We must do this to avoid redundant vertices and edges
          */
-        int num_new_verts = 0;
-        int num_new_edges = 0;
+        // Atomic counters
+        using CounterView = Kokkos::View<int, memory_space, Kokkos::MemoryTraits<Kokkos::Atomic>>;
+        CounterView new_edges("new_edges");
+        Kokkos::deep_copy(new_edges, 0);
+        int num_new_verts;
+        int num_new_edges;
         int edge_children[3][2];
         int edge_children_verts[3][2];
 
@@ -723,36 +727,18 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
                 
             auto face_tuple = faces.getTuple(p_lfid);
-            auto ex_lid = e_lid = Cabana::get<S_F_EIDS>(face_tuple, i) - e_gid_start;
-            if (ex_lid < 0) throw std::runtime_error("NuMesh::refine: Cannot refine face on boundary" );
-            auto edge_tuple = edges.getTuple(e_lid);
-            for (int j = 0; j < 2; j++)
-            {
-                int child_id = Cabana::get<S_E_CIDS>(edge_tuple, j);
-                int vert_id = Cabana::get<S_E_VIDS>(edge_tuple, j);
-                if (child_id == -1) {num_new_edges++;}
-                edge_children[i][j] = child_id;
-                edge_children_verts[i][j] = vert_id;
-            }
+            auto ex_lid = Cabana::get<S_F_EIDS>(face_tuple, i) - e_gid_start;
+            if (ex_lid < 0) return; // Edge not owned
+            auto edge_tuple = edges.getTuple(ex_lid);
 
-        
+            // Check if the edges has children
+            int child_id = Cabana::get<S_E_CIDS>(edge_tuple, 0);
+            if (child_id == -1) {new_edges()++;}        
         });
-        for (int i = 0; i < 3; i++)
-        {
-            int e_lid = Cabana::get<S_F_EIDS>(face_tuple, i) - _vef_gid_start(_rank, 1);
-            if (e_lid < 0) throw std::runtime_error("NuMesh::refine: Cannot refine face on boundary" );
-            auto edge_tuple = _edges.getTuple(e_lid);
-            for (int j = 0; j < 2; j++)
-            {
-                int child_id = Cabana::get<S_E_CIDS>(edge_tuple, j);
-                int vert_id = Cabana::get<S_E_VIDS>(edge_tuple, j);
-                if (child_id == -1) {num_new_edges++;}
-                edge_children[i][j] = child_id;
-                edge_children_verts[i][j] = vert_id;
-            }
-        }
+        Kokkos::deep_copy(num_new_edges, new_edges);
+        num_new_edges *= 2;
         num_new_verts = num_new_edges / 2;
-        printf("New ve: %d, %d\n", num_new_verts, num_new_edges+3);
+        printf("Refine FID: %d, new ve: %d, %d\n", p_lfid, num_new_verts, num_new_edges+3);
         
         // Create 4 new faces
         int f_lid_start = _owned_faces;
@@ -939,8 +925,116 @@ class Mesh
 
         else
         {
-            // Some, or all, niehgbor faces have been refined so we use their vertex
-            // and edge data for refined sides
+            /**
+             * Some, or all, neighbor faces have been refined so we use their vertex
+             * and edge data for refined sides
+             */
+            Kokkos::parallel_for("new_vertices_and_edges", Kokkos::RangePolicy<execution_space>(0, 3),
+            KOKKOS_LAMBDA(int i) {
+            
+            /**
+             * For each edge, check if it has been previously split (i.e. has children)
+             * If so, use this data when refining the face. 
+             * If not, split the edge and create a new vertex.
+             */
+            auto face_tuple = faces.getTuple(p_lfid);
+            int e_lid, v0, v1, ce0_lid, ce1_lid;
+
+            // Edge i
+            e_lid = Cabana::get<S_F_EIDS>(face_tuple, i) - e_gid_start;
+            auto edge0 = edges.getTuple(e_lid);
+            ce0_lid = Cabana::get<S_E_CIDS>(edge0, 0) - e_gid_start;
+            ce1_lid = Cabana::get<S_E_CIDS>(edge0, 1) - e_gid_start;
+            if (ce0_lid == -1)
+            {
+                // No children; this edge needs to be split
+                
+            }
+
+
+            v0 = Cabana::get<S_E_VIDS>(edge0, 0); v1 = Cabana::get<S_E_VIDS>(edge0, 1);
+
+
+            auto e_lid = Cabana::get<S_F_EIDS>(face_tuple, i) - e_gid_start;
+            auto edge_tuple = edges.getTuple(ex_lid);
+            int v_gid = Cabana::get<S_F_VIDS>(face_tuple, i)
+
+
+            // Check if the edges has children
+            int child_id = Cabana::get<S_E_CIDS>(edge_tuple, 0);
+            if (child_id == -1) {new_edges()++;}     
+
+            /* Set the 3 new vertices and connect three new edges between them */
+    
+            // Vertices
+            int v_lid = v_lid_start + i;
+            int v_gid = v_gid_start + v_lid;
+            v_gids(v_lid) = v_gid;
+            v_ranks(v_lid) = rank;
+
+            /**
+             * New edges 0, 1, and 2 (of 9)
+             *  Edge 0: connects vertex 0 to vertex 1
+             *  Edge 1: vertex 1 to vertex 2
+             *  Edge 2: vertex 0 to vertex 2
+             * 
+             * No parent edges
+             */
+            int e_lid = e_lid_start + i;
+            e_gids(e_lid) = e_gid_start + e_lid;
+            e_ranks(e_lid) = rank;
+            e_cid(e_lid, 0) = -1; e_cid(e_lid, 1) = -1;
+            e_pid(e_lid) = -1;
+            if (i < 2) {e_vids(e_lid, 0) = v_gid; e_vids(e_lid, 1) = v_gid+1;}
+            if (i == 2) {e_vids(e_lid, 0) = v_gid-2; e_vids(e_lid, 1) = v_gid;}
+        
+            /**
+             * New edges 3, 4, and 5 (of 9)
+             *  Edge 3: 0th vertex of parent face to new vertex 0
+             *      - Parent: edge 0 of parent face
+             *  Edge 4: 1st vertex of parent face to new vertex 1
+             *      - Parent: edge 1 of parent face
+             *  Edge 5: 2nd vertex of parent face to new vertex 2
+             *      - Parent: edge 2 of parent face
+             * 
+             * Also, for the parent edges, set these new edges as their children
+             */
+            e_lid += 3;
+            int parent_vertex = f_vgids(p_lfid, i);
+            e_gids(e_lid) = e_gid_start + e_lid;
+            e_ranks(e_lid) = rank;
+            e_vids(e_lid, 0) = parent_vertex; e_vids(e_lid, 1) = v_gid;
+            int parent_egid = f_egids(p_lfid, i);
+            e_pid(e_lid) = parent_egid;
+            e_cid(e_lid, 0) = -1; e_cid(e_lid, 1) = -1;
+            // Parent edges
+            int parent_elid = parent_egid - e_gid_start;
+            e_cid(parent_elid, 0) = e_gid_start + e_lid;
+
+
+            /**
+             * New edges 6, 7, and 8 (of 9, these are the last three)
+             *  Edge 6: new vertex 0 to 1st vertex of parent face
+             *      - Parent: edge 0 of parent face
+             *  Edge 7: new vertex 1 to 2nd vertex of parent face
+             *      - Parent: edge 1 of parent face
+             *  Edge 8: new vertex 2 to 0th vertex of parent face
+             *      - Parent: edge 2 of parent face
+             * 
+             * Also, for the parent edges, set these new edges as their children
+             */
+            e_lid += 3;
+            e_gids(e_lid) = e_gid_start + e_lid;
+            e_ranks(e_lid) = rank;
+            if (i < 2) parent_vertex = f_vgids(p_lfid, i+1);
+            if (i == 2) parent_vertex = f_vgids(p_lfid, 0);
+            e_vids(e_lid, 0) = v_gid; e_vids(e_lid, 1) = parent_vertex;
+            e_pid(e_lid) = parent_egid;
+            e_cid(e_lid, 0) = -1; e_cid(e_lid, 1) = -1;
+            // Parent edges
+            e_cid(parent_elid, 1) = e_gid_start + e_lid;
+        });
+        Kokkos::fence();
         }
     }
 

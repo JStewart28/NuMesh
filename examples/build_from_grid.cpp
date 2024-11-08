@@ -80,9 +80,9 @@ int main( int argc, char* argv[] )
     numesh->_refine(12);
     numesh->_refine(13);
     //numesh->_refine(22);
-    numesh->printEdges(3);
-    printf("**********\n");
-    numesh->printFaces();
+    //numesh->printEdges(3);
+    //printf("**********\n");
+    //numesh->printFaces();
 
 
     } // Scope guard
