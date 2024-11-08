@@ -78,6 +78,8 @@ int main( int argc, char* argv[] )
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
     numesh->initializeFromArray(*array);
     numesh->refine(12);
+    numesh->refine(13);
+    //numesh->refine(22);
     numesh->printEdges(3);
     printf("**********\n");
     numesh->printFaces();

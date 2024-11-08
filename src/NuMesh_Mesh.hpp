@@ -725,6 +725,7 @@ class Mesh
             }
         }
         num_new_verts = num_new_edges / 2;
+        printf("New ve: %d, %d\n", num_new_verts, num_new_edges+3);
         
         // Create 4 new faces
         int f_lid_start = _owned_faces;
@@ -737,7 +738,7 @@ class Mesh
         auto f_cgids = Cabana::slice<S_F_CID>(_faces);
         auto f_ranks = Cabana::slice<S_F_OWNER>(_faces);
 
-        // Create 9 new edges
+        // Create new edges
         int e_lid_start = _owned_edges;
         _owned_edges += 3 + num_new_edges;
         _edges.resize(_owned_edges);
@@ -748,7 +749,7 @@ class Mesh
         auto e_cid = Cabana::slice<S_E_CIDS>(_edges);
         auto e_pid = Cabana::slice<S_E_PID>(_edges);
 
-        // Create 3 new vertices
+        // Create new vertices
         int v_lid_start = _owned_vertices;
         _owned_vertices += num_new_verts;
         _vertices.resize(_owned_vertices);
@@ -913,6 +914,12 @@ class Mesh
                 }
                 
             });
+        }
+
+        else
+        {
+            // Some, or all, niehgbor faces have been refined so we use their vertex
+            // and edge data for refined sides
         }
     }
 
