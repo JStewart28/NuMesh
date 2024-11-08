@@ -131,12 +131,13 @@ class Mesh2DTest : public ::testing::Test
         auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
         auto array = Cabana::Grid::createArray<double, MemorySpace>("for_initialization", layout);
         numesh->initializeFromArray(*array);
-        numesh->refine(12);
-        auto edges = numesh->edges();
-        auto faces = numesh->faces();
 
         if (comm_size_ == 1)
         {
+            numesh->refine(12);
+            auto edges = numesh->edges();
+            auto faces = numesh->faces();
+            
             // Edge 18
             Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge18;
             Cabana::get<S_E_VIDS>(edge18, 0) = 6; 
