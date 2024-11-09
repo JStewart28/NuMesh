@@ -972,18 +972,19 @@ class Mesh
      * 
      * @param fids: local IDs of faces to be refined
      */
-    void refine(std::vector<int> fids)
+    template <class View>
+    void refine(View& fids)
     {
         _version++;
-        int rank = _rank;
-        int num_refinements = fids.size();
+        const int rank = _rank;
+        const int num_face_refinements = fids.extent(0);
 
         // Global IDs
         int v_gid_start = _vef_gid_start(_rank, 0);
         int e_gid_start = _vef_gid_start(_rank, 1);
         int f_gid_start = _vef_gid_start(_rank, 2);
 
-        // // Create 4 new faces
+        // Slices we need
         // int f_lid_start = _owned_faces;
         // _owned_faces += 4;
         // _faces.resize(_owned_faces);
@@ -1005,12 +1006,8 @@ class Mesh
         // auto e_cid = Cabana::slice<S_E_CIDS>(_edges);
         // auto e_pid = Cabana::slice<S_E_PID>(_edges);
 
-        // // Create new vertices
-        // int v_lid_start = _owned_vertices;
-        // _owned_vertices += num_new_verts;
-        // _vertices.resize(_owned_vertices);
-        // auto v_gids = Cabana::slice<S_V_GID>(_vertices);
-        // auto v_ranks = Cabana::slice<S_V_OWNER>(_vertices);
+        auto v_gid = Cabana::slice<S_V_GID>(_vertices);
+        auto v_rank = Cabana::slice<S_V_OWNER>(_vertices);
 
         
 
@@ -1019,29 +1016,87 @@ class Mesh
          * then refine them in parallel
          *******************************************************/
 
-        using counter_view = Kokkos::View<int, memory_space, Kokkos::MemoryTraits<Kokkos::Atomic>>;
         using atomic_view = Kokkos::View<int*, memory_space, Kokkos::MemoryTraits<Kokkos::Atomic>>;
-        atomic_view e_needs_refine("e_needs_refine", _owned_edges);
+        using atomic_view1 = Kokkos::View<int, memory_space, Kokkos::MemoryTraits<Kokkos::Atomic>>;
+        atomic_view mark_edges("mark_edges", _owned_edges);
+        atomic_view1 new_verts("new_verts"); // Each edge refinement contributes one new vertex
         Kokkos::deep_copy(e_needs_refine, 0);
+        Kokkos::deep_copy(new_verts, 0);
 
-         Kokkos::parallel_for("mark_edges_to_refine", Kokkos::RangePolicy<execution_space>(0, num_refinements),
+        Kokkos::parallel_for("mark_edges", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
             KOKKOS_LAMBDA(int i) {
             
             for (int j = 0; j < 3; j++)
             {
-                int ex_lid = f_egids(fids[i], j);
-                e_needs_refine(ex_lid) = 1;
-                counter()++;
+                int ex_lid = f_egids(fids(i), j);
+                mark_edges(ex_lid) = 1;
+                new_verts()++;
+            }
+        });
+        int new_vertices;
+        Kokkos::deep_copy(new_vertices, new_verts);
+
+        // Reduce e_needs_refine array into a dense array of (e_lid) that needs to be refined
+        atomic_view edges_to_split("edges_to_split", new_vertices)
+        Kokkos::parallel_for("edges_to_split", Kokkos::RangePolicy<execution_space>(0, new_vertices),
+            KOKKOS_LAMBDA(int i) {
+            
+            for (int j = 0; j < 3; j++)
+            {
+                int ex_lid = f_egids(fids(i), j);
+                mark_edges(ex_lid) = 1;
+                new_verts()++;
             }
         });
 
+        printf("New verts: %d\n", new_vertices);
+
         for (int i = 0; i < _owned_edges; i++)
         {
-            if (e_needs_refine(i) == 1)
+            if (mark_edges(i) == 1)
             {
                 printf("Edge %d marked\n", i+e_gid_start);
             }
         }
+
+        // Resize arrays
+        int f_lid_start = _owned_faces;
+        _owned_faces += num_face_refinements * 4;
+        _faces.resize(_owned_faces);
+        int e_lid_start = _owned_edges;
+        // Each face contributes 3 new edges; each vertex contributes 2
+        _owned_edges += num_face_refinements * 3 + new_vertices * 2;
+        _edges.resize(_owned_edges);
+        int v_lid_start = _owned_vertices;
+        _owned_vertices += new_vertices;
+        _vertices.resize(_owned_vertices);
+
+        // Populate new vertices
+        Kokkos::parallel_for("populate new vertices", Kokkos::RangePolicy<execution_space>(0, new_vertices),
+            KOKKOS_LAMBDA(int i) {
+            
+            // Populate new vertices
+            int v_l = v_lid_start + i;
+            int v_g = v_l + v_gid_start;
+            v_gid(v_l) = v_g;
+            v_rank(v_l) = rank;
+
+        });
+
+        // Refine edges
+        Kokkos::parallel_for("refine_edges", Kokkos::RangePolicy<execution_space>(0, _owned_edges),
+            KOKKOS_LAMBDA(int i) {
+            
+            // Check if this edge needs to be split
+            if (e_needs_refine(i) == 0) return;
+
+            // Split the edge and set it's parent edge
+            int ec_lid0 = e_lid_start + i*2;
+            int ec_lid1 = e_lid_start + i*2 + 1;
+            printf("Adding edges %d, %d\n", ec_lid0, ec_lid1);
+
+            
+        });
 
 
     }

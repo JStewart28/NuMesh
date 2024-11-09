@@ -77,8 +77,19 @@ int main( int argc, char* argv[] )
     auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
     numesh->initializeFromArray(*array);
-    std::vector<int> torefine = {12};
-    numesh->refine(torefine);
+    int size = 1;
+    Kokkos::View<int*, memory_space> fids("fids", size);
+    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, size),
+        KOKKOS_LAMBDA(int i) {
+            
+        if (i == 0)
+        {
+            fids(i) = 12;
+        }
+
+    });
+
+    numesh->refine(fids);
     //numesh->_refine(13);
     //numesh->_refine(22);
     //numesh->printEdges(3);
