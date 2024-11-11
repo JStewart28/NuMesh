@@ -10,6 +10,8 @@ int main( int argc, char* argv[] )
 {
     using execution_space = Kokkos::DefaultHostExecutionSpace;
     using memory_space = execution_space::memory_space;
+    // using execution_space = Kokkos::Cuda;
+    // using memory_space = Kokkos::CudaSpace;
     // using nu_mesh_type = NuMesh::Mesh<execution_space, memory_space>;
 
     MPI_Init( &argc, &argv );         // Initialize MPI
@@ -92,7 +94,7 @@ int main( int argc, char* argv[] )
     numesh->refine(fids);
     //numesh->_refine(13);
     //numesh->_refine(22);
-    //numesh->printEdges(3);
+    numesh->printEdges(3);
     //printf("**********\n");
     //numesh->printFaces();
 
