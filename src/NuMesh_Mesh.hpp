@@ -979,9 +979,13 @@ class Mesh
         counter_view counter("counter");
         Kokkos::deep_copy(counter, 0);
         auto f_egid = Cabana::slice<S_F_EIDS>(_faces);
+        int owned_edges = _owned_edges;
         Kokkos::parallel_for("populate edge_needs_refine", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
             KOKKOS_LAMBDA(int i) {
             
+            // Check that we don't run off the end of the AoSoA
+            if (i >= owned_edges) return;
+
             for (int j = 0; j < 3; j++)
             {
                 int ex_lid = f_egid(fids(i), j);
@@ -1046,8 +1050,6 @@ class Mesh
             
             // Check if this edge needs to be split
             if (edge_needs_refine(i) == 0) return;
-
-            printf("Refining edge: %d\n", i);
             
             // Create new edge local IDs
             int offset = Kokkos::atomic_fetch_add(&counter(), 1);
@@ -1055,8 +1057,6 @@ class Mesh
             int ec_lid1 = e_lid_start + offset*2 + 1;
             int ec_gid0 = e_gid_start + ec_lid0;
             int ec_gid1 = e_gid_start + ec_lid1;
-
-            printf("Offset: %d, adding edges %d, %d\n", offset, ec_lid0, ec_lid1);
 
             // Global IDs = global ID start + local ID
             e_gid(ec_lid0) = ec_gid0;
@@ -1127,11 +1127,13 @@ class Mesh
 
         });
 
+        // Update global ID values
+        updateGlobalIDs();
+
         /********************************************************
-         * Phase 1.1: Communicate new edge and vertex
+         * Phase 2.0: Communicate new edge and vertex
          * global IDs to all processes
          *******************************************************/
-        updateGlobalIDs();
     }
 
     /**
@@ -1166,7 +1168,7 @@ class Mesh
             // Don't update global IDs when the mesh is initially formed
             return;
         }
-
+        return;
         int dv = _vef_gid_start(_rank, 0) - old_vef_start(_rank, 0);
         int de = _vef_gid_start(_rank, 1) - old_vef_start(_rank, 1);
         int df = _vef_gid_start(_rank, 2) - old_vef_start(_rank, 2);

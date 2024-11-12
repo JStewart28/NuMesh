@@ -86,7 +86,7 @@ int main( int argc, char* argv[] )
             
         if (i == 0)
         {
-            fids(i) = 12;
+            fids(i) = 0;
         }
 
     });
