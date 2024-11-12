@@ -985,7 +985,7 @@ class Mesh
         int f_gid_start = _vef_gid_start(_rank, 2);
 
         /********************************************************
-         * Phase 1: Collect all edges that need to be refined,
+         * Phase 1.0: Collect all edges that need to be refined,
          * then refine them in parallel
          *******************************************************/
 
@@ -1137,7 +1137,10 @@ class Mesh
 
         });
 
-
+        /********************************************************
+         * Phase 1.1: Communicate new edge global IDs
+         * to all processes
+         *******************************************************/
 
     }
 
