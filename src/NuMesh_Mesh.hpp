@@ -698,7 +698,7 @@ class Mesh
      * 
      * XXX - Currently only works on interior faces
      */
-    void _refine(int p_lfid)
+    void _refineEdges(int p_lfid)
     {        
         /**
          * Determine if neighboring faces have been refined. If so,
@@ -984,21 +984,6 @@ class Mesh
         int e_gid_start = _vef_gid_start(_rank, 1);
         int f_gid_start = _vef_gid_start(_rank, 2);
 
-        // Slices we need
-        // int f_lid_start = _owned_faces;
-        // _owned_faces += 4;
-        // _faces.resize(_owned_faces);
-        // auto f_vgids = Cabana::slice<S_F_VIDS>(_faces);
-        auto f_egid = Cabana::slice<S_F_EIDS>(_faces);
-        // auto f_gids = Cabana::slice<S_F_GID>(_faces);
-        // auto f_pgids = Cabana::slice<S_F_PID>(_faces);
-        // auto f_cgids = Cabana::slice<S_F_CID>(_faces);
-        // auto f_ranks = Cabana::slice<S_F_OWNER>(_faces);
-
-        
-
-        
-
         /********************************************************
          * Phase 1: Collect all edges that need to be refined,
          * then refine them in parallel
@@ -1009,6 +994,7 @@ class Mesh
         atomic_view edge_needs_refine("edge_needs_refine", _owned_edges);
         counter_view counter("counter");
         Kokkos::deep_copy(counter, 0);
+        auto f_egid = Cabana::slice<S_F_EIDS>(_faces);
         Kokkos::parallel_for("populate edge_needs_refine", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
             KOKKOS_LAMBDA(int i) {
             
@@ -1064,12 +1050,12 @@ class Mesh
         // Edge slices
         auto e_gid = Cabana::slice<S_E_GID>(_edges);
         auto e_vid = Cabana::slice<S_E_VIDS>(_edges);
-        // auto e_fids = Cabana::slice<S_E_FIDS>(_edges);
+        auto e_fid = Cabana::slice<S_E_FIDS>(_edges);
         auto e_rank = Cabana::slice<S_E_OWNER>(_edges);
         auto e_cid = Cabana::slice<S_E_CIDS>(_edges);
         auto e_pid = Cabana::slice<S_E_PID>(_edges);
 
-        // Refine edges
+        // Refine existing  edges
         Kokkos::deep_copy(counter, 0);
         Kokkos::parallel_for("refine_edges", Kokkos::RangePolicy<execution_space>(0, e_lid_start),
             KOKKOS_LAMBDA(int i) {
@@ -1083,10 +1069,11 @@ class Mesh
             int offset = Kokkos::atomic_fetch_add(&counter(), 1);
             int ec_lid0 = e_lid_start + offset*2;
             int ec_lid1 = e_lid_start + offset*2 + 1;
-            printf("Adding edges %d, %d\n", ec_lid0, ec_lid1);
+            printf("Offset: %d, adding edges %d, %d\n", offset, ec_lid0, ec_lid1);
 
             // Global IDs = global ID start + local ID
-            e_gid(ec_lid0) = e_gid_start + ec_lid0; e_gid(ec_lid1) = e_gid_start + ec_lid1;
+            e_gid(ec_lid0) = e_gid_start + ec_lid0;
+            e_gid(ec_lid1) = e_gid_start + ec_lid1;
 
             // Set parent and child edges
             e_pid(ec_lid0) = i; e_cid(ec_lid0, 0) = -1; e_cid(ec_lid0, 1) = -1;
@@ -1095,50 +1082,61 @@ class Mesh
             // Owning rank
             e_rank(ec_lid0) = rank; e_rank(ec_lid1) = rank;
 
+            // Face IDs
+            e_fid(ec_lid0, 0) = -1; e_fid(ec_lid0, 1) = -1;
+            e_fid(ec_lid1, 0) = -1; e_fid(ec_lid1, 1) = -1;
+
             /**
              * Set vertices:
              *  ec_lid0: (First vertex of parent edge, new vertex)
              *  ec_lid1: (new vertex, second vertex of parent edge)
              */
             e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = v_lid_start + offset;
-            e_vid(ec_lid0, 0) = v_lid_start+ offset; e_vid(ec_lid0, 1) = e_vid(i, 1);
-
+            e_vid(ec_lid1, 0) = v_lid_start + offset; e_vid(ec_lid1, 1) = e_vid(i, 1);
         });
 
-        // Populate the three new, internal edges
-        Kokkos::parallel_for("refine_edges", Kokkos::RangePolicy<execution_space>(0, e_lid_start),
+        // Populate the three new, internal edges for each face
+        Kokkos::parallel_for("new internal edges", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
             KOKKOS_LAMBDA(int i) {
             
-            // Check if this edge needs to be split
-            if (edge_needs_refine(i) == 0) return;
-
-            printf("Refining edge: %d\n", i);
-            
             // Create new edge local IDs
-            int offset = Kokkos::atomic_fetch_add(&counter(), 1);
-            int ec_lid0 = e_lid_start + offset*2;
-            int ec_lid1 = e_lid_start + offset*2 + 1;
-            printf("Adding edges %d, %d\n", ec_lid0, ec_lid1);
+            int offset = Kokkos::atomic_fetch_add(&counter(), 1) * 2;
+            int e_lid0 = e_lid_start + offset;
+            int e_lid1 = e_lid_start + offset + 1;
+            int e_lid2 = e_lid_start + offset + 2;
+
+            printf("Offset: %d, Adding new internal edges %d, %d, %d\n", offset, e_lid0, e_lid1, e_lid2);
 
             // Global IDs = global ID start + local ID
-            e_gid(ec_lid0) = e_gid_start + ec_lid0; e_gid(ec_lid1) = e_gid_start + ec_lid1;
+            e_gid(e_lid0) = e_gid_start + e_lid0;
+            e_gid(e_lid1) = e_gid_start + e_lid1;
+            e_gid(e_lid2) = e_gid_start + e_lid2;
 
             // Set parent and child edges
-            e_pid(ec_lid0) = i; e_cid(ec_lid0, 0) = -1; e_cid(ec_lid0, 1) = -1;
-            e_pid(ec_lid1) = i; e_cid(ec_lid1, 0) = -1; e_cid(ec_lid1, 1) = -1;
+            e_pid(e_lid0) = -1; e_cid(e_lid0, 0) = -1; e_cid(e_lid0, 1) = -1;
+            e_pid(e_lid1) = -1; e_cid(e_lid1, 0) = -1; e_cid(e_lid1, 1) = -1;
+            e_pid(e_lid2) = -1; e_cid(e_lid2, 0) = -1; e_cid(e_lid2, 1) = -1;
 
             // Owning rank
-            e_rank(ec_lid0) = rank; e_rank(ec_lid1) = rank;
+            e_rank(e_lid0) = rank; e_rank(e_lid1) = rank; e_rank(e_lid2) = rank;
+
+            // Face IDs
+            e_fid(e_lid0, 0) = -1; e_fid(e_lid0, 1) = -1;
+            e_fid(e_lid1, 0) = -1; e_fid(e_lid1, 1) = -1;
+            e_fid(e_lid2, 0) = -1; e_fid(e_lid2, 1) = -1;
 
             /**
              * Set vertices:
-             *  ec_lid0: (First vertex of parent edge, new vertex)
-             *  ec_lid1: (new vertex, second vertex of parent edge)
+             *  e_lid0: (new vertex 0, new vertex 1)
+             *  e_lid1: (new vertex 1, new vertex 2)
+             *  e_lid2: (new vertex 0, new vertex 2)
              */
-            e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = v_lid_start + offset;
-            e_vid(ec_lid0, 0) = v_lid_start+ offset; e_vid(ec_lid0, 1) = e_vid(i, 1);
+            e_vid(e_lid0, 0) = v_lid_start + i; e_vid(e_lid0, 1) = v_lid_start + i + 1;
+            e_vid(e_lid1, 0) = v_lid_start + i + 1; e_vid(e_lid1, 1) = v_lid_start + i + 2;
+            e_vid(e_lid2, 0) = v_lid_start + i; e_vid(e_lid2, 1) = v_lid_start + i + 2;
 
         });
+
 
 
     }
