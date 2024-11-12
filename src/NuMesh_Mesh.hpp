@@ -112,6 +112,9 @@ class Mesh
 
         _version = 0;
 
+        _vef_gid_start = Kokkos::View<int*[3], Kokkos::HostSpace>("_vef_gid_start", _comm_size);
+        Kokkos::deep_copy(_vef_gid_start, -1);
+
         _owned_vertices = 0, _owned_edges = 0, _owned_faces = 0;
         _ghost_vertices = 0, _ghost_edges = 0, _ghost_faces = 0;
     };
@@ -380,26 +383,7 @@ class Mesh
         _faces.resize(of);
         _owned_vertices = ov; _owned_edges = oe; _owned_faces = of;
 
-        // Get the number of vertices (i.e., array size) for each process for global IDs
-        int vef[3] = {ov, oe, of};
-        _vef_gid_start = Kokkos::View<int*[3], Kokkos::HostSpace>("_vef_gid_start", _comm_size);
-
-        MPI_Allgather(vef, 3, MPI_INT, _vef_gid_start.data(), 3, MPI_INT, _comm);
-
-        // Find where each process starts its global IDs
-        for (int i = 1; i < _comm_size; ++i) {
-            _vef_gid_start(i, 0) += _vef_gid_start(i - 1, 0);
-            _vef_gid_start(i, 1) += _vef_gid_start(i - 1, 1);
-            _vef_gid_start(i, 2) += _vef_gid_start(i - 1, 2);
-        }
-        for (int i = _comm_size - 1; i > 0; --i) {
-            _vef_gid_start(i, 0) = _vef_gid_start(i - 1, 0);
-            _vef_gid_start(i, 1) = _vef_gid_start(i - 1, 1);
-            _vef_gid_start(i, 2) = _vef_gid_start(i - 1, 2);
-        }
-        _vef_gid_start(0, 0) = 0;
-        _vef_gid_start(0, 1) = 0;
-        _vef_gid_start(0, 2) = 0;
+        updateGlobalIDs();
 
         // Copy vef_gid_start to device
         Kokkos::View<int*[3], MemorySpace> vef_gid_start_d("vef_gid_start_d", _comm_size);
@@ -982,7 +966,7 @@ class Mesh
         // Global IDs
         int v_gid_start = _vef_gid_start(_rank, 0);
         int e_gid_start = _vef_gid_start(_rank, 1);
-        int f_gid_start = _vef_gid_start(_rank, 2);
+        // int f_gid_start = _vef_gid_start(_rank, 2);
 
         /********************************************************
          * Phase 1.0: Collect all edges that need to be refined,
@@ -1019,7 +1003,7 @@ class Mesh
         }
 
         // Resize arrays
-        int f_lid_start = _owned_faces;
+        // int f_lid_start = _owned_faces;
         _owned_faces += num_face_refinements * 4;
         _faces.resize(_owned_faces);
         int e_lid_start = _owned_edges;
@@ -1069,15 +1053,21 @@ class Mesh
             int offset = Kokkos::atomic_fetch_add(&counter(), 1);
             int ec_lid0 = e_lid_start + offset*2;
             int ec_lid1 = e_lid_start + offset*2 + 1;
+            int ec_gid0 = e_gid_start + ec_lid0;
+            int ec_gid1 = e_gid_start + ec_lid1;
+
             printf("Offset: %d, adding edges %d, %d\n", offset, ec_lid0, ec_lid1);
 
             // Global IDs = global ID start + local ID
-            e_gid(ec_lid0) = e_gid_start + ec_lid0;
-            e_gid(ec_lid1) = e_gid_start + ec_lid1;
+            e_gid(ec_lid0) = ec_gid0;
+            e_gid(ec_lid1) = ec_gid1;
 
-            // Set parent and child edges
+            // Set parent and child edges for the split edges
             e_pid(ec_lid0) = i; e_cid(ec_lid0, 0) = -1; e_cid(ec_lid0, 1) = -1;
             e_pid(ec_lid1) = i; e_cid(ec_lid1, 0) = -1; e_cid(ec_lid1, 1) = -1;
+            
+            // Set these edges to be the child edges of their parents edges
+            e_cid(i, 0) = ec_gid0; e_cid(i, 1) = ec_gid1;
 
             // Owning rank
             e_rank(ec_lid0) = rank; e_rank(ec_lid1) = rank;
@@ -1138,10 +1128,105 @@ class Mesh
         });
 
         /********************************************************
-         * Phase 1.1: Communicate new edge global IDs
-         * to all processes
+         * Phase 1.1: Communicate new edge and vertex
+         * global IDs to all processes
          *******************************************************/
+        updateGlobalIDs();
+    }
 
+    /**
+     * Update all global ID values in the mesh
+     */
+    void updateGlobalIDs()
+    {
+        // Temporarily save old starting positions
+        Kokkos::View<int*[3], Kokkos::HostSpace> old_vef_start("old_vef_start", _comm_size);
+        Kokkos::deep_copy(old_vef_start, _vef_gid_start);
+
+        int vef[3] = {_owned_vertices, _owned_edges, _owned_faces};
+        MPI_Allgather(vef, 3, MPI_INT, _vef_gid_start.data(), 3, MPI_INT, _comm);
+
+        // Find where each process starts its global IDs
+        for (int i = 1; i < _comm_size; ++i) {
+            _vef_gid_start(i, 0) += _vef_gid_start(i - 1, 0);
+            _vef_gid_start(i, 1) += _vef_gid_start(i - 1, 1);
+            _vef_gid_start(i, 2) += _vef_gid_start(i - 1, 2);
+        }
+        for (int i = _comm_size - 1; i > 0; --i) {
+            _vef_gid_start(i, 0) = _vef_gid_start(i - 1, 0);
+            _vef_gid_start(i, 1) = _vef_gid_start(i - 1, 1);
+            _vef_gid_start(i, 2) = _vef_gid_start(i - 1, 2);
+        }
+        _vef_gid_start(0, 0) = 0;
+        _vef_gid_start(0, 1) = 0;
+        _vef_gid_start(0, 2) = 0;
+
+        if (old_vef_start(0, 0) == -1)
+        {
+            // Don't update global IDs when the mesh is initially formed
+            return;
+        }
+
+        int dv = _vef_gid_start(_rank, 0) - old_vef_start(_rank, 0);
+        int de = _vef_gid_start(_rank, 1) - old_vef_start(_rank, 1);
+        int df = _vef_gid_start(_rank, 2) - old_vef_start(_rank, 2);
+
+        // Update vertices
+        auto v_gid = Cabana::slice<S_V_GID>(_vertices);
+        Kokkos::parallel_for("update vertex GIDs", Kokkos::RangePolicy<execution_space>(0, _owned_vertices),
+            KOKKOS_LAMBDA(int i) { v_gid(i) += dv; });
+
+        // Update edges
+        auto e_gid = Cabana::slice<S_E_GID>(_edges);
+        auto e_vid = Cabana::slice<S_E_VIDS>(_edges);
+        auto e_fid = Cabana::slice<S_E_FIDS>(_edges);
+        auto e_cid = Cabana::slice<S_E_CIDS>(_edges);
+        auto e_pid = Cabana::slice<S_E_PID>(_edges);
+        Kokkos::parallel_for("update edge GIDs", Kokkos::RangePolicy<execution_space>(0, _owned_edges),
+            KOKKOS_LAMBDA(int i) {
+            
+            // Global ID
+            e_gid(i) += de;
+
+            // Vertex association GIDs
+            e_vid(i, 0) += dv; e_vid(i, 1) += dv;
+
+            // Face association GIDs
+            if (e_fid(i, 0) != -1) e_fid(i, 0) += df;
+            if (e_fid(i, 1) != -1) e_fid(i, 1) += df;
+
+            // Child edge GIDs
+            if (e_cid(i, 0) != -1) {e_cid(i, 0) += de; e_cid(i, 1) += de;}
+
+            // Parent edge GID
+            if (e_pid(i) != -1) e_pid(i) += de;
+        
+        });
+
+        // Update Faces
+        auto f_gid = Cabana::slice<S_F_GID>(_faces);
+        auto f_cid = Cabana::slice<S_F_CID>(_faces);
+        auto f_vid = Cabana::slice<S_F_VIDS>(_faces);
+        auto f_eid = Cabana::slice<S_F_EIDS>(_faces);
+        auto f_pid = Cabana::slice<S_F_PID>(_faces);
+        Kokkos::parallel_for("update edge GIDs", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
+            KOKKOS_LAMBDA(int i) {
+            
+            // Global ID
+            f_gid(i) += df;
+
+            // Child face association GIDs
+            if (f_cid(i, 0) != -1) {f_cid(i, 0) += df; f_cid(i, 1) += df; f_cid(i, 2) += df; f_cid(i, 3) += df;}
+
+            // Vertex association GIDs
+            f_vid(i, 0) += dv; f_vid(i, 1) += dv; f_vid(i, 2) += dv;
+
+            // Edge association GIDs
+            f_eid(i, 0) += de; f_eid(i, 1) += de; f_eid(i, 2) += de;
+
+            // Parent face
+            if (f_pid(i) != -1) f_pid(i) += df;
+        });
     }
 
     /**
