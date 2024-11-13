@@ -957,16 +957,16 @@ class Mesh
      * @param fids: local IDs of faces to be refined
      */
     template <class View>
-    void refine(View& fids)
+    void refine(View& fgids)
     {
         _version++;
         const int rank = _rank;
-        const int num_face_refinements = fids.extent(0);
+        const int num_face_refinements = fgids.extent(0);
 
         // Global IDs
         int v_gid_start = _vef_gid_start(_rank, 0);
         int e_gid_start = _vef_gid_start(_rank, 1);
-        // int f_gid_start = _vef_gid_start(_rank, 2);
+        int f_gid_start = _vef_gid_start(_rank, 2);
 
         /********************************************************
          * Phase 1.0: Collect all edges that need to be refined,
@@ -980,29 +980,38 @@ class Mesh
         Kokkos::deep_copy(counter, 0);
         auto f_egid = Cabana::slice<S_F_EIDS>(_faces);
         int owned_edges = _owned_edges;
+        int owned_faces = _owned_faces;
         Kokkos::parallel_for("populate edge_needs_refine", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
             KOKKOS_LAMBDA(int i) {
-            
-            // Check that we don't run off the end of the AoSoA
-            if (i >= owned_edges) return;
 
-            for (int j = 0; j < 3; j++)
+            int f_lid = fgids(i) - f_gid_start;
+            if ((f_lid >= 0) && (f_lid < owned_faces)) // Make sure we own the face
             {
-                int ex_lid = f_egid(fids(i), j);
-                edge_needs_refine(ex_lid) = 1;
-                Kokkos::atomic_increment(&counter()); // Each edge refinement contributes one new vertex
+                for (int j = 0; j < 3; j++)
+                {
+                    int ex_lid = f_egid(f_lid, j) - e_gid_start;
+                    if ((ex_lid >= 0) && (ex_lid < owned_edges)) // Make sure we own the edge. XXX - Is this check needed if we pass the face check?
+                    {
+                        edge_needs_refine(ex_lid) = 1;
+                        Kokkos::atomic_increment(&counter()); // Each edge refinement contributes one new vertex
+                    }
+                }
             }
         });
         int new_vertices;
         Kokkos::deep_copy(new_vertices, counter);
 
-        printf("New verts: %d\n", new_vertices);
+        printf("R%d: New verts: %d\n", rank, new_vertices);
+
+        // Only refine if new_vertices > 0
+        if (new_vertices > 0)
+        {
 
         for (int i = 0; i < _owned_edges; i++)
         {
             if (edge_needs_refine(i) == 1)
             {
-                printf("Edge %d marked\n", i+e_gid_start);
+                printf("R%d: Edge %d marked\n", rank, i+e_gid_start);
             }
         }
 
@@ -1095,7 +1104,7 @@ class Mesh
             int e_lid1 = e_lid_start + offset + 1;
             int e_lid2 = e_lid_start + offset + 2;
 
-            printf("Offset: %d, Adding new internal edges %d, %d, %d\n", offset, e_lid0, e_lid1, e_lid2);
+            // printf("Offset: %d, Adding new internal edges %d, %d, %d\n", offset, e_lid0, e_lid1, e_lid2);
 
             // Global IDs = global ID start + local ID
             e_gid(e_lid0) = e_gid_start + e_lid0;
@@ -1127,8 +1136,10 @@ class Mesh
 
         });
 
-        // Update global ID values
-        updateGlobalIDs();
+        } // end if (new_vertices > 0)
+
+        // Update global ID values. This is a collective so all processes must call it
+        // updateGlobalIDs();
 
         /********************************************************
          * Phase 2.0: Communicate new edge and vertex
@@ -1168,7 +1179,7 @@ class Mesh
             // Don't update global IDs when the mesh is initially formed
             return;
         }
-        return;
+
         int dv = _vef_gid_start(_rank, 0) - old_vef_start(_rank, 0);
         int de = _vef_gid_start(_rank, 1) - old_vef_start(_rank, 1);
         int df = _vef_gid_start(_rank, 2) - old_vef_start(_rank, 2);
