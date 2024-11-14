@@ -14,27 +14,25 @@ namespace NuMeshTest
 TYPED_TEST_SUITE(Mesh2DTest, DeviceTypes);
 
 /**
- * Check that refining a single interior face, with no 
+ * Check that refining interior faces, with no 
  * neighboring faces having been refined, works properly
+ * with one process and 4 processes
  */
 TYPED_TEST(Mesh2DTest, testInteriorRefine)
 {
     std::string filename;
-    int mesh_size;
-    if (this->comm_size_ == 1)
-    {
-        this->edges.resize(229);
-        mesh_size = 8;
-    }
-    if (this->comm_size_ == 4)
-    {
-        this->edges.resize(229);
-        mesh_size = 8;
-    }
+    int mesh_size = 8;
+    this->edges.resize(228);
+
     filename = this->get_filename(this->comm_size_, mesh_size, 1);
-     
+    
+    this->init(mesh_size, 1);
+
+    int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
+    this->refineEdges(fin);
+
     this->readEdgesFromFile(filename, this->edges);
-    this->testEdges(this->edges, mesh_size);
+    this->testEdges(this->edges);
 }
 
 } // end namespace NuMeshTest

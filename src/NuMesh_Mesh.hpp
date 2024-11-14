@@ -1028,13 +1028,13 @@ class Mesh
         if (new_faces > 0)
         {
 
-        for (int i = 0; i < _owned_edges; i++)
-        {
-            if (edge_needs_refine(i) == 1)
-            {
-                printf("R%d: Edge %d marked\n", rank, i+e_gid_start);
-            }
-        }
+        // for (int i = 0; i < _owned_edges; i++)
+        // {
+        //     if (edge_needs_refine(i) == 1)
+        //     {
+        //         printf("R%d: Edge %d marked\n", rank, i+e_gid_start);
+        //     }
+        // }
 
         // Resize arrays
         // int f_lid_start = _owned_faces;
@@ -1042,13 +1042,11 @@ class Mesh
         _faces.resize(_owned_faces);
         int e_lid_start = _owned_edges;
         // Each face contributes 3 new edges; each vertex contributes 2
-        printf("R%d: adding %d new edges\n", rank, new_edges);
-        printf("R%d: edges size prev: %d\n", rank, (int)_edges.size());
         _owned_edges += new_edges;
         _edges.resize(_owned_edges);
-        printf("R%d: edges size after: %d\n", rank, (int)_edges.size());
         int v_lid_start = _owned_vertices;
         _owned_vertices += new_vertices;
+        printf("R%d: verts: %d -> %d\n", rank, v_lid_start, _owned_vertices);
         _vertices.resize(_owned_vertices);
 
 
@@ -1067,7 +1065,7 @@ class Mesh
             v_rank(v_l) = rank;
 
         });
-
+        
         // Edge slices
         auto e_gid = Cabana::slice<S_E_GID>(_edges);
         auto e_vid = Cabana::slice<S_E_VIDS>(_edges);
@@ -1114,6 +1112,7 @@ class Mesh
              *  ec_lid0: (First vertex of parent edge, new vertex)
              *  ec_lid1: (new vertex, second vertex of parent edge)
              */
+            offset /= 2;
             e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = v_lid_start + offset;
             e_vid(ec_lid1, 0) = v_lid_start + offset; e_vid(ec_lid1, 1) = e_vid(i, 1);
         });
@@ -1152,9 +1151,10 @@ class Mesh
              *  e_lid1: (new vertex 1, new vertex 2)
              *  e_lid2: (new vertex 0, new vertex 2)
              */
-            e_vid(e_lid0, 0) = v_lid_start + i; e_vid(e_lid0, 1) = v_lid_start + i + 1;
-            e_vid(e_lid1, 0) = v_lid_start + i + 1; e_vid(e_lid1, 1) = v_lid_start + i + 2;
-            e_vid(e_lid2, 0) = v_lid_start + i; e_vid(e_lid2, 1) = v_lid_start + i + 2;
+            offset = i * 3;
+            e_vid(e_lid0, 0) = v_lid_start + offset; e_vid(e_lid0, 1) = v_lid_start + offset + 1;
+            e_vid(e_lid1, 0) = v_lid_start + offset + 1; e_vid(e_lid1, 1) = v_lid_start + offset + 2;
+            e_vid(e_lid2, 0) = v_lid_start + offset; e_vid(e_lid2, 1) = v_lid_start + offset + 2;
 
         });
 
@@ -1302,16 +1302,19 @@ class Mesh
         int start = 0, end = _edges.size();
         if (opt == 1) end = _owned_edges;
         else if (opt == 2) start = _owned_edges;
-        for (int i = start; i < end; i++)
-        {
+        int rank = _rank;
+        Kokkos::parallel_for("print edges", Kokkos::RangePolicy<execution_space>(start, end),
+            KOKKOS_LAMBDA(int i) {
+            
             printf("%d, v(%d, %d), f(%d, %d), c(%d, %d), p(%d) %d, %d\n",
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1),
                 e_fids(i, 0), e_fids(i, 1),
                 e_children(i, 0), e_children(i, 1),
                 e_parent(i),
-                e_owner(i), _rank);
-        }
+                e_owner(i), rank);
+
+        });
     }
 
     void printFaces()

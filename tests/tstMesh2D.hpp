@@ -25,12 +25,14 @@ class Mesh2DTest : public ::testing::Test
 {
     using ExecutionSpace = typename T::ExecutionSpace;
     using MemorySpace = typename T::MemorySpace;
-    using View_t = Kokkos::View<double***, Kokkos::HostSpace>;
-    using edge_data = typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data;
-    using e_array_type = typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::e_array_type;
+    using numesh_t = NuMesh::Mesh<ExecutionSpace, MemorySpace>;
+    using edge_data = typename numesh_t::edge_data;
+    using e_array_type = Cabana::AoSoA<edge_data, Kokkos::HostSpace, 4>;
+    
 
   protected:
     int rank_, comm_size_;
+    std::shared_ptr<numesh_t> numesh = NuMesh::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
     e_array_type edges;
 
     void SetUp() override
@@ -166,79 +168,64 @@ class Mesh2DTest : public ::testing::Test
         file.close();
     }
 
-    void testEdges(e_array_type& c_edges, int mesh_size)
+    void init(int mesh_size, int periodic)
     {
         std::array<int, 2> global_num_cell = { mesh_size, mesh_size };
         std::array<double, 2> global_low_corner = { -1.0, -1.0 };
         std::array<double, 2> global_high_corner = { 1.0, 1.0 };
         // std::array<double, 6> global_bounding_box = {-1.0, -1.0, -1.0, 1.0, 1.0, 1.0};
-        std::array<bool, 2> periodic = { true, true };
+        std::array<bool, 2> periodic_a = { (bool)periodic, (bool)periodic };
         Cabana::Grid::DimBlockPartitioner<2> partitioner;
 
         auto global_mesh = Cabana::Grid::createUniformGlobalMesh(
             global_low_corner, global_high_corner, global_num_cell );
         auto global_grid = Cabana::Grid::createGlobalGrid(
-            MPI_COMM_WORLD, global_mesh, periodic, partitioner );
+            MPI_COMM_WORLD, global_mesh, periodic_a, partitioner );
         int halo_width = 2;
         auto local_grid = Cabana::Grid::createLocalGrid( global_grid, halo_width );
 
-        auto numesh = NuMesh::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
-
         auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
         auto array = Cabana::Grid::createArray<double, MemorySpace>("for_initialization", layout);
-        numesh->initializeFromArray(*array);
+        this->numesh->initializeFromArray(*array);
+    }
 
-        if (comm_size_ == 1)
+    void refineEdges(int fin[10])
+    {
+        int size = 10;
+        int counter = 0;
+        int fin_cp[10];
+        for (int i = 0; i < size; i++)
         {
-            int size = 1;
-            Kokkos::View<int*, MemorySpace> fids("fids", size);
-            Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<ExecutionSpace>(0, size),
-                KOKKOS_LAMBDA(int i) {
-                    
-                if (i == 0)
-                {
-                    fids(i) = 12;
-                }
-
-            });
-            numesh->refine(fids);
-            auto t_edges = numesh->edges();
-            for (int i = 0; i < (int) t_edges.size(); i++)
-            {
-                auto t_edge = t_edges.getTuple(i);
-                int gid = Cabana::get<S_E_GID>(t_edge);
-                auto c_edge = c_edges.getTuple(gid);
-                tstEdgeEqual(c_edge, t_edge);
-            }
-        
+            fin_cp[i] = fin[i];
+            if (fin_cp[i] != -1) counter++;
         }
 
-        if (comm_size_ == 4)
+        Kokkos::View<int*, MemorySpace> fids("fids", counter);
+        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<ExecutionSpace>(0, size),
+            KOKKOS_LAMBDA(int i) {
+            
+            if (fin_cp[i] == -1) return;
+                
+            if (i == 0) fids(i) = fin_cp[i];
+                
+            fids(i) = fin_cp[i];
+
+        });
+        numesh->refine(fids);
+    }   
+
+    void testEdges(e_array_type& c_edges)
+    {
+        e_array_type t_edges_host;
+        t_edges_host.resize(numesh->edges().size());
+        //printf("ce/te: %d, %d\n", (int)c_edges.size(), (int)t_edges_host.size());
+        Cabana::deep_copy(t_edges_host, numesh->edges());
+        for (int i = 0; i < (int) t_edges_host.size(); i++)
         {
-            // Refine one face per process
-            int size = 4;
-            Kokkos::View<int*, MemorySpace> fids("fids", size);
-            Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<ExecutionSpace>(0, size),
-                KOKKOS_LAMBDA(int i) {
-                    
-                if (i == 0) fids(i) = 106;          // rank 3
-                
-                else if (i == 1) fids(i) = 5;       // rank 0
-                
-                else if (i == 2) fids(i) = 75;      // rank 2
-
-                else if (i == 3) fids(i) = 51;      // rank 1
-
-            });
-            numesh->refine(fids);
-            auto t_edges = numesh->edges();
-            for (int i = 0; i < (int) t_edges.size(); i++)
-            {
-                auto t_edge = t_edges.getTuple(i);
-                int gid = Cabana::get<S_E_GID>(t_edge);
-                auto c_edge = c_edges.getTuple(gid);
-                tstEdgeEqual(c_edge, t_edge);
-            }
+            auto t_edge = t_edges_host.getTuple(i);
+            int gid = Cabana::get<S_E_GID>(t_edge);
+            auto c_edge = c_edges.getTuple(gid);
+            tstEdgeEqual(c_edge, t_edge);
         }
     }
 };

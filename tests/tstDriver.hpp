@@ -16,9 +16,9 @@ using DeviceTypes = ::testing::Types<
 #ifdef KOKKOS_ENABLE_OPENMP
 /   DeviceType<Kokkos::OpenMP, Kokkos::HostSpace>,
 #endif
-// #ifdef KOKKOS_ENABLE_CUDA
-//     DeviceType<Kokkos::Cuda, Kokkos::CudaSpace>,
-// #endif
+#ifdef KOKKOS_ENABLE_CUDA
+    DeviceType<Kokkos::Cuda, Kokkos::CudaSpace>,
+#endif
     DeviceType<Kokkos::Serial, Kokkos::HostSpace>>;
 
 int main( int argc, char* argv[] )
@@ -29,6 +29,7 @@ int main( int argc, char* argv[] )
     int return_val = RUN_ALL_TESTS();
     Kokkos::finalize();
     MPI_Finalize();
+    printf("Please run with 1 and 4 processes to run all tests.\n");
     return return_val;
 }
 #endif //_TSTDRIVER_HPP_
