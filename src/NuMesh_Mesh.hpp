@@ -978,12 +978,14 @@ class Mesh
          * then refine them in parallel
          *******************************************************/
 
-        using atomic_view = Kokkos::View<int*, memory_space, Kokkos::MemoryTraits<Kokkos::Atomic>>;
-        using counter_view = Kokkos::View<int, memory_space>;
-        atomic_view edge_needs_refine("edge_needs_refine", _owned_edges);
-        counter_view counter("counter");
-        counter_view face_counter("face_counter"); // Counts faces owned by this process that need refining
-        Kokkos::deep_copy(counter, 0);
+        using counter_vec = Kokkos::View<int*, memory_space>;
+        using counter_int = Kokkos::View<int, memory_space>;
+        counter_vec edge_needs_refine("edge_needs_refine", _owned_edges);
+        counter_int vert_counter("vert_counter");
+        counter_int edge_counter("edge_counter");
+        counter_int face_counter("face_counter");
+        Kokkos::deep_copy(vert_counter, 0);
+        Kokkos::deep_copy(edge_counter, 0);
         Kokkos::deep_copy(face_counter, 0);
         auto f_egid = Cabana::slice<S_F_EIDS>(_faces);
         int owned_edges = _owned_edges;
@@ -995,23 +997,32 @@ class Mesh
             if ((f_lid >= 0) && (f_lid < owned_faces)) // Make sure we own the face
             {
                 Kokkos::atomic_increment(&face_counter());
+                // Each face refinement adds 3 new edges
+                Kokkos::atomic_add(&edge_counter(), 3);
                 for (int j = 0; j < 3; j++)
                 {
                     int ex_lid = f_egid(f_lid, j) - e_gid_start;
                     if ((ex_lid >= 0) && (ex_lid < owned_edges)) // Make sure we own the edge. XXX - Is this check needed if we pass the face check?
                     {
-                        // If this already equals 1, don't increment the edge or face counter
-                        edge_needs_refine(ex_lid) = 1;
-                        Kokkos::atomic_increment(&counter()); // Each edge refinement contributes one new vertex
+                        // Record this edge needs to be refined
+                        int edge_counted = Kokkos::atomic_fetch_add(&edge_needs_refine(ex_lid), 1);
+                        // If edge_counted already equals 1, don't increment the new vert counter
+                        if (edge_counted == 0)
+                        {
+                            // Each edge refinement contributes one new vertex and 2 new edges
+                            Kokkos::atomic_increment(&vert_counter());
+                            Kokkos::atomic_add(&edge_counter(), 2);
+                        }
                     }
                 }
             }
         });
-        int new_vertices, new_faces;
-        Kokkos::deep_copy(new_vertices, counter);
+        int new_vertices, new_edges, new_faces;
+        Kokkos::deep_copy(new_vertices, vert_counter);
+        Kokkos::deep_copy(new_edges, edge_counter);
         Kokkos::deep_copy(new_faces, face_counter);
 
-        printf("R%d: New v/f: %d, %d\n", rank, new_vertices, new_faces);
+        printf("R%d: New vef: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
 
         // Only refine if new_faces > 0
         if (new_faces > 0)
@@ -1027,13 +1038,15 @@ class Mesh
 
         // Resize arrays
         // int f_lid_start = _owned_faces;
-        _owned_faces += new_faces * 4;
+        _owned_faces += new_faces;
         _faces.resize(_owned_faces);
         int e_lid_start = _owned_edges;
         // Each face contributes 3 new edges; each vertex contributes 2
-        printf("R%d: adding %d new edges\n", rank, new_faces * 3 + new_vertices * 2);
-        _owned_edges += new_faces * 3 + new_vertices * 2;
+        printf("R%d: adding %d new edges\n", rank, new_edges);
+        printf("R%d: edges size prev: %d\n", rank, (int)_edges.size());
+        _owned_edges += new_edges;
         _edges.resize(_owned_edges);
+        printf("R%d: edges size after: %d\n", rank, (int)_edges.size());
         int v_lid_start = _owned_vertices;
         _owned_vertices += new_vertices;
         _vertices.resize(_owned_vertices);
@@ -1064,7 +1077,7 @@ class Mesh
         auto e_pid = Cabana::slice<S_E_PID>(_edges);
 
         // Refine existing  edges
-        Kokkos::deep_copy(counter, 0);
+        Kokkos::deep_copy(edge_counter, 0);
         Kokkos::parallel_for("refine_edges", Kokkos::RangePolicy<execution_space>(0, e_lid_start),
             KOKKOS_LAMBDA(int i) {
             
@@ -1072,9 +1085,9 @@ class Mesh
             if (edge_needs_refine(i) == 0) return;
             
             // Create new edge local IDs
-            int offset = Kokkos::atomic_fetch_add(&counter(), 1);
-            int ec_lid0 = e_lid_start + offset*2;
-            int ec_lid1 = e_lid_start + offset*2 + 1;
+            int offset = Kokkos::atomic_fetch_add(&edge_counter(), 2);
+            int ec_lid0 = e_lid_start + offset;
+            int ec_lid1 = e_lid_start + offset + 1;
             int ec_gid0 = e_gid_start + ec_lid0;
             int ec_gid1 = e_gid_start + ec_lid1;
 
@@ -1106,17 +1119,14 @@ class Mesh
         });
 
         // Populate the three new, internal edges for each face
-        printf("R%d: edges size: %d\n", rank, (int)_edges.size());
         Kokkos::parallel_for("new internal edges", Kokkos::RangePolicy<execution_space>(0, new_faces),
             KOKKOS_LAMBDA(int i) {
             
             // Create new edge local IDs
-            int offset = Kokkos::atomic_fetch_add(&counter(), 1) * 3;
+            int offset = Kokkos::atomic_fetch_add(&edge_counter(), 3);
             int e_lid0 = e_lid_start + offset;
             int e_lid1 = e_lid_start + offset + 1;
             int e_lid2 = e_lid_start + offset + 2;
-
-            printf("Offset: %d, Adding new internal edges %d, %d, %d\n", offset, e_lid0, e_lid1, e_lid2);
 
             // Global IDs = global ID start + local ID
             e_gid(e_lid0) = e_gid_start + e_lid0;
