@@ -26,9 +26,12 @@ class Mesh2DTest : public ::testing::Test
     using ExecutionSpace = typename T::ExecutionSpace;
     using MemorySpace = typename T::MemorySpace;
     using View_t = Kokkos::View<double***, Kokkos::HostSpace>;
+    using edge_data = typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data;
+    using e_array_type = typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::e_array_type;
 
   protected:
     int rank_, comm_size_;
+    e_array_type edges;
 
     void SetUp() override
     {
@@ -100,18 +103,71 @@ class Mesh2DTest : public ::testing::Test
     }
 
   public:
-    void testSingleInteriorRefineFunc()
+    
+    std::string get_filename(int comm_size, int mesh_size, int periodic)
     {
-        int mesh_size;
-        if (comm_size_ == 1)
+        std::string filename = "../tests/data/edges_";
+        filename += std::to_string(comm_size);
+        filename += "_n";
+        filename += std::to_string(mesh_size);
+        if (periodic == 1) filename += "_periodic";
+        else filename += "_free";
+        filename += ".txt";
+        return filename;
+    }
+
+    // Function to read edges from file and populate AoSoA using regex
+    void readEdgesFromFile(const std::string& filename, e_array_type& edges)
+    {
+        std::ifstream file(filename);
+        if (!file.is_open())
         {
-            mesh_size = 5;
-        }
-        else
-        {
-            printf("Unsupported communicator size. Supported sizes are: 1. Skipping testSingleInteriorRefine\n");
+            std::cerr << "Error opening file: " << filename << std::endl;
+            return;
         }
 
+        std::string line;
+
+        // Define a regex pattern for the line format
+        std::regex pattern(R"(^(\d+),\s*v\((\d+),\s*(\d+)\),\s*f\(([-\d]+),\s*([-\d]+)\),\s*c\(([-\d]+),\s*([-\d]+)\),\s*p\(([-\d]+)\)\s*(\d+),\s*\d+$)");
+
+        while (std::getline(file, line))
+        {
+            std::smatch matches;
+            if (std::regex_match(line, matches, pattern))
+            {
+                int gid = std::stoi(matches[1].str());
+                int vids[2] = { std::stoi(matches[2].str()), std::stoi(matches[3].str()) };
+                int fids[2] = { std::stoi(matches[4].str()), std::stoi(matches[5].str()) };
+                int cids[2] = { std::stoi(matches[6].str()), std::stoi(matches[7].str()) };
+                int pid = std::stoi(matches[8].str());
+                int owner = std::stoi(matches[9].str());
+
+                // Create and populate an edge tuple
+                Cabana::Tuple<edge_data> edge_tuple;
+                Cabana::get<S_E_GID>(edge_tuple) = gid;
+                Cabana::get<S_E_VIDS>(edge_tuple, 0) = vids[0];
+                Cabana::get<S_E_VIDS>(edge_tuple, 1) = vids[1];
+                Cabana::get<S_E_FIDS>(edge_tuple, 0) = fids[0];
+                Cabana::get<S_E_FIDS>(edge_tuple, 1) = fids[1];
+                Cabana::get<S_E_CIDS>(edge_tuple, 0) = cids[0];
+                Cabana::get<S_E_CIDS>(edge_tuple, 1) = cids[1];
+                Cabana::get<S_E_PID>(edge_tuple) = pid;
+                Cabana::get<S_E_OWNER>(edge_tuple) = owner;
+
+                // Add the tuple to the AoSoA at the current gid
+                edges.setTuple(gid, edge_tuple);
+            }
+            else
+            {
+                std::cerr << "Error parsing line: " << line << std::endl;
+            }
+        }
+        file.close();
+    }
+
+    void testEdges(e_array_type& c_edges, int mesh_size)
+    {
         std::array<int, 2> global_num_cell = { mesh_size, mesh_size };
         std::array<double, 2> global_low_corner = { -1.0, -1.0 };
         std::array<double, 2> global_high_corner = { 1.0, 1.0 };
@@ -146,270 +202,44 @@ class Mesh2DTest : public ::testing::Test
 
             });
             numesh->refine(fids);
-            auto edges = numesh->edges();
-            auto faces = numesh->faces();
-            
-            // Edge 18
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge18;
-            Cabana::get<S_E_VIDS>(edge18, 0) = 6;
-            Cabana::get<S_E_VIDS>(edge18, 1) = 7;
-            Cabana::get<S_E_FIDS>(edge18, 0) = 12;
-            Cabana::get<S_E_FIDS>(edge18, 1) = -1;
-            Cabana::get<S_E_CIDS>(edge18, 0) = 75;
-            Cabana::get<S_E_CIDS>(edge18, 1) = 76;
-            Cabana::get<S_E_PID>(edge18) = -1;
-            Cabana::get<S_E_GID>(edge18) = 18;
-            Cabana::get<S_E_OWNER>(edge18) = 0;
-            auto te18 = edges.getTuple(18);
-            tstEdgeEqual(edge18, te18);
-
-            // Edge 19
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge19;
-            Cabana::get<S_E_VIDS>(edge19, 0) = 6;
-            Cabana::get<S_E_VIDS>(edge19, 1) = 12;
-            Cabana::get<S_E_FIDS>(edge19, 0) = 13;
-            Cabana::get<S_E_FIDS>(edge19, 1) = 12;
-            Cabana::get<S_E_CIDS>(edge19, 0) = 77;
-            Cabana::get<S_E_CIDS>(edge19, 1) = 78;
-            Cabana::get<S_E_PID>(edge19) = -1;
-            Cabana::get<S_E_GID>(edge19) = 19;
-            Cabana::get<S_E_OWNER>(edge19) = 0;
-            auto te19 = edges.getTuple(19);
-            tstEdgeEqual(edge19, te19);
-
-            // Edge 23
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge23;
-            Cabana::get<S_E_VIDS>(edge23, 0) = 7;
-            Cabana::get<S_E_VIDS>(edge23, 1) = 12;
-            Cabana::get<S_E_FIDS>(edge23, 0) = -1;
-            Cabana::get<S_E_FIDS>(edge23, 1) = 15;
-            Cabana::get<S_E_CIDS>(edge23, 0) = 79;
-            Cabana::get<S_E_CIDS>(edge23, 1) = 80;
-            Cabana::get<S_E_PID>(edge23) = -1;
-            Cabana::get<S_E_GID>(edge23) = 23;
-            Cabana::get<S_E_OWNER>(edge23) = 0;
-            auto te23 = edges.getTuple(23);
-            tstEdgeEqual(edge23, te23);
-
-            // Edge 75
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge75;
-            Cabana::get<S_E_VIDS>(edge75, 0) = 6;
-            Cabana::get<S_E_VIDS>(edge75, 1) = 25;
-            Cabana::get<S_E_FIDS>(edge75, 0) = -1;
-            Cabana::get<S_E_FIDS>(edge75, 1) = -1;
-            Cabana::get<S_E_CIDS>(edge75, 0) = -1;
-            Cabana::get<S_E_CIDS>(edge75, 1) = -1;
-            Cabana::get<S_E_PID>(edge75) = 18;
-            Cabana::get<S_E_GID>(edge75) = 75;
-            Cabana::get<S_E_OWNER>(edge75) = 0;
-            auto te75 = edges.getTuple(75);
-            tstEdgeEqual(edge75, te75);
-
-            // Edge 76
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge76;
-            Cabana::get<S_E_VIDS>(edge76, 0) = 25;
-            Cabana::get<S_E_VIDS>(edge76, 1) = 7;
-            Cabana::get<S_E_FIDS>(edge76, 0) = -1;
-            Cabana::get<S_E_FIDS>(edge76, 1) = -1;
-            Cabana::get<S_E_CIDS>(edge76, 0) = -1;
-            Cabana::get<S_E_CIDS>(edge76, 1) = -1;
-            Cabana::get<S_E_PID>(edge76) = 18;
-            Cabana::get<S_E_GID>(edge76) = 76;
-            Cabana::get<S_E_OWNER>(edge76) = 0;
-            auto te76 = edges.getTuple(76);
-            tstEdgeEqual(edge76, te76);
-
-            // Edge 77
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge77;
-            Cabana::get<S_E_VIDS>(edge77, 0) = 6;
-            Cabana::get<S_E_VIDS>(edge77, 1) = 26;
-            Cabana::get<S_E_FIDS>(edge77, 0) = -1;
-            Cabana::get<S_E_FIDS>(edge77, 1) = -1;
-            Cabana::get<S_E_CIDS>(edge77, 0) = -1;
-            Cabana::get<S_E_CIDS>(edge77, 1) = -1;
-            Cabana::get<S_E_PID>(edge77) = 19;
-            Cabana::get<S_E_GID>(edge77) = 77;
-            Cabana::get<S_E_OWNER>(edge77) = 0;
-            auto te77 = edges.getTuple(77);
-            tstEdgeEqual(edge77, te77);
-
-            // Edge 78
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge78;
-            Cabana::get<S_E_VIDS>(edge78, 0) = 26;
-            Cabana::get<S_E_VIDS>(edge78, 1) = 12;
-            Cabana::get<S_E_FIDS>(edge78, 0) = -1;
-            Cabana::get<S_E_FIDS>(edge78, 1) = -1;
-            Cabana::get<S_E_CIDS>(edge78, 0) = -1;
-            Cabana::get<S_E_CIDS>(edge78, 1) = -1;
-            Cabana::get<S_E_PID>(edge78) = 19;
-            Cabana::get<S_E_GID>(edge78) = 78;
-            Cabana::get<S_E_OWNER>(edge78) = 0;
-            auto te78 = edges.getTuple(78);
-            tstEdgeEqual(edge78, te78);
-
-            // Edge 79
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge79;
-            Cabana::get<S_E_VIDS>(edge79, 0) = 7;
-            Cabana::get<S_E_VIDS>(edge79, 1) = 27;
-            Cabana::get<S_E_FIDS>(edge79, 0) = -1;
-            Cabana::get<S_E_FIDS>(edge79, 1) = -1;
-            Cabana::get<S_E_CIDS>(edge79, 0) = -1;
-            Cabana::get<S_E_CIDS>(edge79, 1) = -1;
-            Cabana::get<S_E_PID>(edge79) = 23;
-            Cabana::get<S_E_GID>(edge79) = 79;
-            Cabana::get<S_E_OWNER>(edge79) = 0;
-            auto te79 = edges.getTuple(79);
-            tstEdgeEqual(edge79, te79);
-
-            // Edge 80
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge80;
-            Cabana::get<S_E_VIDS>(edge80, 0) = 27;
-            Cabana::get<S_E_VIDS>(edge80, 1) = 12;
-            Cabana::get<S_E_FIDS>(edge80, 0) = -1;
-            Cabana::get<S_E_FIDS>(edge80, 1) = -1;
-            Cabana::get<S_E_CIDS>(edge80, 0) = -1;
-            Cabana::get<S_E_CIDS>(edge80, 1) = -1;
-            Cabana::get<S_E_PID>(edge80) = 23;
-            Cabana::get<S_E_GID>(edge80) = 80;
-            Cabana::get<S_E_OWNER>(edge80) = 0;
-            auto te80 = edges.getTuple(80);
-            tstEdgeEqual(edge80, te80);
-
-            // Edge 81
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge81;
-            Cabana::get<S_E_VIDS>(edge81, 0) = 25;
-            Cabana::get<S_E_VIDS>(edge81, 1) = 26;
-            Cabana::get<S_E_FIDS>(edge81, 0) = -1;
-            Cabana::get<S_E_FIDS>(edge81, 1) = -1;
-            Cabana::get<S_E_CIDS>(edge81, 0) = -1;
-            Cabana::get<S_E_CIDS>(edge81, 1) = -1;
-            Cabana::get<S_E_PID>(edge81) = -1;
-            Cabana::get<S_E_GID>(edge81) = 81;
-            Cabana::get<S_E_OWNER>(edge81) = 0;
-            auto te81 = edges.getTuple(81);
-            tstEdgeEqual(edge81, te81);
-
-            // Edge 82
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge82;
-            Cabana::get<S_E_VIDS>(edge82, 0) = 26;
-            Cabana::get<S_E_VIDS>(edge82, 1) = 27;
-            Cabana::get<S_E_FIDS>(edge82, 0) = -1;
-            Cabana::get<S_E_FIDS>(edge82, 1) = -1;
-            Cabana::get<S_E_CIDS>(edge82, 0) = -1;
-            Cabana::get<S_E_CIDS>(edge82, 1) = -1;
-            Cabana::get<S_E_PID>(edge82) = -1;
-            Cabana::get<S_E_GID>(edge82) = 82;
-            Cabana::get<S_E_OWNER>(edge82) = 0;
-            auto te82 = edges.getTuple(82);
-            tstEdgeEqual(edge82, te82);
-
-            // Edge 83
-            Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::edge_data> edge83;
-            Cabana::get<S_E_VIDS>(edge83, 0) = 25;
-            Cabana::get<S_E_VIDS>(edge83, 1) = 27;
-            Cabana::get<S_E_FIDS>(edge83, 0) = -1;
-            Cabana::get<S_E_FIDS>(edge83, 1) = -1;
-            Cabana::get<S_E_CIDS>(edge83, 0) = -1;
-            Cabana::get<S_E_CIDS>(edge83, 1) = -1;
-            Cabana::get<S_E_PID>(edge83) = -1;
-            Cabana::get<S_E_GID>(edge83) = 83;
-            Cabana::get<S_E_OWNER>(edge83) = 0;
-            auto te83 = edges.getTuple(83);
-            tstEdgeEqual(edge83, te83);
-
-
-            /* Faces */
-            // // Face 50
-            // Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::face_data> face50;
-            // Cabana::get<S_F_VIDS>(face50, 0) = 6;
-            // Cabana::get<S_F_VIDS>(face50, 1) = 25;
-            // Cabana::get<S_F_VIDS>(face50, 2) = 27;
-            // Cabana::get<S_F_EIDS>(face50, 0) = 77;
-            // Cabana::get<S_F_EIDS>(face50, 1) = 78;
-            // Cabana::get<S_F_EIDS>(face50, 2) = 83;
-            // Cabana::get<S_F_GID>(face50) = 50;
-            // Cabana::get<S_F_CID>(face50, 0) = -1;
-            // Cabana::get<S_F_CID>(face50, 1) = -1;
-            // Cabana::get<S_F_CID>(face50, 2) = -1;
-            // Cabana::get<S_F_CID>(face50, 3) = -1;
-            // Cabana::get<S_F_PID>(face50) = 12;
-            // Cabana::get<S_F_OWNER>(face50) = 0;
-            // auto tf50 = faces.getTuple(50);
-            // tstFaceEqual(face50, tf50);
-
-            // // Face 51
-            // Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::face_data> face51;
-            // Cabana::get<S_F_VIDS>(face51, 0) = 25;
-            // Cabana::get<S_F_VIDS>(face51, 1) = 7;
-            // Cabana::get<S_F_VIDS>(face51, 2) = 26;
-            // Cabana::get<S_F_EIDS>(face51, 0) = 75;
-            // Cabana::get<S_F_EIDS>(face51, 1) = 79;
-            // Cabana::get<S_F_EIDS>(face51, 2) = 81;
-            // Cabana::get<S_F_GID>(face51) = 51;
-            // Cabana::get<S_F_CID>(face51, 0) = -1;
-            // Cabana::get<S_F_CID>(face51, 1) = -1;
-            // Cabana::get<S_F_CID>(face51, 2) = -1;
-            // Cabana::get<S_F_CID>(face51, 3) = -1;
-            // Cabana::get<S_F_PID>(face51) = 12;
-            // Cabana::get<S_F_OWNER>(face51) = 0;
-            // auto tf51 = faces.getTuple(51);
-            // tstFaceEqual(face51, tf51);
-
-            // // Face 52
-            // Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::face_data> face52;
-            // Cabana::get<S_F_VIDS>(face52, 0) = 27;
-            // Cabana::get<S_F_VIDS>(face52, 1) = 26;
-            // Cabana::get<S_F_VIDS>(face52, 2) = 12;
-            // Cabana::get<S_F_EIDS>(face52, 0) = 76;
-            // Cabana::get<S_F_EIDS>(face52, 1) = 80;
-            // Cabana::get<S_F_EIDS>(face52, 2) = 82;
-            // Cabana::get<S_F_GID>(face52) = 52;
-            // Cabana::get<S_F_CID>(face52, 0) = -1;
-            // Cabana::get<S_F_CID>(face52, 1) = -1;
-            // Cabana::get<S_F_CID>(face52, 2) = -1;
-            // Cabana::get<S_F_CID>(face52, 3) = -1;
-            // Cabana::get<S_F_PID>(face52) = 12;
-            // Cabana::get<S_F_OWNER>(face52) = 0;
-            // auto tf52 = faces.getTuple(52);
-            // tstFaceEqual(face52, tf52);
-
-            // // Face 53
-            // Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::face_data> face53;
-            // Cabana::get<S_F_VIDS>(face53, 0) = 25;
-            // Cabana::get<S_F_VIDS>(face53, 1) = 26;
-            // Cabana::get<S_F_VIDS>(face53, 2) = 27;
-            // Cabana::get<S_F_EIDS>(face53, 0) = 75;
-            // Cabana::get<S_F_EIDS>(face53, 1) = 76;
-            // Cabana::get<S_F_EIDS>(face53, 2) = 77;
-            // Cabana::get<S_F_GID>(face53) = 53;
-            // Cabana::get<S_F_CID>(face53, 0) = -1;
-            // Cabana::get<S_F_CID>(face53, 1) = -1;
-            // Cabana::get<S_F_CID>(face53, 2) = -1;
-            // Cabana::get<S_F_CID>(face53, 3) = -1;
-            // Cabana::get<S_F_PID>(face53) = 12;
-            // Cabana::get<S_F_OWNER>(face53) = 0;
-            // auto tf53 = faces.getTuple(53);
-            // tstFaceEqual(face53, tf53);
-
-            // // Face 12
-            // Cabana::Tuple<typename NuMesh::Mesh<ExecutionSpace, MemorySpace>::face_data> face12;
-            // Cabana::get<S_F_VIDS>(face12, 0) = 6;
-            // Cabana::get<S_F_VIDS>(face12, 1) = 7;
-            // Cabana::get<S_F_VIDS>(face12, 2) = 12;
-            // Cabana::get<S_F_EIDS>(face12, 0) = 18;
-            // Cabana::get<S_F_EIDS>(face12, 1) = 23;
-            // Cabana::get<S_F_EIDS>(face12, 2) = 19;
-            // Cabana::get<S_F_GID>(face12) = 12;
-            // Cabana::get<S_F_CID>(face12, 0) = 50;
-            // Cabana::get<S_F_CID>(face12, 1) = 51;
-            // Cabana::get<S_F_CID>(face12, 2) = 52;
-            // Cabana::get<S_F_CID>(face12, 3) = 53;
-            // Cabana::get<S_F_PID>(face12) = -1;
-            // Cabana::get<S_F_OWNER>(face12) = 0;
-            // auto tf12 = faces.getTuple(12);
-            // tstFaceEqual(face12, tf12);
+            auto t_edges = numesh->edges();
+            for (int i = 0; i < (int) t_edges.size(); i++)
+            {
+                auto t_edge = t_edges.getTuple(i);
+                int gid = Cabana::get<S_E_GID>(t_edge);
+                auto c_edge = c_edges.getTuple(gid);
+                tstEdgeEqual(c_edge, t_edge);
+            }
+        
         }
 
+        if (comm_size_ == 4)
+        {
+            // Refine one face per process
+            int size = 4;
+            Kokkos::View<int*, MemorySpace> fids("fids", size);
+            Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<ExecutionSpace>(0, size),
+                KOKKOS_LAMBDA(int i) {
+                    
+                if (i == 0) fids(i) = 106;          // rank 3
+                
+                else if (i == 1) fids(i) = 5;       // rank 0
+                
+                else if (i == 2) fids(i) = 75;      // rank 2
+
+                else if (i == 3) fids(i) = 51;      // rank 1
+
+            });
+            numesh->refine(fids);
+            auto t_edges = numesh->edges();
+            for (int i = 0; i < (int) t_edges.size(); i++)
+            {
+                auto t_edge = t_edges.getTuple(i);
+                int gid = Cabana::get<S_E_GID>(t_edge);
+                auto c_edge = c_edges.getTuple(gid);
+                tstEdgeEqual(c_edge, t_edge);
+            }
+        }
     }
 };
 
