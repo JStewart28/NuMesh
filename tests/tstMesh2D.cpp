@@ -18,7 +18,7 @@ TYPED_TEST_SUITE(Mesh2DTest, DeviceTypes);
  * neighboring faces having been refined, works properly
  * with one process and 4 processes
  */
-TYPED_TEST(Mesh2DTest, testInteriorRefine)
+TYPED_TEST(Mesh2DTest, testInteriorRefine0)
 {
     std::string filename;
     int mesh_size = 8;
@@ -30,7 +30,8 @@ TYPED_TEST(Mesh2DTest, testInteriorRefine)
     int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
     this->refineEdges(fin);
 
-    this->edges.resize(this->numesh->edges().size());
+    // Make redges slightly larger than needed because it's easier
+    this->edges.resize(this->numesh->edges().size()*(this->comm_size_+1));
     this->readEdgesFromFile(filename, this->edges);
     this->testEdges(this->edges);
 }
