@@ -48,11 +48,13 @@ class Mesh2DTest : public ::testing::Test
     template <class EdgeTuple>
     void tstEdgeEqual(EdgeTuple ce, EdgeTuple te)
     {
+        int gid;                                    // Global ID of test edge
         int cev0, cev1, tev0, tev1;                 // Vertices
         int cep, cec0, cec1, tep, tec0, tec1;       // Parents and children
         int cegid, tegid;                           // Global IDs
         int cer, ter;                               // Owning rank
 
+        gid = Cabana::get<S_E_GID>(te);
         cev0 = Cabana::get<S_E_VIDS>(ce, 0); cev1 = Cabana::get<S_E_VIDS>(ce, 1);
         tev0 = Cabana::get<S_E_VIDS>(te, 0); tev1 = Cabana::get<S_E_VIDS>(te, 1);
         cep = Cabana::get<S_E_PID>(ce); tep = Cabana::get<S_E_PID>(te);
@@ -61,13 +63,13 @@ class Mesh2DTest : public ::testing::Test
         cegid = Cabana::get<S_E_GID>(ce); tegid = Cabana::get<S_E_GID>(te);
         cer = Cabana::get<S_E_OWNER>(ce); ter = Cabana::get<S_E_OWNER>(te);
 
-        EXPECT_EQ(cev0, tev0) << "Vertex 0 mismatch";
-        EXPECT_EQ(cev1, tev1) << "Vertex 1 mismatch";
-        EXPECT_EQ(cep, tep) << "Parent edge mismatch";
-        EXPECT_EQ(cec0, tec0) << "Child edge 0 mismatch";
-        EXPECT_EQ(cec1, tec1) << "Child edge 1 mismatch";
-        EXPECT_EQ(cegid, tegid) << "Global ID mismatch";
-        EXPECT_EQ(cer, ter) << "Owning rank mismatch";
+        EXPECT_EQ(cev0, tev0) << "TGID: " << gid << ", Vertex 0 mismatch";
+        EXPECT_EQ(cev1, tev1) << "TGID: " << gid << ", Vertex 1 mismatch";
+        EXPECT_EQ(cep, tep) << "TGID: " << gid << ", Parent edge mismatch";
+        EXPECT_EQ(cec0, tec0) << "TGID: " << gid << ", Child edge 0 mismatch";
+        EXPECT_EQ(cec1, tec1) << "TGID: " << gid << ", Child edge 1 mismatch";
+        EXPECT_EQ(cegid, tegid) << "TGID: " << gid << ", Global ID mismatch";
+        EXPECT_EQ(cer, ter) << "TGID: " << gid << ", Owning rank mismatch";
     }
 
     template <class FaceTuple>
@@ -217,10 +219,11 @@ class Mesh2DTest : public ::testing::Test
     void testEdges(e_array_type& c_edges)
     {
         e_array_type t_edges_host;
-        t_edges_host.resize(numesh->edges().size());
+        int size = (int) numesh->edges().size();
+        t_edges_host.resize(size);
         //printf("ce/te: %d, %d\n", (int)c_edges.size(), (int)t_edges_host.size());
         Cabana::deep_copy(t_edges_host, numesh->edges());
-        for (int i = 0; i < (int) t_edges_host.size(); i++)
+        for (int i = 0; i < size; i++)
         {
             auto t_edge = t_edges_host.getTuple(i);
             int gid = Cabana::get<S_E_GID>(t_edge);

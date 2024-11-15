@@ -22,7 +22,6 @@ TYPED_TEST(Mesh2DTest, testInteriorRefine)
 {
     std::string filename;
     int mesh_size = 8;
-    this->edges.resize(228);
 
     filename = this->get_filename(this->comm_size_, mesh_size, 1);
     
@@ -31,6 +30,7 @@ TYPED_TEST(Mesh2DTest, testInteriorRefine)
     int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
     this->refineEdges(fin);
 
+    this->edges.resize(this->numesh->edges().size());
     this->readEdgesFromFile(filename, this->edges);
     this->testEdges(this->edges);
 }
