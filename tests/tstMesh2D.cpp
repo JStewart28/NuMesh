@@ -30,7 +30,7 @@ TYPED_TEST(Mesh2DTest, testInteriorRefine0)
     int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
     this->refineEdges(fin);
 
-    // Make redges slightly larger than needed because it's easier
+    // Make edges slightly larger than needed because it's easier
     this->edges.resize(this->numesh->edges().size()*(this->comm_size_+1));
     this->readEdgesFromFile(filename, this->edges);
     this->testEdges(this->edges);
