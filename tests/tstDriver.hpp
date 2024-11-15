@@ -29,7 +29,7 @@ int main( int argc, char* argv[] )
     int return_val = RUN_ALL_TESTS();
     Kokkos::finalize();
     MPI_Finalize();
-    printf("Please run with 1 and 4 processes to run all tests.\n");
+    printf("Please run with 1 and 4 processes to verify correctness.\n");
     return return_val;
 }
 #endif //_TSTDRIVER_HPP_

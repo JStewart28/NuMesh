@@ -226,9 +226,23 @@ class Mesh2DTest : public ::testing::Test
         for (int i = 0; i < size; i++)
         {
             auto t_edge = t_edges_host.getTuple(i);
-            int gid = Cabana::get<S_E_GID>(t_edge);
+            int gid = Cabana::get<E_GID>(t_edge);
             auto c_edge = c_edges.getTuple(gid);
             tstEdgeEqual(c_edge, t_edge);
+        }
+    }
+
+    void test_refineAndAddEdges1()
+    {
+        e_array_type edges_host;
+        int size = (int) numesh->edges().size();
+        edges_host.resize(size);
+        Cabana::deep_copy(edges_host, numesh->edges());
+        auto e_vids = Cabana::get<E_VIDS>(edges_host);
+        for (int i = 0; i < size; i ++)
+        {
+            // Check that no edge connects vertices greater than the max locally owned vertex GID
+
         }
     }
 };

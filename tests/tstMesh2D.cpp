@@ -14,11 +14,10 @@ namespace NuMeshTest
 TYPED_TEST_SUITE(Mesh2DTest, DeviceTypes);
 
 /**
- * Check that refining interior faces, with no 
- * neighboring faces having been refined, works properly
- * with one process and 4 processes
+ * Tests _refineAndAddEdges using a known correct output
+ * from a file
  */
-TYPED_TEST(Mesh2DTest, testInteriorRefine0)
+TYPED_TEST(Mesh2DTest, test_refineAndAddEdges0)
 {
     std::string filename;
     int mesh_size = 8;
@@ -36,4 +35,21 @@ TYPED_TEST(Mesh2DTest, testInteriorRefine0)
     this->testEdges(this->edges);
 }
 
+/**
+ * Tests _refineAndAddEdges for general correctness:
+ *  - No edge connects vertices greater than the max locally owned vertex GID
+ *  - No edges with different IDs connect the same vertices
+ *  - 
+ */
+TYPED_TEST(Mesh2DTest, test_refineAndAddEdges1)
+{
+    int mesh_size = 8;
+    
+    this->init(mesh_size, 1);
+
+    int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
+    this->refineEdges(fin);
+    this->test_refineAndAddEdges1()
+
+}
 } // end namespace NuMeshTest
