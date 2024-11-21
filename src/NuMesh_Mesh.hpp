@@ -843,8 +843,8 @@ class Mesh
              *  ec_lid1: (new vertex, second vertex of parent edge)
              */
             offset /= 2;
-            e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = v_lid_start + offset;
-            e_vid(ec_lid1, 0) = v_lid_start + offset; e_vid(ec_lid1, 1) = e_vid(i, 1);
+            e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = v_gid_start + offset;
+            e_vid(ec_lid1, 0) = v_gid_start + offset; e_vid(ec_lid1, 1) = e_vid(i, 1);
         });
 
         // Populate the three new, internal edges for each face
@@ -882,9 +882,9 @@ class Mesh
              *  e_lid2: (new vertex 0, new vertex 2)
              */
             offset = i * 3;
-            e_vid(e_lid0, 0) = v_lid_start + offset; e_vid(e_lid0, 1) = v_lid_start + offset + 1;
-            e_vid(e_lid1, 0) = v_lid_start + offset + 1; e_vid(e_lid1, 1) = v_lid_start + offset + 2;
-            e_vid(e_lid2, 0) = v_lid_start + offset; e_vid(e_lid2, 1) = v_lid_start + offset + 2;
+            e_vid(e_lid0, 0) = v_gid_start + offset; e_vid(e_lid0, 1) = v_gid_start + offset + 1;
+            e_vid(e_lid1, 0) = v_gid_start + offset + 1; e_vid(e_lid1, 1) = v_gid_start + offset + 2;
+            e_vid(e_lid2, 0) = v_gid_start + offset; e_vid(e_lid2, 1) = v_gid_start + offset + 2;
 
         });
 
@@ -1016,6 +1016,8 @@ class Mesh
     v_array_type vertices() {return _vertices;}
     e_array_type edges() {return _edges;}
     f_array_type faces() {return _faces;}
+
+    auto get_vef_gid_start() {return _vef_gid_start;}
 
     void printVertices()
     {

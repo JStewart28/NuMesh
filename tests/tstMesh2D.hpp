@@ -54,14 +54,14 @@ class Mesh2DTest : public ::testing::Test
         int cegid, tegid;                           // Global IDs
         int cer, ter;                               // Owning rank
 
-        gid = Cabana::get<S_E_GID>(te);
-        cev0 = Cabana::get<S_E_VIDS>(ce, 0); cev1 = Cabana::get<S_E_VIDS>(ce, 1);
-        tev0 = Cabana::get<S_E_VIDS>(te, 0); tev1 = Cabana::get<S_E_VIDS>(te, 1);
-        cep = Cabana::get<S_E_PID>(ce); tep = Cabana::get<S_E_PID>(te);
-        cec0 = Cabana::get<S_E_CIDS>(ce, 0); cec1 = Cabana::get<S_E_CIDS>(ce, 1);
-        tec0 = Cabana::get<S_E_CIDS>(te, 0); tec1 = Cabana::get<S_E_CIDS>(te, 1);
-        cegid = Cabana::get<S_E_GID>(ce); tegid = Cabana::get<S_E_GID>(te);
-        cer = Cabana::get<S_E_OWNER>(ce); ter = Cabana::get<S_E_OWNER>(te);
+        gid = Cabana::get<E_GID>(te);
+        cev0 = Cabana::get<E_VIDS>(ce, 0); cev1 = Cabana::get<E_VIDS>(ce, 1);
+        tev0 = Cabana::get<E_VIDS>(te, 0); tev1 = Cabana::get<E_VIDS>(te, 1);
+        cep = Cabana::get<E_PID>(ce); tep = Cabana::get<E_PID>(te);
+        cec0 = Cabana::get<E_CIDS>(ce, 0); cec1 = Cabana::get<E_CIDS>(ce, 1);
+        tec0 = Cabana::get<E_CIDS>(te, 0); tec1 = Cabana::get<E_CIDS>(te, 1);
+        cegid = Cabana::get<E_GID>(ce); tegid = Cabana::get<E_GID>(te);
+        cer = Cabana::get<E_OWNER>(ce); ter = Cabana::get<E_OWNER>(te);
 
         EXPECT_EQ(cev0, tev0) << "TGID: " << gid << ", Vertex 0 mismatch";
         EXPECT_EQ(cev1, tev1) << "TGID: " << gid << ", Vertex 1 mismatch";
@@ -81,15 +81,15 @@ class Mesh2DTest : public ::testing::Test
         int cfp, tfp, cfc0, tfc0, cfc1, tfc1, cfc2, tfc2, cfc3, tfc3; // Parents and children
         int cfr, tfr;                               // Owning rank
 
-        cfv0 = Cabana::get<S_F_VIDS>(cf, 0); cfv1 = Cabana::get<S_F_VIDS>(cf, 1); cfv2 = Cabana::get<S_F_VIDS>(cf, 2);
-        tfv0 = Cabana::get<S_F_VIDS>(tf, 0); tfv1 = Cabana::get<S_F_VIDS>(tf, 1); tfv2 = Cabana::get<S_F_VIDS>(tf, 2);
-        cfe0 = Cabana::get<S_F_EIDS>(cf, 0); cfe1 = Cabana::get<S_F_EIDS>(cf, 1); cfe2 = Cabana::get<S_F_EIDS>(cf, 2);
-        tfe0 = Cabana::get<S_F_EIDS>(tf, 0); tfe1 = Cabana::get<S_F_EIDS>(tf, 1); tfe2 = Cabana::get<S_F_EIDS>(tf, 2);
-        cfgid = Cabana::get<S_F_GID>(cf); tfgid = Cabana::get<S_F_GID>(tf);
-        cfp = Cabana::get<S_F_PID>(cf); tfp = Cabana::get<S_F_PID>(tf);
-        cfc0 = Cabana::get<S_F_CID>(cf, 0); cfc1 = Cabana::get<S_F_CID>(cf, 1); cfc2 = Cabana::get<S_F_CID>(cf, 2); cfc3 = Cabana::get<S_F_CID>(cf, 3);
-        tfc0 = Cabana::get<S_F_CID>(tf, 0); tfc1 = Cabana::get<S_F_CID>(tf, 1); tfc2 = Cabana::get<S_F_CID>(tf, 2); tfc3 = Cabana::get<S_F_CID>(tf, 3);
-        cfr = Cabana::get<S_F_OWNER>(cf); tfr = Cabana::get<S_F_OWNER>(tf);
+        cfv0 = Cabana::get<F_VIDS>(cf, 0); cfv1 = Cabana::get<F_VIDS>(cf, 1); cfv2 = Cabana::get<F_VIDS>(cf, 2);
+        tfv0 = Cabana::get<F_VIDS>(tf, 0); tfv1 = Cabana::get<F_VIDS>(tf, 1); tfv2 = Cabana::get<F_VIDS>(tf, 2);
+        cfe0 = Cabana::get<F_EIDS>(cf, 0); cfe1 = Cabana::get<F_EIDS>(cf, 1); cfe2 = Cabana::get<F_EIDS>(cf, 2);
+        tfe0 = Cabana::get<F_EIDS>(tf, 0); tfe1 = Cabana::get<F_EIDS>(tf, 1); tfe2 = Cabana::get<F_EIDS>(tf, 2);
+        cfgid = Cabana::get<F_GID>(cf); tfgid = Cabana::get<F_GID>(tf);
+        cfp = Cabana::get<F_PID>(cf); tfp = Cabana::get<F_PID>(tf);
+        cfc0 = Cabana::get<F_CID>(cf, 0); cfc1 = Cabana::get<F_CID>(cf, 1); cfc2 = Cabana::get<F_CID>(cf, 2); cfc3 = Cabana::get<F_CID>(cf, 3);
+        tfc0 = Cabana::get<F_CID>(tf, 0); tfc1 = Cabana::get<F_CID>(tf, 1); tfc2 = Cabana::get<F_CID>(tf, 2); tfc3 = Cabana::get<F_CID>(tf, 3);
+        cfr = Cabana::get<F_OWNER>(cf); tfr = Cabana::get<F_OWNER>(tf);
 
         EXPECT_EQ(cfv0, tfv0) << "Vertex 0 mismatch";
         EXPECT_EQ(cfv1, tfv1) << "Vertex 1 mismatch";
@@ -149,15 +149,15 @@ class Mesh2DTest : public ::testing::Test
 
                 // Create and populate an edge tuple
                 Cabana::Tuple<edge_data> edge_tuple;
-                Cabana::get<S_E_GID>(edge_tuple) = gid;
-                Cabana::get<S_E_VIDS>(edge_tuple, 0) = vids[0];
-                Cabana::get<S_E_VIDS>(edge_tuple, 1) = vids[1];
-                Cabana::get<S_E_FIDS>(edge_tuple, 0) = fids[0];
-                Cabana::get<S_E_FIDS>(edge_tuple, 1) = fids[1];
-                Cabana::get<S_E_CIDS>(edge_tuple, 0) = cids[0];
-                Cabana::get<S_E_CIDS>(edge_tuple, 1) = cids[1];
-                Cabana::get<S_E_PID>(edge_tuple) = pid;
-                Cabana::get<S_E_OWNER>(edge_tuple) = owner;
+                Cabana::get<E_GID>(edge_tuple) = gid;
+                Cabana::get<E_VIDS>(edge_tuple, 0) = vids[0];
+                Cabana::get<E_VIDS>(edge_tuple, 1) = vids[1];
+                Cabana::get<E_FIDS>(edge_tuple, 0) = fids[0];
+                Cabana::get<E_FIDS>(edge_tuple, 1) = fids[1];
+                Cabana::get<E_CIDS>(edge_tuple, 0) = cids[0];
+                Cabana::get<E_CIDS>(edge_tuple, 1) = cids[1];
+                Cabana::get<E_PID>(edge_tuple) = pid;
+                Cabana::get<E_OWNER>(edge_tuple) = owner;
 
                 // Add the tuple to the AoSoA at the current gid
                 edges.setTuple(gid, edge_tuple);
@@ -232,17 +232,31 @@ class Mesh2DTest : public ::testing::Test
         }
     }
 
-    void test_refineAndAddEdges1()
+    void test1_refineAndAddEdges()
     {
         e_array_type edges_host;
         int size = (int) numesh->edges().size();
+        auto vef_gid_start = numesh->get_vef_gid_start();
+        int min_vgid = vef_gid_start(this->rank_, 0);
+        int max_vgid;
+        if (this->rank_ == comm_size_ - 1) max_vgid = min_vgid + (int) numesh->vertices().size();
+        else max_vgid = vef_gid_start(this->rank_+1, 0);
         edges_host.resize(size);
         Cabana::deep_copy(edges_host, numesh->edges());
-        auto e_vids = Cabana::get<E_VIDS>(edges_host);
+        auto e_vids = Cabana::slice<E_VIDS>(edges_host);
+        auto e_gids = Cabana::slice<E_GID>(edges_host);
         for (int i = 0; i < size; i ++)
         {
-            // Check that no edge connects vertices greater than the max locally owned vertex GID
+            int e_gid = e_gids(i);
 
+            // Check that no edge connects vertices greater than the max locally owned vertex GID
+            for (int j = 0; j < 2; j++)
+            {
+                int vid = e_vids(i, j);
+                EXPECT_GE(vid, min_vgid) << "Rank " << this->rank_ << ": Vertex " << j << " of edge " << e_gid << " : " << vid << " !>= " << min_vgid;
+                EXPECT_LT(vid, max_vgid) << "Rank " << this->rank_ << ": Vertex " << j << " of edge " << e_gid << " : " << vid << " !< " << max_vgid;
+            }
+            
         }
     }
 };

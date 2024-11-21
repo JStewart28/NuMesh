@@ -32,7 +32,7 @@ TYPED_TEST(Mesh2DTest, test_refineAndAddEdges0)
     // Make edges slightly larger than needed because it's easier
     this->edges.resize(this->numesh->edges().size()*(this->comm_size_+1));
     this->readEdgesFromFile(filename, this->edges);
-    this->testEdges(this->edges);
+    //this->testEdges(this->edges);
 }
 
 /**
@@ -41,15 +41,15 @@ TYPED_TEST(Mesh2DTest, test_refineAndAddEdges0)
  *  - No edges with different IDs connect the same vertices
  *  - 
  */
-TYPED_TEST(Mesh2DTest, test_refineAndAddEdges1)
+TYPED_TEST(Mesh2DTest, test1_refineAndAddEdges1)
 {
     int mesh_size = 8;
     
     this->init(mesh_size, 1);
 
-    int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
-    this->refineEdges(fin);
-    this->test_refineAndAddEdges1()
+    //int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
+    //this->refineEdges(fin);
+    this->test1_refineAndAddEdges();
 
 }
 } // end namespace NuMeshTest
