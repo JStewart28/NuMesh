@@ -156,6 +156,7 @@ class Mesh
         auto f_parent = Cabana::slice<F_PID>(_faces);
         auto f_child = Cabana::slice<F_CID>(_faces);
         auto f_owner = Cabana::slice<F_OWNER>(_faces);
+        auto f_layer = Cabana::slice<F_LAYER>(_faces);
 
         int rank = _rank;
         // Copy _vef_gid_start to device
@@ -189,6 +190,7 @@ class Mesh
             f_parent(f_lid) = -1;
             f_child(f_lid, 0) = -1; f_child(f_lid, 1) = -1; f_child(f_lid, 2) = -1; f_child(f_lid, 3) = -1;
             f_owner(f_lid) = rank;
+            f_layer(f_lid) = 0;
             // printf("v_gl0: (%d, %d), e_gl0: (%d, %d), v_gid1: %d, e_gid1: %d, v_gid2: %d, e_gid2: %d, R%d\n",
             //     v_gid0, v_lid0, e_gid0, e_lid0, v_gid1, e_gid1, v_gid2, e_gid2, rank);
             // if (f_gid(f_lid) == 103)
@@ -218,7 +220,7 @@ class Mesh
             f_parent(f_lid) = -1;
             f_child(f_lid, 0) = -1; f_child(f_lid, 1) = -1; f_child(f_lid, 2) = -1; f_child(f_lid, 3) = -1;
             f_owner(f_lid) = rank;
-
+            f_layer(f_lid) = 0;
 
             // if (f_gid(f_lid) == 103)
             // {
@@ -823,6 +825,7 @@ class Mesh
         auto e_rank = Cabana::slice<E_OWNER>(_edges);
         auto e_cid = Cabana::slice<E_CIDS>(_edges);
         auto e_pid = Cabana::slice<E_PID>(_edges);
+        auto e_layer = Cabana::slice<E_LAYER>(_edges);
 
         // Refine existing  edges
         Kokkos::deep_copy(edge_counter, 0);
@@ -838,6 +841,7 @@ class Mesh
             int ec_lid1 = e_lid_start + offset + 1;
             int ec_gid0 = e_gid_start + ec_lid0;
             int ec_gid1 = e_gid_start + ec_lid1;
+            int ec_layer = e_layer(i) + 1;
 
             // Global IDs = global ID start + local ID
             e_gid(ec_lid0) = ec_gid0;
@@ -847,11 +851,14 @@ class Mesh
             e_pid(ec_lid0) = i + e_gid_start; e_cid(ec_lid0, 0) = -1; e_cid(ec_lid0, 1) = -1;
             e_pid(ec_lid1) = i + e_gid_start; e_cid(ec_lid1, 0) = -1; e_cid(ec_lid1, 1) = -1;
             
-            // Set these edges to be the child edges of their parents edges
+            // Set these edges to be the child edges of their parent edge
             e_cid(i, 0) = ec_gid0; e_cid(i, 1) = ec_gid1;
 
             // Owning rank
             e_rank(ec_lid0) = rank; e_rank(ec_lid1) = rank;
+
+            // Layer of tree
+            e_layer(ec_lid0) = ec_layer; e_layer(ec_lid1) = ec_layer;
 
             // Face IDs
             e_fid(ec_lid0, 0) = -1; e_fid(ec_lid0, 1) = -1;
@@ -889,6 +896,9 @@ class Mesh
 
             // Owning rank
             e_rank(e_lid0) = rank; e_rank(e_lid1) = rank; e_rank(e_lid2) = rank;
+
+            // Layer of tree = layer of refined face + 1
+            e_layer(e_lid0) = 
 
             // Face IDs
             e_fid(e_lid0, 0) = -1; e_fid(e_lid0, 1) = -1;
