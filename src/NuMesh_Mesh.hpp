@@ -412,6 +412,7 @@ class Mesh
         auto e_cids = Cabana::slice<E_CIDS>(_edges);
         auto e_pid = Cabana::slice<E_PID>(_edges);
         auto e_owner = Cabana::slice<E_OWNER>(_edges);
+        auto e_layer = Cabana::slice<E_LAYER>(_edges);
         int rank = _rank;
         auto topology = Cabana::Grid::getTopology( *local_grid );
         auto device_topology = vectorToArray<9>( topology );
@@ -457,6 +458,7 @@ class Mesh
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 e_owner(e_lid) = rank;
                 e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                e_layer(e_lid) = 0;
 
                 // Edge 1: northeast
                 v_gid_other = vef_gid_start_d(rank, 0) + (i+1 - istart) * (jend - jstart) + (j+1 - jstart);
@@ -466,6 +468,7 @@ class Mesh
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 e_owner(e_lid) = rank;
                 e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                e_layer(e_lid) = 0;
 
                 // Edge 2: east
                 v_gid_other = vef_gid_start_d(rank, 0) + (i+1 - istart) * (jend - jstart) + (j - jstart);
@@ -475,6 +478,7 @@ class Mesh
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 e_owner(e_lid) = rank;
                 e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                e_layer(e_lid) = 0;
                 //printf("ij: %d, %d: e3: vid: %d, vo: %d\n", i, j, v_lid, v_lid_other);
             }
             // Boundary edges on east boundary
@@ -488,6 +492,7 @@ class Mesh
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 e_owner(e_lid) = rank;
                 e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                e_layer(e_lid) = 0;
 
                 // Edges 1 and 2
                 neighbor_rank = device_topology[5];
@@ -501,6 +506,7 @@ class Mesh
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
 
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 2;
@@ -509,6 +515,7 @@ class Mesh
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
                 } 
                 else 
                 {
@@ -522,6 +529,7 @@ class Mesh
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
 
                     // Edge 2
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset;
@@ -531,6 +539,7 @@ class Mesh
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
                 }
             }
             // Boundary edges on north boundary
@@ -544,6 +553,7 @@ class Mesh
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 e_owner(e_lid) = rank;
                 e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                e_layer(e_lid) = 0;
 
                 // Edges 0 and 1
                 neighbor_rank = device_topology[7];
@@ -557,6 +567,7 @@ class Mesh
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
 
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 1;
@@ -565,6 +576,7 @@ class Mesh
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
                 } 
                 else 
                 {
@@ -579,6 +591,7 @@ class Mesh
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
 
                     // Edge 1
                     offset = v_lid / (iend-istart);
@@ -590,6 +603,7 @@ class Mesh
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
                 }
             }
 
@@ -608,6 +622,7 @@ class Mesh
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
                 } 
                 else 
                 {
@@ -620,6 +635,7 @@ class Mesh
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
                 }
 
                 // Edge 1
@@ -634,6 +650,7 @@ class Mesh
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
                 } 
                 else 
                 {
@@ -645,6 +662,7 @@ class Mesh
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
                 }
 
                 // Edge 2
@@ -659,6 +677,7 @@ class Mesh
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
                 } 
                 else 
                 {
@@ -670,6 +689,7 @@ class Mesh
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                     e_owner(e_lid) = rank;
                     e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
+                    e_layer(e_lid) = 0;
                 }
             }
         });

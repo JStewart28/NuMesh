@@ -47,8 +47,8 @@ TYPED_TEST(Mesh2DTest, test1_refineAndAddEdges1)
     
     this->init(mesh_size, 1);
 
-    //int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
-    //this->refineEdges(fin);
+    int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
+    this->refineEdges(fin);
     this->test1_refineAndAddEdges();
 
 }

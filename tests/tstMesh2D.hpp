@@ -245,18 +245,25 @@ class Mesh2DTest : public ::testing::Test
         Cabana::deep_copy(edges_host, numesh->edges());
         auto e_vids = Cabana::slice<E_VIDS>(edges_host);
         auto e_gids = Cabana::slice<E_GID>(edges_host);
+        auto e_layer = Cabana::slice<E_LAYER>(edges_host);
         for (int i = 0; i < size; i ++)
         {
             int e_gid = e_gids(i);
 
-            // Check that no edge connects vertices greater than the max locally owned vertex GID
-            for (int j = 0; j < 2; j++)
+            /**
+             * On child edges, check that no edge connects vertices greater than the max locally owned vertex GID
+             * 
+             * Level zero edges may connect accoss MPI boundaries and violate this condition
+             */ 
+            if (e_layer(i) > 0)
             {
-                int vid = e_vids(i, j);
-                EXPECT_GE(vid, min_vgid) << "Rank " << this->rank_ << ": Vertex " << j << " of edge " << e_gid << " : " << vid << " !>= " << min_vgid;
-                EXPECT_LT(vid, max_vgid) << "Rank " << this->rank_ << ": Vertex " << j << " of edge " << e_gid << " : " << vid << " !< " << max_vgid;
+                for (int j = 0; j < 2; j++)
+                {
+                    int vid = e_vids(i, j);
+                    EXPECT_GE(vid, min_vgid) << "Rank " << this->rank_ << ": Vertex " << j << " of edge " << e_gid << " : " << vid << " !>= " << min_vgid;
+                    EXPECT_LT(vid, max_vgid) << "Rank " << this->rank_ << ": Vertex " << j << " of edge " << e_gid << " : " << vid << " !< " << max_vgid;
+                }
             }
-            
         }
     }
 };
