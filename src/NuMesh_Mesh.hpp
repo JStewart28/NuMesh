@@ -83,7 +83,8 @@ class Mesh
     using vertex_data = Cabana::MemberTypes<int,       // Vertex global ID                                 
                                             int,       // Owning rank
                                             >;
-    using edge_data = Cabana::MemberTypes<  int[2],    // Vertex global ID endpoints of edge    
+    using edge_data = Cabana::MemberTypes<  int[3],    // Vertex global IDs of edge: (endpoint, endpoint, midpoint)
+                                                       // Midpoint is populated when the edge is split    
                                             int[2],    // Face global IDs. The face where it is
                                                        // the lowest edge, starrting at the first
                                                        // vertex and going clockwise, is the first edge.                      
@@ -428,8 +429,22 @@ class Mesh
          * 7 = (0, 1)
          * 8 = (1, 1) 
          */
+        
+
+        // Initialize values that are shared for all edges
+        Kokkos::parallel_for("init edge shared values", Kokkos::RangePolicy<execution_space>(0, _edges.size()),
+            KOKKOS_LAMBDA(int i) {
+
+            e_vid(i, 2) = -1; // No edge has been split
+            e_fids(i, 0) = -1; e_fids(i, 1) = -1;
+            e_pid(i) = -1;
+            e_cids(i, 0) = -1; e_cids(i, 1) = -1;
+            e_owner(i) = rank;
+            e_layer(i) = 0;
+        });
+
         Kokkos::parallel_for("populate_ve", Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>({{istart, jstart}}, {{iend, jend}}),
-        KOKKOS_LAMBDA(int i, int j) {
+            KOKKOS_LAMBDA(int i, int j) {
 
             // Initialize vertices
             int v_lid = (i - istart) * (jend - jstart) + (j - jstart);
@@ -442,45 +457,34 @@ class Mesh
             // }
 
             /* Initialize edges
-                * Edges between vertices for their:
-                *  1. North and south neighbors
-                *  2. East and west neighbors
-                *  3. Northeast and southwest neighbors
-                * Populate edges from west to east and clockwise
-                */
+             * Edges between vertices for their:
+             *  1. North and south neighbors
+             *  2. East and west neighbors
+             *  3. Northeast and southwest neighbors
+             * Populate edges from west to east and clockwise
+             */
             int v_gid_other, e_lid, neighbor_rank, offset;
             if ((i+1 < iend) && (j+1 < jend))
             {
                 // Edge 0: north
                 v_gid_other = vef_gid_start_d(rank, 0) + (i - istart) * (jend - jstart) + (j+1 - jstart);
                 e_lid = v_lid * 3;
-                e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                 //printf("R%d: e_gid: %d, e_lid: %d, v_lid: %d\n", rank, vef_gid_start_d(rank, 1) + e_lid, e_lid, v_lid);
                 e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                e_owner(e_lid) = rank;
-                e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                e_layer(e_lid) = 0;
+                
 
                 // Edge 1: northeast
                 v_gid_other = vef_gid_start_d(rank, 0) + (i+1 - istart) * (jend - jstart) + (j+1 - jstart);
                 e_lid = v_lid * 3 + 1;
-                e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                 e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                e_owner(e_lid) = rank;
-                e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                e_layer(e_lid) = 0;
 
                 // Edge 2: east
                 v_gid_other = vef_gid_start_d(rank, 0) + (i+1 - istart) * (jend - jstart) + (j - jstart);
                 e_lid = v_lid * 3 + 2;
-                e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                 e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                e_owner(e_lid) = rank;
-                e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                e_layer(e_lid) = 0;
                 //printf("ij: %d, %d: e3: vid: %d, vo: %d\n", i, j, v_lid, v_lid_other);
             }
             // Boundary edges on east boundary
@@ -489,12 +493,8 @@ class Mesh
                 // Edge 0: north
                 v_gid_other = vef_gid_start_d(rank, 0) + (i - istart) * (jend - jstart) + (j+1 - jstart);
                 e_lid = v_lid * 3;
-                e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                 e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                e_owner(e_lid) = rank;
-                e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                e_layer(e_lid) = 0;
 
                 // Edges 1 and 2
                 neighbor_rank = device_topology[5];
@@ -503,21 +503,13 @@ class Mesh
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 1;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
 
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 2;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
                 } 
                 else 
                 {
@@ -526,22 +518,14 @@ class Mesh
                     offset = v_lid % (jend-jstart);
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset + 1;
                     e_lid = v_lid * 3 + 1;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
 
                     // Edge 2
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset;
                     e_lid = v_lid * 3 + 2;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
                 }
             }
             // Boundary edges on north boundary
@@ -550,12 +534,8 @@ class Mesh
                 // Edge 2: east
                 v_gid_other = vef_gid_start_d(rank, 0) + (i+1 - istart) * (jend - jstart) + (j - jstart);
                 e_lid = v_lid * 3 + 2;
-                e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                 e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                e_owner(e_lid) = rank;
-                e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                e_layer(e_lid) = 0;
 
                 // Edges 0 and 1
                 neighbor_rank = device_topology[7];
@@ -564,21 +544,13 @@ class Mesh
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
 
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 1;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
                 } 
                 else 
                 {
@@ -587,25 +559,17 @@ class Mesh
                     offset = v_lid / (iend-istart);
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset * (iend-istart);
                     e_lid = v_lid * 3;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
 
                     // Edge 1
                     offset = v_lid / (iend-istart);
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + (offset+1) * (iend-istart);
                     e_lid = v_lid * 3 + 1;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
                 }
             }
 
@@ -619,25 +583,17 @@ class Mesh
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
                 } 
                 else 
                 {
                     offset = v_lid / (iend-istart);
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset * (iend-istart);
                     e_lid = v_lid * 3;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
                 }
 
                 // Edge 1
@@ -647,24 +603,16 @@ class Mesh
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 1;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
                 } 
                 else 
                 {
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0);
                     e_lid = v_lid * 3 + 1;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
                 }
 
                 // Edge 2
@@ -674,24 +622,16 @@ class Mesh
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 2;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
                 } 
                 else 
                 {
                     offset = v_lid % (jend-jstart);
                     v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset;
                     e_lid = v_lid * 3 + 2;
-                    e_fids(e_lid, 0) = -1; e_fids(e_lid, 1) = -1;
                     e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
-                    e_owner(e_lid) = rank;
-                    e_pid(e_lid) = -1; e_cids(e_lid, 0) = -1; e_cids(e_lid, 1) = -1;
-                    e_layer(e_lid) = 0;
                 }
             }
         });
@@ -732,6 +672,15 @@ class Mesh
 
         using counter_vec = Kokkos::View<int*, memory_space>;
         using counter_int = Kokkos::View<int, memory_space>;
+
+        /**
+         * List of locally-owned face IDs this process needs to split
+         * Since we don't know the size a priori, make it as large as the
+         * total number of face refinements.
+         */
+        // 
+        counter_vec local_face_lids("local_face_lids", num_face_refinements);
+
         counter_vec edge_needrefine("edge_needrefine", _owned_edges);
         counter_int vert_counter("vert_counter");
         counter_int edge_counter("edge_counter");
@@ -748,7 +697,9 @@ class Mesh
             int f_lid = fgids(i) - f_gid_start;
             if ((f_lid >= 0) && (f_lid < owned_faces)) // Make sure we own the face
             {
-                Kokkos::atomic_increment(&face_counter());
+                int index = Kokkos::atomic_fetch_add(&face_counter(), 1);
+                local_face_lids(index) = f_lid;
+
                 // Each face refinement adds 3 new edges
                 Kokkos::atomic_add(&edge_counter(), 3);
                 for (int j = 0; j < 3; j++)
@@ -807,7 +758,7 @@ class Mesh
         auto v_rank = Cabana::slice<V_OWNER>(_vertices);
 
         // Populate new vertices
-        Kokkos::parallel_for("populate new vertices", Kokkos::RangePolicy<execution_space>(0, new_vertices),
+        Kokkos::parallel_for("populate new vertices and faces", Kokkos::RangePolicy<execution_space>(0, new_vertices),
             KOKKOS_LAMBDA(int i) {
             
             // Populate new vertices
@@ -826,6 +777,10 @@ class Mesh
         auto e_cid = Cabana::slice<E_CIDS>(_edges);
         auto e_pid = Cabana::slice<E_PID>(_edges);
         auto e_layer = Cabana::slice<E_LAYER>(_edges);
+
+        // Face slices
+        auto f_layer = Cabana::slice<F_LAYER>(_faces);
+        auto f_eid = Cabana::slice<F_EIDS>(_faces);
 
         // Refine existing  edges
         Kokkos::deep_copy(edge_counter, 0);
@@ -870,52 +825,58 @@ class Mesh
              *  ec_lid1: (new vertex, second vertex of parent edge)
              */
             offset /= 2;
-            e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = v_gid_start + offset;
-            e_vid(ec_lid1, 0) = v_gid_start + offset; e_vid(ec_lid1, 1) = e_vid(i, 1);
+            int new_vgid = v_gid_start + offset;
+            e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = new_vgid;
+            e_vid(ec_lid1, 0) = new_vgid; e_vid(ec_lid1, 1) = e_vid(i, 1);
+
+            // Set the parent edge third vertex value
+            e_vid(i, 2) = new_vgid;
         });
 
         // Populate the three new, internal edges for each face
         Kokkos::parallel_for("new internal edges", Kokkos::RangePolicy<execution_space>(0, new_faces),
             KOKKOS_LAMBDA(int i) {
             
-            // Create new edge local IDs
+            int face_id = local_face_lids(i);
+            int e_lid;
+
+            // Set general values for each of the three new edges
             int offset = Kokkos::atomic_fetch_add(&edge_counter(), 3);
-            int e_lid0 = e_lid_start + offset;
-            int e_lid1 = e_lid_start + offset + 1;
-            int e_lid2 = e_lid_start + offset + 2;
+            for (int j = offset; j < offset+3; j++)
+            {
+                e_lid = e_lid_start + j;
 
-            // Global IDs = global ID start + local ID
-            e_gid(e_lid0) = e_gid_start + e_lid0;
-            e_gid(e_lid1) = e_gid_start + e_lid1;
-            e_gid(e_lid2) = e_gid_start + e_lid2;
+                // Global IDs = global ID start + local ID
+                e_gid(e_lid) = e_gid_start + e_lid;
 
-            // Set parent and child edges
-            e_pid(e_lid0) = -1; e_cid(e_lid0, 0) = -1; e_cid(e_lid0, 1) = -1;
-            e_pid(e_lid1) = -1; e_cid(e_lid1, 0) = -1; e_cid(e_lid1, 1) = -1;
-            e_pid(e_lid2) = -1; e_cid(e_lid2, 0) = -1; e_cid(e_lid2, 1) = -1;
+                // Set parent and child edges
+                e_pid(e_lid) = -1; e_cid(e_lid, 0) = -1; e_cid(e_lid, 1) = -1;
 
-            // Owning rank
-            e_rank(e_lid0) = rank; e_rank(e_lid1) = rank; e_rank(e_lid2) = rank;
+                // Owning rank
+                e_rank(e_lid) = rank;
 
-            // Layer of tree = layer of refined face + 1
-            e_layer(e_lid0) = 
+                // Face IDs - XXX - may not be needed
+                e_fid(e_lid, 0) = -1; e_fid(e_lid, 1) = -1;
 
-            // Face IDs
-            e_fid(e_lid0, 0) = -1; e_fid(e_lid0, 1) = -1;
-            e_fid(e_lid1, 0) = -1; e_fid(e_lid1, 1) = -1;
-            e_fid(e_lid2, 0) = -1; e_fid(e_lid2, 1) = -1;
+                 /**
+                 * For internal edges, get their layer from the layer of the
+                 * face they are splitting
+                 */
+                e_layer(e_lid) = f_layer(face_id) + 1;
 
-            /**
-             * Set vertices:
-             *  e_lid0: (new vertex 0, new vertex 1)
-             *  e_lid1: (new vertex 1, new vertex 2)
-             *  e_lid2: (new vertex 0, new vertex 2)
-             */
-            offset = i * 3;
-            e_vid(e_lid0, 0) = v_gid_start + offset; e_vid(e_lid0, 1) = v_gid_start + offset + 1;
-            e_vid(e_lid1, 0) = v_gid_start + offset + 1; e_vid(e_lid1, 1) = v_gid_start + offset + 2;
-            e_vid(e_lid2, 0) = v_gid_start + offset; e_vid(e_lid2, 1) = v_gid_start + offset + 2;
-
+                /**
+                 * Set vertices:
+                 *  e_lid0: (new vertex 0, new vertex 1)
+                 *  e_lid1: (new vertex 1, new vertex 2)
+                 *  e_lid2: (new vertex 0, new vertex 2)
+                 */
+                int e0, e1, e2, nv0, nv1, nv2;
+                e0 = f_eid(face_id, 0); e1 = f_eid(face_id, 1); e2 = f_eid(face_id, 2);
+                nv0 = e_vid(e0, 2); nv1 = e_vid(e1, 2); nv2 = e_vid(e2, 2); 
+                if (j == 0) {e_vid(e_lid, 0) = nv0; e_vid(e_lid, 1) = nv1;}
+                else if (j == 1) {e_vid(e_lid, 0) = nv1; e_vid(e_lid, 1) = nv2;}
+                else if (j == 2) {e_vid(e_lid, 0) =nv0; e_vid(e_lid, 1) = nv2;}
+            }
         });
 
         } // end if (new_vertices > 0)
@@ -1078,9 +1039,9 @@ class Mesh
         Kokkos::parallel_for("print edges", Kokkos::RangePolicy<execution_space>(start, end),
             KOKKOS_LAMBDA(int i) {
             
-            printf("%d, v(%d, %d), f(%d, %d), c(%d, %d), p(%d) %d, %d\n",
+            printf("%d, v(%d, %d, %d), f(%d, %d), c(%d, %d), p(%d) %d, %d\n",
                 e_gid(i),
-                e_vid(i, 0), e_vid(i, 1),
+                e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
                 e_fids(i, 0), e_fids(i, 1),
                 e_children(i, 0), e_children(i, 1),
                 e_parent(i),

@@ -232,8 +232,12 @@ class Mesh2DTest : public ::testing::Test
         }
     }
 
-    void test1_refineAndAddEdges()
+    void test1_refineAndAddInternalEdges()
     {
+        // Only refine internal edges
+        int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
+        this->refineEdges(fin);
+
         e_array_type edges_host;
         int size = (int) numesh->edges().size();
         auto vef_gid_start = numesh->get_vef_gid_start();

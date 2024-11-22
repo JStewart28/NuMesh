@@ -36,20 +36,19 @@ TYPED_TEST(Mesh2DTest, test_refineAndAddEdges0)
 }
 
 /**
- * Tests _refineAndAddEdges for general correctness:
+ * Tests _refineAndAddEdges for general correctness refining internal edges:
  *  - No edge connects vertices greater than the max locally owned vertex GID
+ *      - Note: This only holds true when refining internal edges
  *  - No edges with different IDs connect the same vertices
  *  - 
  */
-TYPED_TEST(Mesh2DTest, test1_refineAndAddEdges1)
+TYPED_TEST(Mesh2DTest, test1_refineAndAddInternalEdges)
 {
     int mesh_size = 8;
     
     this->init(mesh_size, 1);
-
-    int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
-    this->refineEdges(fin);
-    this->test1_refineAndAddEdges();
+    
+    this->test1_refineAndAddInternalEdges();
 
 }
 } // end namespace NuMeshTest
