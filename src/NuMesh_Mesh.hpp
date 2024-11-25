@@ -1032,7 +1032,7 @@ class Mesh
     /**
      * opt: 1 = owned, 2 = ghost, 3 = all
      */
-    void printEdges(int opt)
+    void printEdges(int opt, int egid)
     {
         auto e_vid = Cabana::slice<E_VIDS>(_edges);
         auto e_fids = Cabana::slice<E_FIDS>(_edges);
@@ -1040,10 +1040,32 @@ class Mesh
         auto e_parent = Cabana::slice<E_PID>(_edges);
         auto e_gid = Cabana::slice<E_GID>(_edges);
         auto e_owner = Cabana::slice<E_OWNER>(_edges);
-        int start = 0, end = _edges.size();
-        if (opt == 1) end = _owned_edges;
-        else if (opt == 2) start = _owned_edges;
         int rank = _rank;
+        if (opt == 1)
+        {
+            int e_gid_start = _vef_gid_start(_rank, 1);
+            int owned_edges = _owned_edges;
+            Kokkos::parallel_for("print edges", Kokkos::RangePolicy<execution_space>(0, 1),
+            KOKKOS_LAMBDA(int x) {
+            
+            int elid = egid - e_gid_start;
+            if ((elid >= 0) && (elid < owned_edges))
+            {
+            int i = elid;
+            printf("R%d: e%d, v(%d, %d, %d), f(%d, %d), c(%d, %d), p(%d) %d, %d\n", rank,
+                e_gid(i),
+                e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
+                e_fids(i, 0), e_fids(i, 1),
+                e_children(i, 0), e_children(i, 1),
+                e_parent(i),
+                e_owner(i), rank);
+            }
+            });
+            return;
+        }
+        int start = 0, end = _edges.size();
+        if (opt == 2) end = _owned_edges;
+        else if (opt == 3) start = _owned_edges;
         Kokkos::parallel_for("print edges", Kokkos::RangePolicy<execution_space>(start, end),
             KOKKOS_LAMBDA(int i) {
             
@@ -1058,7 +1080,7 @@ class Mesh
         });
     }
 
-    void printFaces()
+    void printFaces(int opt, int fgid)
     {
         auto f_vgids = Cabana::slice<F_VIDS>(_faces);
         auto f_egids = Cabana::slice<F_EIDS>(_faces);
@@ -1066,15 +1088,35 @@ class Mesh
         auto f_parent = Cabana::slice<F_PID>(_faces);
         auto f_child = Cabana::slice<F_CID>(_faces);
         auto f_owner = Cabana::slice<F_OWNER>(_faces);
-        for (int i = 0; i < (int) _faces.size(); i++)
+        if (opt == 0)
         {
-            printf("%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), %d\n",
-                f_gid(i),
-                f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2),
-                f_egids(i, 0), f_egids(i, 1), f_egids(i, 2),
-                f_child(i, 0), f_child(i, 1), f_child(i, 2), f_child(i, 3),
-                f_parent(i),
-                f_owner(i));
+            // Print all faces
+            for (int i = 0; i < (int) _faces.size(); i++)
+            {
+                printf("%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), %d\n",
+                    f_gid(i),
+                    f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2),
+                    f_egids(i, 0), f_egids(i, 1), f_egids(i, 2),
+                    f_child(i, 0), f_child(i, 1), f_child(i, 2), f_child(i, 3),
+                    f_parent(i),
+                    f_owner(i));
+            }
+        }
+        else if (opt == 1)
+        {
+            // Print one face
+            int flid = fgid - _vef_gid_start(_rank, 2);
+            if ((flid >= 0) && (flid < _owned_faces))
+            {
+                int i = flid;
+                printf("R%d: f%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), %d\n", _rank,
+                    f_gid(fgid),
+                    f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2),
+                    f_egids(i, 0), f_egids(i, 1), f_egids(i, 2),
+                    f_child(i, 0), f_child(i, 1), f_child(i, 2), f_child(i, 3),
+                    f_parent(i),
+                    f_owner(i));
+            }
         }
     }
 
