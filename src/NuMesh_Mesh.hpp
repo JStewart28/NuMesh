@@ -681,13 +681,22 @@ class Mesh
         // 
         counter_vec local_face_lids("local_face_lids", num_face_refinements);
 
+        /**
+         * edge_needrefine:
+         *      values > 0: This edge is owned and can be refined locally
+         *      values < 0: This edge is not owned locally. Remote process
+         *                  must be told to refine edge.
+         */
         counter_vec edge_needrefine("edge_needrefine", _owned_edges);
         counter_int vert_counter("vert_counter");
         counter_int edge_counter("edge_counter");
         counter_int face_counter("face_counter");
+        counter_int remote_edge_counter("remote_edge_counter");
+        Kokkos::deep_copy(edge_needrefine, 0);
         Kokkos::deep_copy(vert_counter, 0);
         Kokkos::deep_copy(edge_counter, 0);
         Kokkos::deep_copy(face_counter, 0);
+        Kokkos::deep_copy(remote_edge_counter, 0);
         auto f_egid = Cabana::slice<F_EIDS>(_faces);
         int owned_edges = _owned_edges;
         int owned_faces = _owned_faces;
@@ -705,8 +714,12 @@ class Mesh
                 for (int j = 0; j < 3; j++)
                 {
                     int ex_lid = f_egid(f_lid, j) - e_gid_start;
-                    if ((ex_lid >= 0) && (ex_lid < owned_edges)) // Make sure we own the edge. XXX - Is this check needed if we pass the face check?
+                    if ((ex_lid >= 0) && (ex_lid < owned_edges))
                     {
+                        /**
+                         * Case 1: We own this edge
+                         */
+
                         // Record this edge needs to be refined
                         int edge_counted = Kokkos::atomic_fetch_add(&edge_needrefine(ex_lid), 1);
                         // If edge_counted already equals 1, don't increment the new vert counter
@@ -717,18 +730,43 @@ class Mesh
                             Kokkos::atomic_add(&edge_counter(), 2);
                         }
                     }
+                    else
+                    {
+                        /**
+                         * Case 2: We do not own this edge and need to tell another
+                         * processes to refine it
+                         */
+
+                        // Decrement the edge_needrefine array
+                        int edge_counted = Kokkos::atomic_fetch_add(&edge_needrefine(ex_lid), -1);
+                        if (edge_counted == 0) Kokkos::atomic_add(&remote_edge_counter(), 1);
+                    }
                 }
             }
         });
-        int new_vertices, new_edges, new_faces;
+        int new_vertices, new_edges, new_faces, remote_edges;
         Kokkos::deep_copy(new_vertices, vert_counter);
         Kokkos::deep_copy(new_edges, edge_counter);
         Kokkos::deep_copy(new_faces, face_counter);
+        Kokkos::deep_copy(remote_edges, remote_edge_counter);
+
+        /***************************************************
+         * Communicate remote edges that must be refined
+         **************************************************/
+        // Step 1: communcate the number of remote edges that need refining, to size buffers
+        // XXX - if we know topology, this doesn't need to be an AlltoAll
+        Kokkos::View<int*, Kokkos::HostSpace>; remotes("remotes", _comm_size);
+        MPI_Alltoall(&remote_edges, 1, MPI_INT, remotes.data(), 1, MPI_INT, _comm);
+        
+        
+        /************************************************ */
+
+
 
         printf("R%d: New vef: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
 
-        // Only refine if new_faces > 0
-        if (new_faces > 0)
+        // Only refine if new_edges > 0
+        if (new_edges > 0)
         {
 
         // for (int i = 0; i < _owned_edges; i++)
@@ -886,7 +924,7 @@ class Mesh
             }
         });
 
-        } // end if (new_vertices > 0)
+        } // end if (new_edges > 0)
 
         // Update global ID values. This is a collective so all processes must call it
         updateGlobalIDs();
