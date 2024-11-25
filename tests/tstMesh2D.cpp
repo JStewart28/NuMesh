@@ -16,23 +16,13 @@ TYPED_TEST_SUITE(Mesh2DTest, DeviceTypes);
 /**
  * Tests _refineAndAddEdges using a known correct output
  * from a file
+ * 
+ * This test can only be run serially because the ID assignment
+ * using GPUs is non-deterministic
  */
-TYPED_TEST(Mesh2DTest, test_refineAndAddEdges0)
+TYPED_TEST(Mesh2DTest, test0_refineAndAddEdges)
 {
-    std::string filename;
-    int mesh_size = 8;
-
-    filename = this->get_filename(this->comm_size_, mesh_size, 1);
-    
-    this->init(mesh_size, 1);
-
-    int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
-    this->refineEdges(fin);
-
-    // Make edges slightly larger than needed because it's easier
-    this->edges.resize(this->numesh->edges().size()*(this->comm_size_+1));
-    this->readEdgesFromFile(filename, this->edges);
-    //this->testEdges(this->edges);
+    this->test0_refineAndAddEdges();
 }
 
 /**

@@ -825,12 +825,13 @@ class Mesh
              *  ec_lid1: (new vertex, second vertex of parent edge)
              */
             offset /= 2;
-            int new_vgid = v_gid_start + offset;
+            int new_vgid = v_gid_start + v_lid_start + offset;
             e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = new_vgid;
             e_vid(ec_lid1, 0) = new_vgid; e_vid(ec_lid1, 1) = e_vid(i, 1);
 
             // Set the parent edge third vertex value
             e_vid(i, 2) = new_vgid;
+            printf("R%d: pe%d v(%d, %d, %d)\n", rank, i+e_gid_start, e_vid(i, 0), e_vid(i, 1), e_vid(i, 2));
         });
 
         // Populate the three new, internal edges for each face
@@ -871,11 +872,16 @@ class Mesh
                  *  e_lid2: (new vertex 0, new vertex 2)
                  */
                 int e0, e1, e2, nv0, nv1, nv2;
-                e0 = f_eid(face_id, 0); e1 = f_eid(face_id, 1); e2 = f_eid(face_id, 2);
+                e0 = f_eid(face_id, 0)-e_gid_start; e1 = f_eid(face_id, 1)-e_gid_start; e2 = f_eid(face_id, 2)-e_gid_start;
                 nv0 = e_vid(e0, 2); nv1 = e_vid(e1, 2); nv2 = e_vid(e2, 2); 
-                if (j == 0) {e_vid(e_lid, 0) = nv0; e_vid(e_lid, 1) = nv1;}
-                else if (j == 1) {e_vid(e_lid, 0) = nv1; e_vid(e_lid, 1) = nv2;}
-                else if (j == 2) {e_vid(e_lid, 0) =nv0; e_vid(e_lid, 1) = nv2;}
+                //printf("R%d: nv: %d, %d, %d\n", rank, nv0, nv1, nv2);
+                if (j == offset) {e_vid(e_lid, 0) = nv0; e_vid(e_lid, 1) = nv1;}
+                else if (j == offset+1) {e_vid(e_lid, 0) = nv1; e_vid(e_lid, 1) = nv2;}
+                else if (j == offset+2) {e_vid(e_lid, 0) =nv0; e_vid(e_lid, 1) = nv2;}
+
+                // Middle vertex not set until new edges are further refined
+                e_vid(e_lid, 2) = -1;
+                //printf("R%d: ne%d: (%d, %d)\n", rank, e_lid+e_gid_start, e_vid(e_lid, 0), e_vid(e_lid, 1));
             }
         });
 
