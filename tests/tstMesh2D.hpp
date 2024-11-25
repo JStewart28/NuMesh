@@ -142,21 +142,28 @@ class Mesh2DTest : public ::testing::Test
             {
                 int gid = std::stoi(matches[1].str());
                 int vids[3] = { std::stoi(matches[2].str()), std::stoi(matches[3].str()), std::stoi(matches[4].str()) };
-                int fids[2] = { std::stoi(matches[4].str()), std::stoi(matches[5].str()) };
-                int cids[2] = { std::stoi(matches[6].str()), std::stoi(matches[7].str()) };
-                int pid = std::stoi(matches[8].str());
-                int owner = std::stoi(matches[9].str());
+                int fids[2] = { std::stoi(matches[5].str()), std::stoi(matches[6].str()) };
+                int cids[2] = { std::stoi(matches[7].str()), std::stoi(matches[8].str()) };
+                int pid = std::stoi(matches[9].str());
+                int owner = std::stoi(matches[10].str());
 
                 // Create and populate an edge tuple
                 Cabana::Tuple<edge_data> edge_tuple;
+                
                 Cabana::get<E_GID>(edge_tuple) = gid;
+
                 Cabana::get<E_VIDS>(edge_tuple, 0) = vids[0];
                 Cabana::get<E_VIDS>(edge_tuple, 1) = vids[1];
+                Cabana::get<E_VIDS>(edge_tuple, 2) = vids[2];
+
                 Cabana::get<E_FIDS>(edge_tuple, 0) = fids[0];
                 Cabana::get<E_FIDS>(edge_tuple, 1) = fids[1];
+
                 Cabana::get<E_CIDS>(edge_tuple, 0) = cids[0];
                 Cabana::get<E_CIDS>(edge_tuple, 1) = cids[1];
+
                 Cabana::get<E_PID>(edge_tuple) = pid;
+
                 Cabana::get<E_OWNER>(edge_tuple) = owner;
 
                 // Add the tuple to the AoSoA at the current gid
@@ -228,7 +235,7 @@ class Mesh2DTest : public ::testing::Test
             auto t_edge = t_edges_host.getTuple(i);
             int gid = Cabana::get<E_GID>(t_edge);
             auto c_edge = c_edges.getTuple(gid);
-            //tstEdgeEqual(c_edge, t_edge);
+            tstEdgeEqual(c_edge, t_edge);
         }
     }
 
@@ -243,7 +250,7 @@ class Mesh2DTest : public ::testing::Test
             
             this->init(mesh_size, 1);
 
-            int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
+            int fin[10] = {12, 13, 106, 75, 51, -1, -1, -1, -1, -1};
             this->refineEdges(fin);
 
             // Make edges slightly larger than needed because it's easier

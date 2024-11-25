@@ -821,13 +821,14 @@ class Mesh
 
             /**
              * Set vertices:
-             *  ec_lid0: (First vertex of parent edge, new vertex)
-             *  ec_lid1: (new vertex, second vertex of parent edge)
+             *  ec_lid0: (First vertex of parent edge, new vertex, -1)
+             *  ec_lid1: (new vertex, second vertex of parent edge, -1)
              */
             offset /= 2;
             int new_vgid = v_gid_start + v_lid_start + offset;
             e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = new_vgid;
             e_vid(ec_lid1, 0) = new_vgid; e_vid(ec_lid1, 1) = e_vid(i, 1);
+            e_vid(ec_lid0, 2) = -1; e_vid(ec_lid1, 2) = -1;
 
             // Set the parent edge third vertex value
             e_vid(i, 2) = new_vgid;
@@ -962,6 +963,7 @@ class Mesh
 
             // Vertex association GIDs
             e_vid(i, 0) += dv; e_vid(i, 1) += dv;
+            if (e_vid(i, 2) != -1) e_vid(i, 2) += dv;
 
             // Face association GIDs
             if (e_fid(i, 0) != -1) e_fid(i, 0) += df;
@@ -994,7 +996,7 @@ class Mesh
             f_vid(i, 0) += dv; f_vid(i, 1) += dv; f_vid(i, 2) += dv;
 
             // Edge association GIDs
-            f_eid(i, 0) += de; f_eid(i, 1) += de; f_eid(i, 2) += de;
+            f_eid(i, 0) += de; f_eid(i, 1) += de; f_eid(i, 2) += de; 
 
             // Parent face
             if (f_pid(i) != -1) f_pid(i) += df;
