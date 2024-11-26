@@ -25,12 +25,11 @@
     #define V_GID 0
     #define V_OWNER 1
     #define E_VIDS 0
-    #define E_FIDS 1
-    #define E_CIDS 2
-    #define E_PID 3
-    #define E_GID 4
-    #define E_LAYER 5
-    #define E_OWNER 6
+    #define E_CIDS 1
+    #define E_PID 2
+    #define E_GID 3
+    #define E_LAYER 4
+    #define E_OWNER 5
     #define F_CID 0
     #define F_VIDS 1
     #define F_EIDS 2
@@ -85,9 +84,6 @@ class Mesh
                                             >;
     using edge_data = Cabana::MemberTypes<  int[3],    // Vertex global IDs of edge: (endpoint, endpoint, midpoint)
                                                        // Midpoint is populated when the edge is split    
-                                            int[2],    // Face global IDs. The face where it is
-                                                       // the lowest edge, starrting at the first
-                                                       // vertex and going clockwise, is the first edge.                      
                                             int[2],    // Child edge global IDs, going clockwise from
                                                        // the first vertex of the face
                                             int,       // Parent edge global ID
@@ -240,42 +236,41 @@ class Mesh
      */
     void updateEdges()
     {
-        auto e_vid = Cabana::slice<E_VIDS>(_edges);
-        auto e_gid = Cabana::slice<E_GID>(_edges);
-        auto e_fids = Cabana::slice<E_FIDS>(_edges);
-        auto e_owner = Cabana::slice<E_OWNER>(_edges);
+        // auto e_vid = Cabana::slice<E_VIDS>(_edges);
+        // auto e_gid = Cabana::slice<E_GID>(_edges);
+        // auto e_owner = Cabana::slice<E_OWNER>(_edges);
 
-        auto f_egids = Cabana::slice<F_EIDS>(_faces);
+        // auto f_egids = Cabana::slice<F_EIDS>(_faces);
 
-        /* Edges will always be one of the following for faces:
-         * - 1st edge and 2nd edge
-         * - 1st edge and 3rd edge
-         * - 2nd edge and 3rd edge
-         * 
-         * Iterate over faces and assign 1st and 3rd edges' face 1
-         */
-        int rank = _rank;
-        // Copy _vef_gid_start to device
-        Kokkos::View<int*[3], MemorySpace> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
-        auto hv_tmp = Kokkos::create_mirror_view(_vef_gid_start_d);
-        Kokkos::deep_copy(hv_tmp, _vef_gid_start);
-        Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
-        Kokkos::parallel_for("assign_edges13_to_faces", Kokkos::RangePolicy<execution_space>(0, _faces.size()), KOKKOS_LAMBDA(int f_lid) {
-            int f_gid, eX_lid; // eX_gid;
-            f_gid = f_lid + _vef_gid_start_d(rank, 2);
+        // /* Edges will always be one of the following for faces:
+        //  * - 1st edge and 2nd edge
+        //  * - 1st edge and 3rd edge
+        //  * - 2nd edge and 3rd edge
+        //  * 
+        //  * Iterate over faces and assign 1st and 3rd edges' face 1
+        //  */
+        // int rank = _rank;
+        // // Copy _vef_gid_start to device
+        // Kokkos::View<int*[3], MemorySpace> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
+        // auto hv_tmp = Kokkos::create_mirror_view(_vef_gid_start_d);
+        // Kokkos::deep_copy(hv_tmp, _vef_gid_start);
+        // Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
+        // Kokkos::parallel_for("assign_edges13_to_faces", Kokkos::RangePolicy<execution_space>(0, _faces.size()), KOKKOS_LAMBDA(int f_lid) {
+        //     int f_gid, eX_lid; // eX_gid;
+        //     f_gid = f_lid + _vef_gid_start_d(rank, 2);
 
-            // Where this edge is the first edge, set its face1
-            // eX_gid = f_egids(f_lid, 0);
-            //if (eX_gid == 14) printf("R%d: e1_gid: %d, f_gid: %d\n", rank, eX_gid, f_gid);
-            eX_lid = f_egids(f_lid, 0) - _vef_gid_start_d(rank, 1);
-            e_fids(eX_lid, 0) = f_gid;
+        //     // Where this edge is the first edge, set its face1
+        //     // eX_gid = f_egids(f_lid, 0);
+        //     //if (eX_gid == 14) printf("R%d: e1_gid: %d, f_gid: %d\n", rank, eX_gid, f_gid);
+        //     eX_lid = f_egids(f_lid, 0) - _vef_gid_start_d(rank, 1);
+        //     e_fids(eX_lid, 0) = f_gid;
             
-            // Where this edge is the third edge, set its face2
-            // eX_gid = f_egids(f_lid, 2);
-            //if (eX_gid == 14) printf("R%d: e3_gid: %d, f_gid: %d\n", rank, eX_gid, f_gid);
-            eX_lid = f_egids(f_lid, 2) - _vef_gid_start_d(rank, 1);
-            e_fids(eX_lid, 1) = f_gid;
-        });
+        //     // Where this edge is the third edge, set its face2
+        //     // eX_gid = f_egids(f_lid, 2);
+        //     //if (eX_gid == 14) printf("R%d: e3_gid: %d, f_gid: %d\n", rank, eX_gid, f_gid);
+        //     eX_lid = f_egids(f_lid, 2) - _vef_gid_start_d(rank, 1);
+        //     e_fids(eX_lid, 1) = f_gid;
+        // });
     }
 
     /**
@@ -411,7 +406,6 @@ class Mesh
 
         auto e_vid = Cabana::slice<E_VIDS>(_edges); // VIDs from south to north, west to east vertices
         auto e_gid = Cabana::slice<E_GID>(_edges);
-        auto e_fids = Cabana::slice<E_FIDS>(_edges);
         auto e_cids = Cabana::slice<E_CIDS>(_edges);
         auto e_pid = Cabana::slice<E_PID>(_edges);
         auto e_owner = Cabana::slice<E_OWNER>(_edges);
@@ -436,7 +430,6 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
 
             e_vid(i, 2) = -1; // No edge has been split
-            e_fids(i, 0) = -1; e_fids(i, 1) = -1;
             e_pid(i) = -1;
             e_cids(i, 0) = -1; e_cids(i, 1) = -1;
             e_owner(i) = rank;
@@ -821,10 +814,6 @@ class Mesh
 
         printf("R%d: New vef: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
 
-        // Only refine if new_edges > 0
-        if (new_edges > 0)
-        {
-
         // for (int i = 0; i < _owned_edges; i++)
         // {
         //     if (edge_needrefine(i) == 1)
@@ -866,7 +855,6 @@ class Mesh
         // Edge slices
         auto e_gid = Cabana::slice<E_GID>(_edges);
         auto e_vid = Cabana::slice<E_VIDS>(_edges);
-        auto e_fid = Cabana::slice<E_FIDS>(_edges);
         auto e_rank = Cabana::slice<E_OWNER>(_edges);
         auto e_cid = Cabana::slice<E_CIDS>(_edges);
         auto e_pid = Cabana::slice<E_PID>(_edges);
@@ -909,10 +897,6 @@ class Mesh
             // Layer of tree
             e_layer(ec_lid0) = ec_layer; e_layer(ec_lid1) = ec_layer;
 
-            // Face IDs
-            e_fid(ec_lid0, 0) = -1; e_fid(ec_lid0, 1) = -1;
-            e_fid(ec_lid1, 0) = -1; e_fid(ec_lid1, 1) = -1;
-
             /**
              * Set vertices:
              *  ec_lid0: (First vertex of parent edge, new vertex, -1)
@@ -929,16 +913,87 @@ class Mesh
             printf("R%d: pe%d v(%d, %d, %d)\n", rank, i+e_gid_start, e_vid(i, 0), e_vid(i, 1), e_vid(i, 2));
         });
 
+
         /***************************************************
          * Communicate data of remotely refined edges
          * so local faces can be completed
+         * 
+         * Don't call updateGlobalIDs() until receives are
+         * posted in the following code, otherwise the IDs 
+         * in remote_edge_needrefine_h will be out-of-date
          **************************************************/
+
+        // Receive buffers/AoSoAs
+        Kokkos::View<typename e_array_type::tuple_type*, Kokkos::HostSpace>
+            recv_edges(Kokkos::ViewAllocateWithoutInitializing("recv_edges"), remote_edges);
+        int tuple_size = sizeof(edge_data);
+
+        // We know who to recieve from via remote_edge_needrefine_h; post these
+        std::vector<MPI_Request> send_requests(remote_edges);
+        std::vector<MPI_Request> recv_requests(remote_edges);
+        std::vector<MPI_Status> send_statuses(remote_edges);
+        std::vector<MPI_Status> recv_statuses(remote_edges);
+        for (int i = 0; i < remote_edges; i++)
+        {
+            int egid = remote_edge_needrefine_h(i);
+            if (egid == -1) break; // no valid edges appear after a -1
+            
+            // Find which process owns this edge, post a receive from them
+            for (int r = 0; r < _comm_size; r++)
+            {
+                if (r == _rank) continue;
+                if ((egid >= _vef_gid_start(r, 1)) && ((r == _comm_size-1) || (egid < _vef_gid_start(r+1, 1))))
+                {
+                    printf("R%d requesting edge %d from R%d. min/max: (%d, %d\n", _rank, egid, r,
+                        _vef_gid_start(r, 1), _vef_gid_start(r+1, 1));
+                    MPI_Irecv(&recv_edges[i], tuple_size, MPI_BYTE, r, egid, _comm, &recv_requests[i]);
+                }
+            }
+            
+        }
+
+        // Update global IDs before sending, but store the old global IDs
+        // so we know how to fix our ghosted edge IDs
+        Kokkos::View<int*[3], Kokkos::HostSpace> vef_gid_start_old("vef_gid_start_old", _comm_size);
+        Kokkos::deep_copy(vef_gid_start_old, _vef_gid_start);
         updateGlobalIDs();
+        printf("R%d vef old->new: v(%d->%d), e(%d->%d), f(%d->%d)\n", _rank,
+            vef_gid_start_old(_rank, 0), _vef_gid_start(_rank, 0),
+            vef_gid_start_old(_rank, 1), _vef_gid_start(_rank, 1),
+            vef_gid_start_old(_rank, 2), _vef_gid_start(_rank, 2));
+
+        /**
+         * Post sends by iterating through the remote_edges_recv array.
+         * If an edge GID from requested by another process falls within
+         * your global ID space, send the other process this edge
+         */
+        auto edges_h = Cabana::create_mirror_view_and_copy( Kokkos::HostSpace(), _edges );
+        for (int r = 0; r < _comm_size; r++)
+        {
+            for (int j = 0; j < size; j++)
+            {
+                if (remote_edges_recv(r, j) == -1) break;
+
+                int egid_old = remote_edges_recv(r, j);
+                int e_lid = remote_edges_recv_d(r, j) - _vef_gid_start(_rank, 1);
+                if ((e_lid >= 0) && (e_lid < _owned_edges))
+                {
+                    int egid_new = egid_old + (_vef_gid_start(_rank, 1) - vef_gid_start_old(_rank, 1));
+                    // printf("R%d: (r=%d, )%d = %d + (%d - %d)\n", _rank, r, egid_old, egid, vef_gid_start_old(r, 1), _vef_gid_start(r, 1));
+                    // Revert the egid to its old value to tag match
+                    printf("R%d: sending edge old/new (%d/%d) to R%d\n", _rank, egid_old, egid_new, r);
+                    int elid = egid_new - _vef_gid_start(_rank, 1);
+                    auto etup = edges_h.getTuple(elid);
+                    MPI_Isend(&etup, tuple_size, MPI_BYTE, r, egid_old, _comm, &send_requests[i]);
+                }
+            }
+        }
+
+        // TODO figure out how to determine how large the send_requests vector needs to be
 
 
-
-
-
+        MPI_Waitall(remote_edges, send_requests.data(), send_statuses.data());
+        MPI_Waitall(remote_edges, recv_requests.data(), recv_statuses.data());
         /***************************************************
          * End communication
          **************************************************/
@@ -964,9 +1019,6 @@ class Mesh
 
                 // Owning rank
                 e_rank(e_lid) = rank;
-
-                // Face IDs - XXX - may not be needed
-                e_fid(e_lid, 0) = -1; e_fid(e_lid, 1) = -1;
 
                  /**
                  * For internal edges, get their layer from the layer of the
@@ -994,10 +1046,8 @@ class Mesh
             }
         });
 
-        } // end if (new_edges > 0)
-
         // Update global ID values. This is a collective so all processes must call it
-        updateGlobalIDs();
+        // updateGlobalIDs();
     }
 
     /**
@@ -1062,7 +1112,6 @@ class Mesh
         // Update edges
         auto e_gid = Cabana::slice<E_GID>(_edges);
         auto e_vid = Cabana::slice<E_VIDS>(_edges);
-        auto e_fid = Cabana::slice<E_FIDS>(_edges);
         auto e_cid = Cabana::slice<E_CIDS>(_edges);
         auto e_pid = Cabana::slice<E_PID>(_edges);
         Kokkos::parallel_for("update edge GIDs", Kokkos::RangePolicy<execution_space>(0, _owned_edges),
@@ -1074,10 +1123,6 @@ class Mesh
             // Vertex association GIDs
             e_vid(i, 0) += dv; e_vid(i, 1) += dv;
             if (e_vid(i, 2) != -1) e_vid(i, 2) += dv;
-
-            // Face association GIDs
-            if (e_fid(i, 0) != -1) e_fid(i, 0) += df;
-            if (e_fid(i, 1) != -1) e_fid(i, 1) += df;
 
             // Child edge GIDs
             if (e_cid(i, 0) != -1) {e_cid(i, 0) += de; e_cid(i, 1) += de;}
@@ -1145,7 +1190,6 @@ class Mesh
     void printEdges(int opt, int egid)
     {
         auto e_vid = Cabana::slice<E_VIDS>(_edges);
-        auto e_fids = Cabana::slice<E_FIDS>(_edges);
         auto e_children = Cabana::slice<E_CIDS>(_edges);
         auto e_parent = Cabana::slice<E_PID>(_edges);
         auto e_gid = Cabana::slice<E_GID>(_edges);
@@ -1162,10 +1206,9 @@ class Mesh
             if ((elid >= 0) && (elid < owned_edges))
             {
             int i = elid;
-            printf("R%d: e%d, v(%d, %d, %d), f(%d, %d), c(%d, %d), p(%d) %d, %d\n", rank,
+            printf("R%d: e%d, v(%d, %d, %d), c(%d, %d), p(%d) %d, %d\n", rank,
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
-                e_fids(i, 0), e_fids(i, 1),
                 e_children(i, 0), e_children(i, 1),
                 e_parent(i),
                 e_owner(i), rank);
@@ -1179,10 +1222,9 @@ class Mesh
         Kokkos::parallel_for("print edges", Kokkos::RangePolicy<execution_space>(start, end),
             KOKKOS_LAMBDA(int i) {
             
-            printf("%d, v(%d, %d, %d), f(%d, %d), c(%d, %d), p(%d) %d, %d\n",
+            printf("%d, v(%d, %d, %d), c(%d, %d), p(%d) %d, %d\n",
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
-                e_fids(i, 0), e_fids(i, 1),
                 e_children(i, 0), e_children(i, 1),
                 e_parent(i),
                 e_owner(i), rank);
