@@ -734,7 +734,7 @@ class Mesh
                     {
                         /**
                          * Case 2: We do not own this edge and need to tell another
-                         * processes to refine it
+                         * process to refine it
                          */
 
                         // Decrement the edge_needrefine array
@@ -754,9 +754,61 @@ class Mesh
          * Communicate remote edges that must be refined
          **************************************************/
         // Step 1: communcate the number of remote edges that need refining, to size buffers
-        // XXX - if we know topology, this doesn't need to be an AlltoAll
-        Kokkos::View<int*, Kokkos::HostSpace>; remotes("remotes", _comm_size);
+        // XXX - if we know topology, this can be a neighbor AlltoAll
+        Kokkos::View<int*, Kokkos::HostSpace> remotes("remotes", _comm_size);
         MPI_Alltoall(&remote_edges, 1, MPI_INT, remotes.data(), 1, MPI_INT, _comm);
+
+        // Find the maxmimum edges any process is receiving to size receive buffer
+        int size = 0;
+        for (int i = 0; i < _comm_size; i++)
+        {
+            printf("R%d: remotes(%d) = %d\n", rank, i, remotes(i));
+            if (remotes(i) > size)
+            {
+                size = remotes(i);
+            }
+        }
+
+        // Create receive buffer
+        Kokkos::View<int**, Kokkos::HostSpace> remote_edges_view("remote_edges_view", _comm_size, size);
+
+        /**
+         * Pack send buffer: An array of remote edge GIDs this process needs refined
+         */
+        Kokkos::View<int*, Kokkos::HostSpace> send_buffer("send_buffer", size);
+        Kokkos::deep_copy(send_buffer, 0);
+        auto edge_needrefine_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), edge_needrefine);
+        int idx = 0;
+        for (int i = 0; i < (int)edge_needrefine_h.extent(0); i++)
+        {
+            if (edge_needrefine_h(i) < 0)
+            {
+                // This remote edge needs to be refined
+                send_buffer(idx++) = i;
+            }
+        }
+
+        // Communicate remote edges
+        MPI_Alltoall(send_buffer.data(), send_buffer.extent(0), MPI_INT,
+                     remote_edges_view.data(), send_buffer.extent(0), MPI_INT,
+                     _comm);
+
+        /**
+         * Iterate though the results. See if any remote processes need a locally owned edge refined.
+         * If so, mark this edge in the locally owned edge_needrefine view.
+         */
+        if (_rank == 0)
+        {
+            for (int i = 0; i < _comm_size; i++)
+            {
+            printf("From rank R%d:\n", i);
+            for (int j = 0; j < remote_edges_view.extent(1); j++)
+            {
+                printf("rev%d: %d\n", j, remote_edges_view(i, j));
+            }
+            printf("\n");
+            }
+        }
         
         
         /************************************************ */
