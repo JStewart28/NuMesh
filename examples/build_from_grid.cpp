@@ -79,13 +79,13 @@ int main( int argc, char* argv[] )
     auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
     numesh->initializeFromArray(*array);
-    int size = 1;
+    int size = 2;
     Kokkos::View<int*, memory_space> fids("fids", size);
     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, size),
         KOKKOS_LAMBDA(int i) {
         
         if (i == 0) fids(i) = 30;
-        //if (i == 0) fids(i) = 12;
+        if (i == 1) fids(i) = 31;
         //if (i == 1) fids(i) = 13;
 
         if (i == 2) fids(i) = 106;          // rank 3

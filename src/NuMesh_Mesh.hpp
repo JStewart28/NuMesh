@@ -684,10 +684,13 @@ class Mesh
         /**
          * edge_needrefine:
          *      values > 0: This edge is owned and can be refined locally
-         *      values < 0: This edge is not owned locally. Remote process
-         *                  must be told to refine edge.
+         * 
+         * remote_edge_needrefine:
+         *      Holds GIDs of remote edges that must be refined.
+         *      XXX - currently assumes remote edges encompass no more than 1/5 of owned edges
          */
         counter_vec edge_needrefine("edge_needrefine", _owned_edges);
+        counter_vec remote_edge_needrefine("remote_edge_needrefine", _owned_edges/5);
         counter_int vert_counter("vert_counter");
         counter_int edge_counter("edge_counter");
         counter_int face_counter("face_counter");
@@ -736,33 +739,28 @@ class Mesh
                          * Case 2: We do not own this edge and need to tell another
                          * process to refine it
                          */
-
-                        // Decrement the edge_needrefine array
-                        int edge_counted = Kokkos::atomic_fetch_add(&edge_needrefine(ex_lid), -1);
-                        if (edge_counted == 0) Kokkos::atomic_add(&remote_edge_counter(), 1);
+                        int idx = Kokkos::atomic_fetch_add(&remote_edge_counter(), 1);
+                        remote_edge_needrefine(idx) = f_egid(f_lid, j);
                     }
                 }
             }
         });
-        int new_vertices, new_edges, new_faces, remote_edges;
-        Kokkos::deep_copy(new_vertices, vert_counter);
-        Kokkos::deep_copy(new_edges, edge_counter);
-        Kokkos::deep_copy(new_faces, face_counter);
-        Kokkos::deep_copy(remote_edges, remote_edge_counter);
 
         /***************************************************
          * Communicate remote edges that must be refined
          **************************************************/
+        int remote_edges;
+        Kokkos::deep_copy(remote_edges, remote_edge_counter);
+
         // Step 1: communcate the number of remote edges that need refining, to size buffers
-        // XXX - if we know topology, this can be a neighbor AlltoAll
+        // XXX - if we know topology, this can be a neighbor Allgather
         Kokkos::View<int*, Kokkos::HostSpace> remotes("remotes", _comm_size);
-        MPI_Alltoall(&remote_edges, 1, MPI_INT, remotes.data(), 1, MPI_INT, _comm);
+        MPI_Allgather(&remote_edges, 1, MPI_INT, remotes.data(), 1, MPI_INT, _comm);
 
         // Find the maxmimum edges any process is receiving to size receive buffer
         int size = 0;
         for (int i = 0; i < _comm_size; i++)
         {
-            printf("R%d: remotes(%d) = %d\n", rank, i, remotes(i));
             if (remotes(i) > size)
             {
                 size = remotes(i);
@@ -770,49 +768,55 @@ class Mesh
         }
 
         // Create receive buffer
-        Kokkos::View<int**, Kokkos::HostSpace> remote_edges_view("remote_edges_view", _comm_size, size);
+        Kokkos::View<int**, Kokkos::HostSpace> remote_edges_recv("remote_edges_recv", _comm_size, size);
 
         /**
          * Pack send buffer: An array of remote edge GIDs this process needs refined
          */
         Kokkos::View<int*, Kokkos::HostSpace> send_buffer("send_buffer", size);
-        Kokkos::deep_copy(send_buffer, 0);
-        auto edge_needrefine_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), edge_needrefine);
-        int idx = 0;
-        for (int i = 0; i < (int)edge_needrefine_h.extent(0); i++)
+        Kokkos::deep_copy(send_buffer, -1);
+        auto remote_edge_needrefine_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), remote_edge_needrefine);
+        for (int i = 0; i < remote_edges; i++)
         {
-            if (edge_needrefine_h(i) < 0)
-            {
-                // This remote edge needs to be refined
-                send_buffer(idx++) = i;
-            }
+            send_buffer(i) = remote_edge_needrefine_h(i);
         }
 
         // Communicate remote edges
-        MPI_Alltoall(send_buffer.data(), send_buffer.extent(0), MPI_INT,
-                     remote_edges_view.data(), send_buffer.extent(0), MPI_INT,
-                     _comm);
+        MPI_Allgather(send_buffer.data(), size, MPI_INT, remote_edges_recv.data(), size, MPI_INT, _comm);
 
         /**
          * Iterate though the results. See if any remote processes need a locally owned edge refined.
          * If so, mark this edge in the locally owned edge_needrefine view.
          */
-        if (_rank == 0)
-        {
-            for (int i = 0; i < _comm_size; i++)
-            {
-            printf("From rank R%d:\n", i);
-            for (int j = 0; j < remote_edges_view.extent(1); j++)
-            {
-                printf("rev%d: %d\n", j, remote_edges_view(i, j));
-            }
-            printf("\n");
-            }
-        }
-        
-        
-        /************************************************ */
+        Kokkos::View<int**, memory_space> remote_edges_recv_d("remote_edges_recv_d", _comm_size, size);
+        Kokkos::deep_copy(remote_edges_recv_d, remote_edges_recv);
+        Kokkos::parallel_for("add remotes to edge_needrefine", Kokkos::MDRangePolicy<execution_space, Kokkos::Rank<2>>({{0, 0}}, {{_comm_size, size}}),
+            KOKKOS_LAMBDA(int i, int j) {
 
+            int e_lid = remote_edges_recv_d(i, j) - e_gid_start;
+            if ((e_lid >= 0) && (e_lid < owned_edges))
+            {
+                // Record this edge needs to be refined
+                int edge_counted = Kokkos::atomic_fetch_add(&edge_needrefine(e_lid), 1);
+                // If edge_counted already equals 1, don't increment the new vert counter
+                if (edge_counted == 0)
+                {
+                    // Each edge refinement contributes one new vertex and 2 new edges
+                    Kokkos::atomic_increment(&vert_counter());
+                    Kokkos::atomic_add(&edge_counter(), 2);
+                }
+            }
+        });
+        
+        /***************************************************
+         * End communication step
+         **************************************************/
+
+        // Update new vertex, edge, and face values
+        int new_vertices, new_edges, new_faces;
+        Kokkos::deep_copy(new_vertices, vert_counter);
+        Kokkos::deep_copy(new_edges, edge_counter);
+        Kokkos::deep_copy(new_faces, face_counter);
 
 
         printf("R%d: New vef: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
@@ -925,6 +929,20 @@ class Mesh
             printf("R%d: pe%d v(%d, %d, %d)\n", rank, i+e_gid_start, e_vid(i, 0), e_vid(i, 1), e_vid(i, 2));
         });
 
+        /***************************************************
+         * Communicate data of remotely refined edges
+         * so local faces can be completed
+         **************************************************/
+        updateGlobalIDs();
+
+
+
+
+
+        /***************************************************
+         * End communication
+         **************************************************/
+
         // Populate the three new, internal edges for each face
         Kokkos::parallel_for("new internal edges", Kokkos::RangePolicy<execution_space>(0, new_faces),
             KOKKOS_LAMBDA(int i) {
@@ -992,7 +1010,6 @@ class Mesh
     template <class View>
     void refine(View& fgids)
     {
-        _version++;
         _refineAndAddEdges(fgids);
         // _gatherEdges()
     }
@@ -1002,6 +1019,9 @@ class Mesh
      */
     void updateGlobalIDs()
     {
+        // Update mesh version
+        _version++;
+
         // Temporarily save old starting positions
         Kokkos::View<int*[3], Kokkos::HostSpace> old_vef_start("old_vef_start", _comm_size);
         Kokkos::deep_copy(old_vef_start, _vef_gid_start);
