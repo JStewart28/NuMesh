@@ -101,13 +101,14 @@ int main( int argc, char* argv[] )
     numesh->refine(fids);
     //numesh->_refine(13);
     //numesh->_refine(22);
-    // numesh->printEdges(1);
+    numesh->printEdges(2, 0);
+    // numesh->printFaces(0, 30);
     //numesh->printVertices();
     //printf("**********\n");
-    numesh->printFaces(1, 30);
-    numesh->printEdges(1, 45);
-    numesh->printEdges(1, 46);
-    numesh->printEdges(1, 86);
+    // numesh->printFaces(1, 30);
+    // numesh->printEdges(1, 45);
+    // numesh->printEdges(1, 46);
+    // numesh->printEdges(1, 86);
 
     } // Scope guard
 

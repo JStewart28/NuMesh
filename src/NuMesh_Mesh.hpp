@@ -683,7 +683,8 @@ class Mesh
          *      XXX - currently assumes remote edges encompass no more than 1/5 of owned edges
          */
         counter_vec edge_needrefine("edge_needrefine", _owned_edges);
-        counter_vec remote_edge_needrefine("remote_edge_needrefine", _owned_edges/5);
+        int remote_edge_needrefine_size = _owned_edges/5;
+        counter_vec remote_edge_needrefine("remote_edge_needrefine", remote_edge_needrefine_size);
         counter_int vert_counter("vert_counter");
         counter_int edge_counter("edge_counter");
         counter_int face_counter("face_counter");
@@ -693,6 +694,7 @@ class Mesh
         Kokkos::deep_copy(edge_counter, 0);
         Kokkos::deep_copy(face_counter, 0);
         Kokkos::deep_copy(remote_edge_counter, 0);
+        Kokkos::deep_copy(remote_edge_needrefine, -1);
         auto f_egid = Cabana::slice<F_EIDS>(_faces);
         int owned_edges = _owned_edges;
         int owned_faces = _owned_faces;
@@ -762,6 +764,7 @@ class Mesh
 
         // Create receive buffer
         Kokkos::View<int**, Kokkos::HostSpace> remote_edges_recv("remote_edges_recv", _comm_size, size);
+        Kokkos::deep_copy(remote_edges_recv, -1);
 
         /**
          * Pack send buffer: An array of remote edge GIDs this process needs refined
@@ -780,7 +783,12 @@ class Mesh
         /**
          * Iterate though the results. See if any remote processes need a locally owned edge refined.
          * If so, mark this edge in the locally owned edge_needrefine view.
+         * 
+         * edges_to_send_counter: counts the edges that need to be send to another process to size
+         * MPI send status buffer
          */
+        counter_int edges_to_send_counter("edges_to_send_counter");
+        Kokkos::deep_copy(edges_to_send_counter, 0);
         Kokkos::View<int**, memory_space> remote_edges_recv_d("remote_edges_recv_d", _comm_size, size);
         Kokkos::deep_copy(remote_edges_recv_d, remote_edges_recv);
         Kokkos::parallel_for("add remotes to edge_needrefine", Kokkos::MDRangePolicy<execution_space, Kokkos::Rank<2>>({{0, 0}}, {{_comm_size, size}}),
@@ -791,6 +799,10 @@ class Mesh
             {
                 // Record this edge needs to be refined
                 int edge_counted = Kokkos::atomic_fetch_add(&edge_needrefine(e_lid), 1);
+
+                // Incrment counter to store the number of sends that need to be made to remote processes
+                Kokkos::atomic_increment(&edges_to_send_counter());
+
                 // If edge_counted already equals 1, don't increment the new vert counter
                 if (edge_counted == 0)
                 {
@@ -800,6 +812,9 @@ class Mesh
                 }
             }
         });
+        int edges_to_send;
+        Kokkos::deep_copy(edges_to_send, edges_to_send_counter);
+        // printf("R%d: edges to send: %d\n", _rank, edges_to_send);
         
         /***************************************************
          * End communication step
@@ -812,11 +827,11 @@ class Mesh
         Kokkos::deep_copy(new_faces, face_counter);
 
 
-        printf("R%d: New vef: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
+        // printf("R%d: New vef: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
 
         // for (int i = 0; i < _owned_edges; i++)
         // {
-        //     if (edge_needrefine(i) == 1)
+        //     if (edge_needrefine(i) > 0)
         //     {
         //         printf("R%d: Edge %d marked\n", rank, i+e_gid_start);
         //     }
@@ -832,7 +847,7 @@ class Mesh
         _edges.resize(_owned_edges);
         int v_lid_start = _owned_vertices;
         _owned_vertices += new_vertices;
-        printf("R%d: verts: %d -> %d\n", rank, v_lid_start, _owned_vertices);
+        // printf("R%d: verts: %d -> %d\n", rank, v_lid_start, _owned_vertices);
         _vertices.resize(_owned_vertices);
 
 
@@ -871,6 +886,8 @@ class Mesh
             
             // Check if this edge needs to be split
             if (edge_needrefine(i) == 0) return;
+
+            // printf("R%d refining edge %d\n", rank, i+e_gid_start);
             
             // Create new edge local IDs
             int offset = Kokkos::atomic_fetch_add(&edge_counter(), 2);
@@ -910,7 +927,7 @@ class Mesh
 
             // Set the parent edge third vertex value
             e_vid(i, 2) = new_vgid;
-            printf("R%d: pe%d v(%d, %d, %d)\n", rank, i+e_gid_start, e_vid(i, 0), e_vid(i, 1), e_vid(i, 2));
+            // printf("R%d: pe%d v(%d, %d, %d)\n", rank, i+e_gid_start, e_vid(i, 0), e_vid(i, 1), e_vid(i, 2));
         });
 
 
@@ -919,7 +936,7 @@ class Mesh
          * so local faces can be completed
          * 
          * Don't call updateGlobalIDs() until receives are
-         * posted in the following code, otherwise the IDs 
+         * completed in the following code, otherwise the IDs 
          * in remote_edge_needrefine_h will be out-of-date
          **************************************************/
 
@@ -929,38 +946,50 @@ class Mesh
         int tuple_size = sizeof(edge_data);
 
         // We know who to recieve from via remote_edge_needrefine_h; post these
-        std::vector<MPI_Request> send_requests(remote_edges);
+        std::vector<MPI_Request> send_requests(edges_to_send);
         std::vector<MPI_Request> recv_requests(remote_edges);
-        std::vector<MPI_Status> send_statuses(remote_edges);
+        std::vector<MPI_Status> send_statuses(edges_to_send);
         std::vector<MPI_Status> recv_statuses(remote_edges);
-        for (int i = 0; i < remote_edges; i++)
+        int idx = 0;
+        for (int i = 0; i < remote_edge_needrefine_size; i++)
         {
             int egid = remote_edge_needrefine_h(i);
-            if (egid == -1) break; // no valid edges appear after a -1
+            if (egid == -1) break; // no valid edges appear after a '-1'
             
             // Find which process owns this edge, post a receive from them
-            for (int r = 0; r < _comm_size; r++)
+            for (int r = 0; r < _comm_size-1; r++)
             {
                 if (r == _rank) continue;
-                if ((egid >= _vef_gid_start(r, 1)) && ((r == _comm_size-1) || (egid < _vef_gid_start(r+1, 1))))
+
+                // Special case for highest rank because can't index into r+1
+                if (r == _comm_size - 1)
                 {
-                    printf("R%d requesting edge %d from R%d. min/max: (%d, %d\n", _rank, egid, r,
-                        _vef_gid_start(r, 1), _vef_gid_start(r+1, 1));
-                    MPI_Irecv(&recv_edges[i], tuple_size, MPI_BYTE, r, egid, _comm, &recv_requests[i]);
+                    if (egid >= _vef_gid_start(r, 1))
+                    {
+                        MPI_Irecv(&recv_edges[idx], tuple_size, MPI_BYTE, r, egid, _comm, &recv_requests[idx]);
+                        idx++;
+                    }
+                }
+                else if ((egid >= _vef_gid_start(r, 1)) && (egid < _vef_gid_start(r+1, 1)))
+                {
+                    // printf("R%d requesting edge %d from R%d. min/max: (%d, %d\n", _rank, egid, r,
+                    //     _vef_gid_start(r, 1), _vef_gid_start(r+1, 1));
+                    MPI_Irecv(&recv_edges[idx], tuple_size, MPI_BYTE, r, egid, _comm, &recv_requests[idx]);
+                    idx++;
                 }
             }
-            
         }
+        //printf("R%d: recvs posted: %d\n", _rank, idx);
 
         // Update global IDs before sending, but store the old global IDs
         // so we know how to fix our ghosted edge IDs
         Kokkos::View<int*[3], Kokkos::HostSpace> vef_gid_start_old("vef_gid_start_old", _comm_size);
         Kokkos::deep_copy(vef_gid_start_old, _vef_gid_start);
         updateGlobalIDs();
-        printf("R%d vef old->new: v(%d->%d), e(%d->%d), f(%d->%d)\n", _rank,
-            vef_gid_start_old(_rank, 0), _vef_gid_start(_rank, 0),
-            vef_gid_start_old(_rank, 1), _vef_gid_start(_rank, 1),
-            vef_gid_start_old(_rank, 2), _vef_gid_start(_rank, 2));
+        // printf("R%d vef old->new: v(%d->%d), e(%d->%d), f(%d->%d)\n", _rank,
+        //     vef_gid_start_old(_rank, 0), _vef_gid_start(_rank, 0),
+        //     vef_gid_start_old(_rank, 1), _vef_gid_start(_rank, 1),
+        //     vef_gid_start_old(_rank, 2), _vef_gid_start(_rank, 2));
 
         /**
          * Post sends by iterating through the remote_edges_recv array.
@@ -968,6 +997,7 @@ class Mesh
          * your global ID space, send the other process this edge
          */
         auto edges_h = Cabana::create_mirror_view_and_copy( Kokkos::HostSpace(), _edges );
+        idx = 0;
         for (int r = 0; r < _comm_size; r++)
         {
             for (int j = 0; j < size; j++)
@@ -975,25 +1005,25 @@ class Mesh
                 if (remote_edges_recv(r, j) == -1) break;
 
                 int egid_old = remote_edges_recv(r, j);
-                int e_lid = remote_edges_recv_d(r, j) - _vef_gid_start(_rank, 1);
+                int e_lid = egid_old - vef_gid_start_old(_rank, 1);
                 if ((e_lid >= 0) && (e_lid < _owned_edges))
                 {
                     int egid_new = egid_old + (_vef_gid_start(_rank, 1) - vef_gid_start_old(_rank, 1));
                     // printf("R%d: (r=%d, )%d = %d + (%d - %d)\n", _rank, r, egid_old, egid, vef_gid_start_old(r, 1), _vef_gid_start(r, 1));
                     // Revert the egid to its old value to tag match
-                    printf("R%d: sending edge old/new (%d/%d) to R%d\n", _rank, egid_old, egid_new, r);
+                    //printf("R%d: sending edge old/new (%d/%d) to R%d\n", _rank, egid_old, egid_new, r);
                     int elid = egid_new - _vef_gid_start(_rank, 1);
                     auto etup = edges_h.getTuple(elid);
-                    MPI_Isend(&etup, tuple_size, MPI_BYTE, r, egid_old, _comm, &send_requests[i]);
+                    MPI_Isend(&etup, tuple_size, MPI_BYTE, r, egid_old, _comm, &send_requests[idx]);
+                    idx++;
                 }
             }
         }
+        //printf("R%d: sends posted: %d\n", _rank, idx);
 
-        // TODO figure out how to determine how large the send_requests vector needs to be
-
-
-        MPI_Waitall(remote_edges, send_requests.data(), send_statuses.data());
+        MPI_Waitall(edges_to_send, send_requests.data(), send_statuses.data());
         MPI_Waitall(remote_edges, recv_requests.data(), recv_statuses.data());
+
         /***************************************************
          * End communication
          **************************************************/
@@ -1185,7 +1215,7 @@ class Mesh
         }
     }
     /**
-     * opt: 1 = owned, 2 = ghost, 3 = all
+     * opt: 1 = specific edge, 2 = owned, 3 = ghost
      */
     void printEdges(int opt, int egid)
     {
