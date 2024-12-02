@@ -818,6 +818,8 @@ class Mesh
         
         /***************************************************
          * End communication step
+         * 
+         * NOTE: Edge GIDs communicated are the old GID values
          **************************************************/
 
         // Update new vertex, edge, and face values
@@ -827,7 +829,7 @@ class Mesh
         Kokkos::deep_copy(new_faces, face_counter);
 
 
-        // printf("R%d: New vef: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
+        printf("R%d: New vef: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
 
         // for (int i = 0; i < _owned_edges; i++)
         // {
@@ -845,11 +847,20 @@ class Mesh
         // Each face contributes 3 new edges; each vertex contributes 2
         _owned_edges += new_edges;
         _edges.resize(_owned_edges);
+        // printf("R%d: edges: %d -> %d\n", rank, e_lid_start+e_gid_start, _owned_edges+e_gid_start);
         int v_lid_start = _owned_vertices;
         _owned_vertices += new_vertices;
-        // printf("R%d: verts: %d -> %d\n", rank, v_lid_start, _owned_vertices);
+        // printf("R%d: verts: %d -> %d\n", rank, v_lid_start+v_gid_start, _owned_vertices+v_gid_start);
         _vertices.resize(_owned_vertices);
 
+        // Update global IDs before making edits, but store the old global IDs
+        // so we know how to fix our ghosted edge IDs
+        Kokkos::View<int*[3], Kokkos::HostSpace> vef_gid_start_old("vef_gid_start_old", _comm_size);
+        Kokkos::deep_copy(vef_gid_start_old, _vef_gid_start);
+        updateGlobalIDs();
+        int vert_offset = _vef_gid_start(_rank, 0) - vef_gid_start_old(_rank, 0);
+        int edge_offset = _vef_gid_start(_rank, 1) - vef_gid_start_old(_rank, 1);
+        int face_offset = _vef_gid_start(_rank, 2) - vef_gid_start_old(_rank, 2);
 
         // Vertex slices
         auto v_gid = Cabana::slice<V_GID>(_vertices);
@@ -879,6 +890,8 @@ class Mesh
         auto f_layer = Cabana::slice<F_LAYER>(_faces);
         auto f_eid = Cabana::slice<F_EIDS>(_faces);
 
+        printf("R%d: ve new start: %d, %d\n", _rank, v_gid_start + v_lid_start, e_gid_start+e_lid_start);
+
         // Refine existing  edges
         Kokkos::deep_copy(edge_counter, 0);
         Kokkos::parallel_for("refine_edges", Kokkos::RangePolicy<execution_space>(0, e_lid_start),
@@ -893,17 +906,21 @@ class Mesh
             int offset = Kokkos::atomic_fetch_add(&edge_counter(), 2);
             int ec_lid0 = e_lid_start + offset;
             int ec_lid1 = e_lid_start + offset + 1;
-            int ec_gid0 = e_gid_start + ec_lid0;
-            int ec_gid1 = e_gid_start + ec_lid1;
+            int ec_gid0 = e_gid_start + edge_offset + ec_lid0;
+            int ec_gid1 = e_gid_start + edge_offset + ec_lid1;
             int ec_layer = e_layer(i) + 1;
 
             // Global IDs = global ID start + local ID
             e_gid(ec_lid0) = ec_gid0;
             e_gid(ec_lid1) = ec_gid1;
 
-            // Set parent and child edges for the split edges
-            e_pid(ec_lid0) = i + e_gid_start; e_cid(ec_lid0, 0) = -1; e_cid(ec_lid0, 1) = -1;
-            e_pid(ec_lid1) = i + e_gid_start; e_cid(ec_lid1, 0) = -1; e_cid(ec_lid1, 1) = -1;
+            // Set parent edges for the split edges
+            e_pid(ec_lid0) = i + e_gid_start + edge_offset;
+            e_pid(ec_lid1) = i + e_gid_start + edge_offset;
+
+            // Set child edges for the split edges
+            e_cid(ec_lid0, 0) = -1; e_cid(ec_lid0, 1) = -1;
+            e_cid(ec_lid1, 0) = -1; e_cid(ec_lid1, 1) = -1;
             
             // Set these edges to be the child edges of their parent edge
             e_cid(i, 0) = ec_gid0; e_cid(i, 1) = ec_gid1;
@@ -931,23 +948,28 @@ class Mesh
         });
 
 
-        /***************************************************
-         * Communicate data of remotely refined edges
-         * so local faces can be completed
+        /*****************************************************************
+         * Communicate data of remotely refined edges and their children
+         * so local faces can be completed. This communication
+         * is necessary because on the GPU, the order of edge refinement
+         * is non-deterministic, so we cannot calculate the remote
+         * edge global ID by looking at how many edges before it
+         * will be refined.
          * 
-         * Don't call updateGlobalIDs() until receives are
-         * completed in the following code, otherwise the IDs 
-         * in remote_edge_needrefine_h will be out-of-date
-         **************************************************/
+         * Edge IDs in remote_edge_needrefine_h reference
+         * the old edge GIDs
+         *****************************************************************/
 
-        // Receive buffers/AoSoAs
+        // Receive and send buffers/AoSoAs
         Kokkos::View<typename e_array_type::tuple_type*, Kokkos::HostSpace>
-            recv_edges(Kokkos::ViewAllocateWithoutInitializing("recv_edges"), remote_edges);
+            recv_edges(Kokkos::ViewAllocateWithoutInitializing("recv_edges"), remote_edges*3);
+        Kokkos::View<typename e_array_type::tuple_type*, Kokkos::HostSpace>
+            send_edges(Kokkos::ViewAllocateWithoutInitializing("send_edges"), 3);
         int tuple_size = sizeof(edge_data);
 
         // We know who to recieve from via remote_edge_needrefine_h; post these
-        std::vector<MPI_Request> send_requests(edges_to_send);
-        std::vector<MPI_Request> recv_requests(remote_edges);
+        std::vector<MPI_Request> send_requests(edges_to_send*3);
+        std::vector<MPI_Request> recv_requests(remote_edges*3);
         std::vector<MPI_Status> send_statuses(edges_to_send);
         std::vector<MPI_Status> recv_statuses(remote_edges);
         int idx = 0;
@@ -964,28 +986,23 @@ class Mesh
                 // Special case for highest rank because can't index into r+1
                 if (r == _comm_size - 1)
                 {
-                    if (egid >= _vef_gid_start(r, 1))
+                    if (egid >= vef_gid_start_old(r, 1))
                     {
-                        MPI_Irecv(&recv_edges[idx], tuple_size, MPI_BYTE, r, egid, _comm, &recv_requests[idx]);
+                        MPI_Irecv(&recv_edges[idx*3], tuple_size*3, MPI_BYTE, r, 0, _comm, &recv_requests[idx]);
                         idx++;
                     }
                 }
-                else if ((egid >= _vef_gid_start(r, 1)) && (egid < _vef_gid_start(r+1, 1)))
+                else if ((egid >= vef_gid_start_old(r, 1)) && (egid < vef_gid_start_old(r+1, 1)))
                 {
                     // printf("R%d requesting edge %d from R%d. min/max: (%d, %d\n", _rank, egid, r,
-                    //     _vef_gid_start(r, 1), _vef_gid_start(r+1, 1));
-                    MPI_Irecv(&recv_edges[idx], tuple_size, MPI_BYTE, r, egid, _comm, &recv_requests[idx]);
+                    //     vef_gid_start_old(r, 1), vef_gid_start_old(r+1, 1));
+                    MPI_Irecv(&recv_edges[idx*3], tuple_size*3, MPI_BYTE, r, 0, _comm, &recv_requests[idx]);
                     idx++;
                 }
             }
         }
-        //printf("R%d: recvs posted: %d\n", _rank, idx);
+        // printf("R%d: recvs posted: %d\n", _rank, idx);
 
-        // Update global IDs before sending, but store the old global IDs
-        // so we know how to fix our ghosted edge IDs
-        Kokkos::View<int*[3], Kokkos::HostSpace> vef_gid_start_old("vef_gid_start_old", _comm_size);
-        Kokkos::deep_copy(vef_gid_start_old, _vef_gid_start);
-        updateGlobalIDs();
         // printf("R%d vef old->new: v(%d->%d), e(%d->%d), f(%d->%d)\n", _rank,
         //     vef_gid_start_old(_rank, 0), _vef_gid_start(_rank, 0),
         //     vef_gid_start_old(_rank, 1), _vef_gid_start(_rank, 1),
@@ -1010,16 +1027,30 @@ class Mesh
                 {
                     int egid_new = egid_old + (_vef_gid_start(_rank, 1) - vef_gid_start_old(_rank, 1));
                     // printf("R%d: (r=%d, )%d = %d + (%d - %d)\n", _rank, r, egid_old, egid, vef_gid_start_old(r, 1), _vef_gid_start(r, 1));
-                    // Revert the egid to its old value to tag match
-                    //printf("R%d: sending edge old/new (%d/%d) to R%d\n", _rank, egid_old, egid_new, r);
+
+                    // Parent edge
+                    // printf("R%d: sending edge old/new (%d/%d) to R%d\n", _rank, egid_old, egid_new, r);
                     int elid = egid_new - _vef_gid_start(_rank, 1);
-                    auto etup = edges_h.getTuple(elid);
-                    MPI_Isend(&etup, tuple_size, MPI_BYTE, r, egid_old, _comm, &send_requests[idx]);
+                    send_edges[0] = edges_h.getTuple(elid);
+
+                    // First child
+                    int ecgid = Cabana::get<E_CIDS>(send_edges[0], 0);
+                    int eclid = ecgid - _vef_gid_start(_rank, 1);
+                    // printf("R%d: sending child0 edge %d to R%d\n", _rank, ecgid, r);
+                    send_edges[1] = edges_h.getTuple(eclid);
+
+                    // Second child
+                    ecgid = Cabana::get<E_CIDS>(send_edges[0], 1);
+                    eclid = ecgid - _vef_gid_start(_rank, 1);
+                    // mprintf("R%d: sending child1 edge %d to R%d\n", _rank, ecgid, r);
+                    send_edges[2] = edges_h.getTuple(eclid);
+
+                    MPI_Isend(&send_edges[0], tuple_size*3, MPI_BYTE, r, 0, _comm, &send_requests[idx]);
                     idx++;
                 }
             }
         }
-        //printf("R%d: sends posted: %d\n", _rank, idx);
+        // printf("R%d: sends posted: %d\n", _rank, idx);
 
         MPI_Waitall(edges_to_send, send_requests.data(), send_statuses.data());
         MPI_Waitall(remote_edges, recv_requests.data(), recv_statuses.data());
@@ -1029,6 +1060,7 @@ class Mesh
          **************************************************/
 
         // Populate the three new, internal edges for each face
+        // local_face_lids(i) references face local IDs
         Kokkos::parallel_for("new internal edges", Kokkos::RangePolicy<execution_space>(0, new_faces),
             KOKKOS_LAMBDA(int i) {
             
@@ -1072,7 +1104,7 @@ class Mesh
 
                 // Middle vertex not set until new edges are further refined
                 e_vid(e_lid, 2) = -1;
-                //printf("R%d: ne%d: (%d, %d)\n", rank, e_lid+e_gid_start, e_vid(e_lid, 0), e_vid(e_lid, 1));
+                // printf("R%d: ne%d: (%d, %d)\n", rank, e_lid+e_gid_start, e_vid(e_lid, 0), e_vid(e_lid, 1));
             }
         });
 
@@ -1093,10 +1125,7 @@ class Mesh
         _refineAndAddEdges(fgids);
         // _gatherEdges()
     }
-
-    /**
-     * Update all global ID values in the mesh
-     */
+    
     void updateGlobalIDs()
     {
         // Update mesh version
