@@ -122,9 +122,9 @@ int main( int argc, char* argv[] )
     numesh->printEdges(1, 111);
 
     // Rank 2 edges
-    //numesh->printEdges(1, 119);
-    //numesh->printEdges(1, 158);
-    //numesh->printEdges(1, 159);
+    numesh->printEdges(1, 121);
+    numesh->printEdges(1, 160);
+    numesh->printEdges(1, 161);
 
     } // Scope guard
 

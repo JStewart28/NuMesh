@@ -661,7 +661,8 @@ class Mesh
         using counter_vec = Kokkos::View<int*, memory_space>;
         using counter_int = Kokkos::View<int, memory_space>;
 
-        using int_vector_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int>, memory_space, 4>;
+        // (global ID, from rank) tuples
+        using int_vector_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int>, memory_space, 4>;
 
         /**
          * List of locally-owned face IDs this process needs to split
@@ -692,7 +693,9 @@ class Mesh
         // Slices we need
         auto f_egid = Cabana::slice<F_EIDS>(_faces);
         auto remote_edge_slice = Cabana::slice<0>(remote_edges_send);
+        auto remote_edge_rank_slice = Cabana::slice<1>(remote_edges_send);
         Cabana::deep_copy(remote_edge_slice, -1);
+        Cabana::deep_copy(remote_edge_rank_slice, -1);
 
         /**
          * Counters for new edges and vertices
@@ -756,6 +759,7 @@ class Mesh
                          */
                         int idx = Kokkos::atomic_fetch_add(&remote_edge_counter(), 1);
                         remote_edge_slice(idx) = f_egid(f_lid, j);
+                        remote_edge_rank_slice(idx) = rank;
 
                         // Find the remote rank this edge belongs to
                         int export_rank = -1;
@@ -863,9 +867,6 @@ class Mesh
         Kokkos::View<int*[3], Kokkos::HostSpace> vef_gid_start_old("vef_gid_start_old", _comm_size);
         Kokkos::deep_copy(vef_gid_start_old, _vef_gid_start);
         updateGlobalIDs();
-        int vert_offset = _vef_gid_start(_rank, 0) - vef_gid_start_old(_rank, 0);
-        int edge_offset = _vef_gid_start(_rank, 1) - vef_gid_start_old(_rank, 1);
-        int face_offset = _vef_gid_start(_rank, 2) - vef_gid_start_old(_rank, 2);
 
         printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
         printf("R%d new VGID space: %d to %d\n", rank, _vef_gid_start(_rank, 0), _vef_gid_start(_rank, 0)+_owned_vertices);
@@ -950,7 +951,7 @@ class Mesh
              *  ec_lid1: (new vertex, second vertex of parent edge, -1)
              */
             offset /= 2;
-            int new_vgid = _vef_gid_start_d(rank, 0) + offset;
+            int new_vgid = _vef_gid_start_d(rank, 0) + v_new_lid_start + offset;
             e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = new_vgid;
             e_vid(ec_lid1, 0) = new_vgid; e_vid(ec_lid1, 1) = e_vid(i, 1);
             e_vid(ec_lid0, 2) = -1; e_vid(ec_lid1, 2) = -1;
@@ -960,8 +961,18 @@ class Mesh
             // printf("R%d: pe%d v(%d, %d, %d)\n", rank, i+e_gid_start, e_vid(i, 0), e_vid(i, 1), e_vid(i, 2));
         });
 
+        /**
+         * Send the modified edges (parent and two children) back to any process that
+         * originally requested them
+         */
+        auto halo = Cabana::Halo(_owned_edges, );
 
-
+        /*
+        Halo( MPI_Comm comm, const std::size_t num_local,
+          const IdViewType& element_export_ids,
+          const RankViewType& element_export_ranks,
+          const std::vector<int>& neighbor_ranks )
+        */
 
 
     }
@@ -985,6 +996,9 @@ class Mesh
         // Update mesh version
         _version++;
 
+        // Lambda capture variables
+        const int comm_size = _comm_size;
+        
         // Temporarily save old starting positions
         Kokkos::View<int*[3], Kokkos::HostSpace> old_vef_start("old_vef_start", _comm_size);
         Kokkos::deep_copy(old_vef_start, _vef_gid_start);
@@ -1013,6 +1027,16 @@ class Mesh
             return;
         }
 
+        // Copy vef views to device
+        Kokkos::View<int*[3], MemorySpace> vef_gid_start_d("_vef_gid_start_d", _comm_size);
+        auto hv_tmp1 = Kokkos::create_mirror_view(vef_gid_start_d);
+        Kokkos::deep_copy(hv_tmp1, _vef_gid_start);
+        Kokkos::deep_copy(vef_gid_start_d, hv_tmp1);
+        Kokkos::View<int*[3], MemorySpace> old_vef_start_d("old_vef_start_d", _comm_size);
+        auto hv_tmp2 = Kokkos::create_mirror_view(old_vef_start_d);
+        Kokkos::deep_copy(hv_tmp2, old_vef_start);
+        Kokkos::deep_copy(old_vef_start_d, hv_tmp2);
+
         int dv = _vef_gid_start(_rank, 0) - old_vef_start(_rank, 0);
         int de = _vef_gid_start(_rank, 1) - old_vef_start(_rank, 1);
         int df = _vef_gid_start(_rank, 2) - old_vef_start(_rank, 2);
@@ -1020,9 +1044,25 @@ class Mesh
         // Update vertices
         auto v_gid = Cabana::slice<V_GID>(_vertices);
         Kokkos::parallel_for("update vertex GIDs", Kokkos::RangePolicy<execution_space>(0, _owned_vertices),
-            KOKKOS_LAMBDA(int i) { v_gid(i) += dv; });
+            KOKKOS_LAMBDA(int i) {
+            
+            // Global ID
+            for (int r = comm_size-1; r >= 0; r--)
+            {
+                if (v_gid(i) >= old_vef_start_d(r, 0))
+                {
+                    v_gid(i) += vef_gid_start_d(r, 0) - old_vef_start_d(r, 0);
+                    break;
+                }
+            }
+            
+        });
 
-        // Update edges
+        /**
+         * Edges may connect to vertices owned by another process,
+         * or may be ghosted. IDs must be adjusted based off the process
+         * that owns the edge.
+         */
         auto e_gid = Cabana::slice<E_GID>(_edges);
         auto e_vid = Cabana::slice<E_VIDS>(_edges);
         auto e_cid = Cabana::slice<E_CIDS>(_edges);
@@ -1031,18 +1071,51 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             // Global ID
-            e_gid(i) += de;
+            for (int r = comm_size-1; r >= 0; r--)
+            {
+                if (e_gid(i) >= old_vef_start_d(r, 1))
+                {
+                    e_gid(i) += vef_gid_start_d(r, 1) - old_vef_start_d(r, 1);
+                    break;
+                }
+            }
 
             // Vertex association GIDs
-            e_vid(i, 0) += dv; e_vid(i, 1) += dv;
-            if (e_vid(i, 2) != -1) e_vid(i, 2) += dv;
-
+            for (int j = 0; j < 3; j++)
+            {
+                for (int r = comm_size-1; r >= 0; r--)
+                {
+                    if (e_vid(i, j) >= old_vef_start_d(r, 0))
+                    {
+                        e_vid(i, j) += vef_gid_start_d(r, 0) - old_vef_start_d(r, 0);
+                        break;
+                    }
+                }
+            }
+            
             // Child edge GIDs
-            if (e_cid(i, 0) != -1) {e_cid(i, 0) += de; e_cid(i, 1) += de;}
+            for (int j = 0; j < 2; j++)
+            {
+                for (int r = comm_size-1; r >= 0; r--)
+                {
+                    if (e_cid(i, j) >= old_vef_start_d(r, 1))
+                    {
+                        e_cid(i, j) += vef_gid_start_d(r, 1) - old_vef_start_d(r, 1);
+                        break;
+                    }
+                }
+            }
 
             // Parent edge GID
-            if (e_pid(i) != -1) e_pid(i) += de;
-        
+            for (int r = comm_size-1; r >= 0; r--)
+            {
+                if (e_pid(i) >= old_vef_start_d(r, 1))
+                {
+                    e_pid(i) += vef_gid_start_d(r, 1) - old_vef_start_d(r, 1);
+                    break;
+                }
+            }
+
         });
 
         // Update Faces
@@ -1055,19 +1128,64 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             // Global ID
-            f_gid(i) += df;
+            for (int r = comm_size-1; r >= 0; r--)
+            {
+                if (f_gid(i) >= old_vef_start_d(r, 2))
+                {
+                    f_gid(i) += vef_gid_start_d(r, 2) - old_vef_start_d(r, 2);
+                    break;
+                }
+            }
 
             // Child face association GIDs
-            if (f_cid(i, 0) != -1) {f_cid(i, 0) += df; f_cid(i, 1) += df; f_cid(i, 2) += df; f_cid(i, 3) += df;}
+            for (int j = 0; j < 4; j++)
+            {
+                for (int r = comm_size-1; r >= 0; r--)
+                {
+                    if (f_cid(i, j) >= old_vef_start_d(r, 2))
+                    {
+                        f_cid(i, j) += vef_gid_start_d(r, 2) - old_vef_start_d(r, 2);
+                        break;
+                    }
+                }
+            }
 
             // Vertex association GIDs
-            f_vid(i, 0) += dv; f_vid(i, 1) += dv; f_vid(i, 2) += dv;
+            for (int j = 0; j < 3; j++)
+            {
+                for (int r = comm_size-1; r >= 0; r--)
+                {
+                    if (f_vid(i, j) >= old_vef_start_d(r, 2))
+                    {
+                        f_vid(i, j) += vef_gid_start_d(r, 2) - old_vef_start_d(r, 2);
+                        break;
+                    }
+                }
+            }
 
             // Edge association GIDs
-            f_eid(i, 0) += de; f_eid(i, 1) += de; f_eid(i, 2) += de; 
+            for (int j = 0; j < 3; j++)
+            {
+                for (int r = comm_size-1; r >= 0; r--)
+                {
+                    if (f_eid(i, j) >= old_vef_start_d(r, 2))
+                    {
+                        f_eid(i, j) += vef_gid_start_d(r, 2) - old_vef_start_d(r, 2);
+                        break;
+                    }
+                }
+            }
 
             // Parent face
-            if (f_pid(i) != -1) f_pid(i) += df;
+            for (int r = comm_size-1; r >= 0; r--)
+            {
+                if (f_pid(i) >= old_vef_start_d(r, 2))
+                {
+                    f_pid(i) += vef_gid_start_d(r, 2) - old_vef_start_d(r, 2);
+                    break;
+                }
+            }
+
         });
     }
 
