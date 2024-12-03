@@ -661,6 +661,8 @@ class Mesh
         using counter_vec = Kokkos::View<int*, memory_space>;
         using counter_int = Kokkos::View<int, memory_space>;
 
+        using int_vector_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int>, memory_space, 4>;
+
         /**
          * List of locally-owned face IDs this process needs to split
          * Since we don't know the size a priori, make it as large as the
@@ -684,10 +686,17 @@ class Mesh
          */
         counter_vec edge_needrefine("edge_needrefine", _owned_edges);
         int remote_edge_needrefine_size = _owned_edges/5;
-        counter_vec remote_edge_needrefine("remote_edge_needrefine", remote_edge_needrefine_size);
+        int_vector_aosoa remote_edges_send("remote_edges_send", remote_edge_needrefine_size);
         counter_vec element_export_ranks("element_export_ranks", remote_edge_needrefine_size);
+        
+        // Slices we need
+        auto f_egid = Cabana::slice<F_EIDS>(_faces);
+        auto remote_edge_slice = Cabana::slice<0>(remote_edges_send);
+        Cabana::deep_copy(remote_edge_slice, -1);
 
-
+        /**
+         * Counters for new edges and vertices
+         */
         counter_int vert_counter("vert_counter");
         counter_int edge_counter("edge_counter");
         counter_int face_counter("face_counter");
@@ -697,16 +706,17 @@ class Mesh
         Kokkos::deep_copy(edge_counter, 0);
         Kokkos::deep_copy(face_counter, 0);
         Kokkos::deep_copy(remote_edge_counter, 0);
-        Kokkos::deep_copy(remote_edge_needrefine, -1);
-        auto f_egid = Cabana::slice<F_EIDS>(_faces);
-        int owned_edges = _owned_edges;
-        int owned_faces = _owned_faces;
 
         // Copy _vef_gid_start to device
         Kokkos::View<int*[3], MemorySpace> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
         auto hv_tmp = Kokkos::create_mirror_view(_vef_gid_start_d);
         Kokkos::deep_copy(hv_tmp, _vef_gid_start);
         Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
+
+        // Lambda capture variables
+        int owned_edges = _owned_edges;
+        int owned_faces = _owned_faces;
+
         Kokkos::parallel_for("populate edge_needrefine", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
             KOKKOS_LAMBDA(int i) {
             
@@ -745,7 +755,7 @@ class Mesh
                          * process to refine it
                          */
                         int idx = Kokkos::atomic_fetch_add(&remote_edge_counter(), 1);
-                        remote_edge_needrefine(idx) = f_egid(f_lid, j);
+                        remote_edge_slice(idx) = f_egid(f_lid, j);
 
                         // Find the remote rank this edge belongs to
                         int export_rank = -1;
@@ -771,9 +781,6 @@ class Mesh
                 }
             }
         });
-        int remote_edges;
-        Kokkos::deep_copy(remote_edges, remote_edge_counter);
-
 
         /********************************************************************************
          * Communicate remote edges that must be refined. We know how we are sending to
@@ -791,6 +798,171 @@ class Mesh
          *******************************************************************************/
         
         auto distributor = Cabana::Distributor<memory_space>( _comm, element_export_ranks );
+
+        int total_num_import = distributor.totalNumImport();
+        int_vector_aosoa remote_edges_recv("remote_edges_recv", total_num_import);
+
+        Cabana::migrate(distributor, remote_edges_send, remote_edges_recv);
+
+        // for (int i = 0; i < (int) remote_edges_send.size(); i++)
+        // {
+        //     if (remote_edge_slice(i) != -1) printf("R%d: sending edge %d to R%d\n", rank, remote_edge_slice(i), element_export_ranks(i));
+        // }
+        // auto recv_slice = Cabana::slice<0>(remote_edges_recv);
+        // for (int i = 0; i < (int) remote_edges_recv.size(); i++)
+        // {
+        //     if (recv_slice(i) != -1) printf("R%d: recv edge %d from R??\n", rank, recv_slice(i));
+        // }
+
+        // Reset remote edge counter to track how many edges we need to send back
+        Kokkos::deep_copy(remote_edge_counter, 0);
+
+        // Iterate through our received edges and mark them for refinement
+        auto remote_edges_slice = Cabana::slice<0>(remote_edges_recv);
+        Kokkos::parallel_for("add remotes to edge_needrefine", Kokkos::RangePolicy<execution_space>(0, total_num_import),
+            KOKKOS_LAMBDA(int i) {
+
+            int elid = remote_edges_slice(i) - _vef_gid_start_d(rank, 1);
+            
+            // Record this edge needs to be refined
+            int edge_counted = Kokkos::atomic_fetch_add(&edge_needrefine(elid), 1);
+
+            // Incrment counter to store the number of sends that need to be made to remote processes
+            Kokkos::atomic_increment(&remote_edge_counter());
+
+            // If edge_counted already equals 1, don't increment new vert and edge counters
+            if (edge_counted == 0)
+            {
+                // Each edge refinement contributes one new vertex and 2 new edges
+                Kokkos::atomic_increment(&vert_counter());
+                Kokkos::atomic_add(&edge_counter(), 2);
+            }
+        });
+
+        // Update new vertex, edge, and face values
+        int new_vertices, new_edges, remote_edges, new_faces;
+        Kokkos::deep_copy(new_vertices, vert_counter);
+        Kokkos::deep_copy(new_edges, edge_counter);
+        Kokkos::deep_copy(remote_edges, remote_edge_counter);
+        Kokkos::deep_copy(new_faces, face_counter);
+
+        // Resize arrays
+        // int f_lid_start = _owned_faces;
+        _owned_faces += new_faces;
+        _faces.resize(_owned_faces);
+        int e_new_lid_start = _owned_edges;
+        // Each face contributes 3 new edges; each vertex contributes 2
+        _owned_edges += new_edges;
+        _edges.resize(_owned_edges);
+        int v_new_lid_start = _owned_vertices;
+        _owned_vertices += new_vertices;
+        _vertices.resize(_owned_vertices);
+
+        // Update global IDs before making edits, but store the old global IDs
+        // so we know how to fix our ghosted edge IDs
+        Kokkos::View<int*[3], Kokkos::HostSpace> vef_gid_start_old("vef_gid_start_old", _comm_size);
+        Kokkos::deep_copy(vef_gid_start_old, _vef_gid_start);
+        updateGlobalIDs();
+        int vert_offset = _vef_gid_start(_rank, 0) - vef_gid_start_old(_rank, 0);
+        int edge_offset = _vef_gid_start(_rank, 1) - vef_gid_start_old(_rank, 1);
+        int face_offset = _vef_gid_start(_rank, 2) - vef_gid_start_old(_rank, 2);
+
+        printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
+        printf("R%d new VGID space: %d to %d\n", rank, _vef_gid_start(_rank, 0), _vef_gid_start(_rank, 0)+_owned_vertices);
+        printf("R%d new EGID space: %d to %d\n", rank, _vef_gid_start(_rank, 1), _vef_gid_start(_rank, 1)+_owned_edges);
+
+        // Copy new _vef_gid_start to device
+        Kokkos::deep_copy(hv_tmp, _vef_gid_start);
+        Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
+
+        // Vertex slices
+        auto v_gid = Cabana::slice<V_GID>(_vertices);
+        auto v_rank = Cabana::slice<V_OWNER>(_vertices);
+
+        /******************************
+         * Populate new vertices
+         *****************************/
+        Kokkos::parallel_for("populate new vertices and faces", Kokkos::RangePolicy<execution_space>(0, new_vertices),
+            KOKKOS_LAMBDA(int i) {
+            
+            int v_l = v_new_lid_start + i;
+            int v_g = v_l + _vef_gid_start_d(rank, 0);
+            v_gid(v_l) = v_g;
+            v_rank(v_l) = rank;
+            // printf("R%d added VGID %d\n", rank, v_g);
+
+        });
+
+        /******************************
+         * Populate new Edges
+         *****************************/
+
+        // Edge slices
+        auto e_gid = Cabana::slice<E_GID>(_edges);
+        auto e_vid = Cabana::slice<E_VIDS>(_edges);
+        auto e_rank = Cabana::slice<E_OWNER>(_edges);
+        auto e_cid = Cabana::slice<E_CIDS>(_edges);
+        auto e_pid = Cabana::slice<E_PID>(_edges);
+        auto e_layer = Cabana::slice<E_LAYER>(_edges);
+
+        // Step 1: Refine existing  edges
+        Kokkos::deep_copy(edge_counter, 0);
+        Kokkos::parallel_for("refine_edges", Kokkos::RangePolicy<execution_space>(0, e_new_lid_start),
+            KOKKOS_LAMBDA(int i) {
+            
+            // Check if this edge needs to be split
+            if (edge_needrefine(i) == 0) return;
+            
+            // Create new edge local IDs
+            int offset = Kokkos::atomic_fetch_add(&edge_counter(), 2);
+            int ec_lid0 = e_new_lid_start + offset;
+            int ec_lid1 = e_new_lid_start + offset + 1;
+            int ec_gid0 = _vef_gid_start_d(rank, 1) + ec_lid0;
+            int ec_gid1 = _vef_gid_start_d(rank, 1) + ec_lid1;
+            int ec_layer = e_layer(i) + 1;
+
+            printf("R%d refining edge %d: new edges %d, %d\n", rank, i+_vef_gid_start_d(rank, 1), ec_gid0, ec_gid1);
+
+            // Global IDs = global ID start + local ID
+            e_gid(ec_lid0) = ec_gid0;
+            e_gid(ec_lid1) = ec_gid1;
+
+            // Set parent edges for the split edges
+            e_pid(ec_lid0) = i + _vef_gid_start_d(rank, 1);
+            e_pid(ec_lid1) = i + _vef_gid_start_d(rank, 1);
+
+            // Set child edges for the split edges
+            e_cid(ec_lid0, 0) = -1; e_cid(ec_lid0, 1) = -1;
+            e_cid(ec_lid1, 0) = -1; e_cid(ec_lid1, 1) = -1;
+            
+            // Set these edges to be the child edges of their parent edge
+            e_cid(i, 0) = ec_gid0; e_cid(i, 1) = ec_gid1;
+
+            // Owning rank
+            e_rank(ec_lid0) = rank; e_rank(ec_lid1) = rank;
+
+            // Layer of tree
+            e_layer(ec_lid0) = ec_layer; e_layer(ec_lid1) = ec_layer;
+
+            /**
+             * Set vertices:
+             *  ec_lid0: (First vertex of parent edge, new vertex, -1)
+             *  ec_lid1: (new vertex, second vertex of parent edge, -1)
+             */
+            offset /= 2;
+            int new_vgid = _vef_gid_start_d(rank, 0) + offset;
+            e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = new_vgid;
+            e_vid(ec_lid1, 0) = new_vgid; e_vid(ec_lid1, 1) = e_vid(i, 1);
+            e_vid(ec_lid0, 2) = -1; e_vid(ec_lid1, 2) = -1;
+
+            // Set the parent edge third vertex value
+            e_vid(i, 2) = new_vgid;
+            // printf("R%d: pe%d v(%d, %d, %d)\n", rank, i+e_gid_start, e_vid(i, 0), e_vid(i, 1), e_vid(i, 2));
+        });
+
+
+
+
 
     }
 
