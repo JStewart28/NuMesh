@@ -7,10 +7,12 @@
 #include <Kokkos_Core.hpp>
 #include <memory>
 
+#include <algorithm> // For std::find
 #include <fstream>
 #include <iostream>
 #include <regex>
 #include <string>
+#include <vector>
 
 #include <mpi.h>
 
@@ -823,6 +825,7 @@ class Mesh
 
         // Iterate through our received edges and mark them for refinement
         auto remote_edges_slice = Cabana::slice<0>(remote_edges_recv);
+        auto remote_edges_rank_slice = Cabana::slice<1>(remote_edges_recv);
         Kokkos::parallel_for("add remotes to edge_needrefine", Kokkos::RangePolicy<execution_space>(0, total_num_import),
             KOKKOS_LAMBDA(int i) {
 
@@ -832,7 +835,7 @@ class Mesh
             int edge_counted = Kokkos::atomic_fetch_add(&edge_needrefine(elid), 1);
 
             // Incrment counter to store the number of sends that need to be made to remote processes
-            Kokkos::atomic_increment(&remote_edge_counter());
+            Kokkos::atomic_fetch_add(&remote_edge_counter(), 1);
 
             // If edge_counted already equals 1, don't increment new vert and edge counters
             if (edge_counted == 0)
@@ -965,13 +968,90 @@ class Mesh
          * Send the modified edges (parent and two children) back to any process that
          * originally requested them
          */
-        auto halo = Cabana::Halo(_owned_edges, );
+
+        /**
+        \param element_export_ids The local ids of the elements that will be
+            exported to other ranks to be used as ghosts. Element ids may be
+            repeated in this list if they are sent to multiple destinations. Must be
+            the same length as element_export_ranks. The input is expected to be a
+            Kokkos view or Cabana slice in the same memory space as the
+            communication plan.
+         */
+        Kokkos::View<int*, memory_space> element_export_ids("element_export_ids", total_num_import*3);
+
+        /**
+         * \param element_export_ranks The ranks to which we will send each element
+            in element_export_ids. In this case each rank must be one of the
+            neighbor ranks. Must be the same length as element_export_ids. A rank is
+            allowed to send to itself. The input is expected to be a Kokkos view or
+            Cabana slice in the same memory space as the communication plan.
+         */
+        counter_vec element_export_ranks1("element_export_ranks1", total_num_import*3);
+
+        Kokkos::parallel_for("populate element_export_ids", Kokkos::RangePolicy<execution_space>(0, total_num_import),
+            KOKKOS_LAMBDA(int i) {
+            
+            int idx = i * 3;
+
+            // Modify the global ID because GIDs have been updated in the mesh but 
+            // not in the receive buffer
+            for (int r = comm_size-1; r >= 0; r--)
+            {
+                if (remote_edges_slice(i) >= vef_gid_start_old(r, 1))
+                {
+                    remote_edges_slice(i) += _vef_gid_start_d(r, 1) - vef_gid_start_old(r, 1);
+                    break;
+                }
+            }
+
+            // Parent edge LID
+            int elid = remote_edges_slice(i) - _vef_gid_start_d(rank, 1);
+            element_export_ids(idx) = elid;
+
+            // First child edge LID
+            int clid = e_cid(elid, 0) - _vef_gid_start_d(rank, 1);
+            element_export_ids(idx+1) = clid;
+
+            // Second child edge LID
+            clid = e_cid(elid, 1) - _vef_gid_start_d(rank, 1);
+            element_export_ids(idx+2) = clid;
+
+            // Set the export ranks
+            for (int j = 0; j < 3; j++)
+                element_export_ranks1(i+j) = remote_edges_rank_slice(i);
+        });
+
+        
+        /**
+         * \param neighbor_ranks List of ranks this rank will send to and receive
+            from. This list can include the calling rank. This is effectively a
+            description of the topology of the point-to-point communication
+            plan. The elements in this list must be unique.
+         */
+        // Copy ranks received from slice to host memory
+        Cabana::AoSoA<Cabana::MemberTypes<int>, Kokkos::HostSpace, 4> recv_ranks_host("recv_ranks_host", total_num_import);
+        auto recv_ranks_host_slice = Cabana::slice<0>(recv_ranks_host);
+        Cabana::deep_copy(recv_ranks_host_slice, remote_edges_rank_slice);
+        std::vector<int> neighbor_ranks = {};
+        for (int i = 0; i < total_num_import; i++)
+        {
+            int to_rank = recv_ranks_host_slice(i);
+            if (std::find(neighbor_ranks.begin(), neighbor_ranks.end(), to_rank) == neighbor_ranks.end())
+            {
+                neighbor_ranks.push_back(to_rank);
+            }
+        }
+        
+
+        auto halo = Cabana::Halo<memory_space>(_comm, e_new_lid_start, element_export_ids,
+            element_export_ranks1, neighbor_ranks);
 
         /*
+        template <class IdViewType, class RankViewType>
         Halo( MPI_Comm comm, const std::size_t num_local,
-          const IdViewType& element_export_ids,
-          const RankViewType& element_export_ranks,
-          const std::vector<int>& neighbor_ranks )
+            const IdViewType& element_export_ids,
+            const RankViewType& element_export_ranks,
+            const std::vector<int>& neighbor_ranks )
         */
 
 
