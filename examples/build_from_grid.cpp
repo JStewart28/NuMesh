@@ -117,14 +117,14 @@ int main( int argc, char* argv[] )
 
     // numesh->printEdges(1, 105);
     // Rank 1 edges
-    numesh->printEdges(1, 100);
-    numesh->printEdges(1, 110);
-    numesh->printEdges(1, 111);
+    numesh->printEdges(1, 98);
+    numesh->printEdges(1, 108);
+    numesh->printEdges(1, 109);
 
     // Rank 2 edges
-    numesh->printEdges(1, 121);
-    numesh->printEdges(1, 160);
-    numesh->printEdges(1, 161);
+    numesh->printEdges(1, 119);
+    numesh->printEdges(1, 158);
+    numesh->printEdges(1, 159);
 
     } // Scope guard
 

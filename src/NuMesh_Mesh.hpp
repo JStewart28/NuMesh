@@ -689,13 +689,14 @@ class Mesh
          */
         counter_vec edge_needrefine("edge_needrefine", _owned_edges);
         int remote_edge_needrefine_size = _owned_edges/5;
-        int_vector_aosoa remote_edges_send("remote_edges_send", remote_edge_needrefine_size);
+        int_vector_aosoa remote_edges_send_aosoa("remote_edges_send", remote_edge_needrefine_size);
         counter_vec element_export_ranks("element_export_ranks", remote_edge_needrefine_size);
+        Kokkos::deep_copy(element_export_ranks, -1);
         
         // Slices we need
         auto f_egid = Cabana::slice<F_EIDS>(_faces);
-        auto remote_edge_slice = Cabana::slice<0>(remote_edges_send);
-        auto remote_edge_rank_slice = Cabana::slice<1>(remote_edges_send);
+        auto remote_edge_slice = Cabana::slice<0>(remote_edges_send_aosoa);
+        auto remote_edge_rank_slice = Cabana::slice<1>(remote_edges_send_aosoa);
         Cabana::deep_copy(remote_edge_slice, -1);
         Cabana::deep_copy(remote_edge_rank_slice, -1);
 
@@ -787,6 +788,9 @@ class Mesh
                 }
             }
         });
+        // How many remote edges we need refined
+        int remote_edges_refined;
+        Kokkos::deep_copy(remote_edges_refined, remote_edge_counter);
 
         /********************************************************************************
          * Communicate remote edges that must be refined. We know how we are sending to
@@ -808,9 +812,9 @@ class Mesh
         int total_num_import = distributor.totalNumImport();
         int_vector_aosoa remote_edges_recv("remote_edges_recv", total_num_import);
 
-        Cabana::migrate(distributor, remote_edges_send, remote_edges_recv);
+        Cabana::migrate(distributor, remote_edges_send_aosoa, remote_edges_recv);
 
-        // for (int i = 0; i < (int) remote_edges_send.size(); i++)
+        // for (int i = 0; i < (int) remote_edges_send_aosoa.size(); i++)
         // {
         //     if (remote_edge_slice(i) != -1) printf("R%d: sending edge %d to R%d\n", rank, remote_edge_slice(i), element_export_ranks(i));
         // }
@@ -847,10 +851,10 @@ class Mesh
         });
 
         // Update new vertex, edge, and face values
-        int new_vertices, new_edges, remote_edges, new_faces;
+        int new_vertices, new_edges, remote_edges_send, new_faces;
         Kokkos::deep_copy(new_vertices, vert_counter);
         Kokkos::deep_copy(new_edges, edge_counter);
-        Kokkos::deep_copy(remote_edges, remote_edge_counter);
+        Kokkos::deep_copy(remote_edges_send, remote_edge_counter);
         Kokkos::deep_copy(new_faces, face_counter);
 
         // Resize arrays
@@ -860,7 +864,8 @@ class Mesh
         int e_new_lid_start = _owned_edges;
         // Each face contributes 3 new edges; each vertex contributes 2
         _owned_edges += new_edges;
-        _edges.resize(_owned_edges);
+        _ghost_edges = remote_edges_refined * 3; // Each remotely refined edge will return the parent and two children
+        _edges.resize(_owned_edges + _ghost_edges);
         int v_new_lid_start = _owned_vertices;
         _owned_vertices += new_vertices;
         _vertices.resize(_owned_vertices);
@@ -871,9 +876,9 @@ class Mesh
         Kokkos::deep_copy(vef_gid_start_old, _vef_gid_start);
         updateGlobalIDs();
 
-        printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
-        printf("R%d new VGID space: %d to %d\n", rank, _vef_gid_start(_rank, 0), _vef_gid_start(_rank, 0)+_owned_vertices);
-        printf("R%d new EGID space: %d to %d\n", rank, _vef_gid_start(_rank, 1), _vef_gid_start(_rank, 1)+_owned_edges);
+        // printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
+        // printf("R%d new VGID space: %d to %d\n", rank, _vef_gid_start(_rank, 0), _vef_gid_start(_rank, 0)+_owned_vertices);
+        // printf("R%d new EGID space: %d to %d\n", rank, _vef_gid_start(_rank, 1), _vef_gid_start(_rank, 1)+_owned_edges);
 
         // Copy new _vef_gid_start to device
         Kokkos::deep_copy(hv_tmp, _vef_gid_start);
@@ -925,7 +930,7 @@ class Mesh
             int ec_gid1 = _vef_gid_start_d(rank, 1) + ec_lid1;
             int ec_layer = e_layer(i) + 1;
 
-            printf("R%d refining edge %d: new edges %d, %d\n", rank, i+_vef_gid_start_d(rank, 1), ec_gid0, ec_gid1);
+            // printf("R%d refining edge %d: new edges %d, %d\n", rank, i+_vef_gid_start_d(rank, 1), ec_gid0, ec_gid1);
 
             // Global IDs = global ID start + local ID
             e_gid(ec_lid0) = ec_gid0;
@@ -1032,27 +1037,45 @@ class Mesh
         Cabana::AoSoA<Cabana::MemberTypes<int>, Kokkos::HostSpace, 4> recv_ranks_host("recv_ranks_host", total_num_import);
         auto recv_ranks_host_slice = Cabana::slice<0>(recv_ranks_host);
         Cabana::deep_copy(recv_ranks_host_slice, remote_edges_rank_slice);
-        std::vector<int> neighbor_ranks = {};
+        std::vector<int> neighbor_ranks = {_rank};
+
+        // Add ranks we received from
         for (int i = 0; i < total_num_import; i++)
         {
             int to_rank = recv_ranks_host_slice(i);
-            if (std::find(neighbor_ranks.begin(), neighbor_ranks.end(), to_rank) == neighbor_ranks.end())
+            if ((to_rank != -1) && (std::find(neighbor_ranks.begin(), neighbor_ranks.end(), to_rank) == neighbor_ranks.end()))
             {
                 neighbor_ranks.push_back(to_rank);
+                //printf("R%d adding neighbor %d\n", rank, to_rank);
             }
         }
-        
+        // Add ranks we sent to
+        for (int i = 0; i < remote_edges_refined; i++)
+        {
+            // Add ranks we sent to
+            int to_rank = element_export_ranks(i);
+            //printf("R%d send to: %d\n", rank, to_rank);
+            if ((to_rank != -1) && (std::find(neighbor_ranks.begin(), neighbor_ranks.end(), to_rank) == neighbor_ranks.end()))
+            {
+                neighbor_ranks.push_back(to_rank);
+                //printf("R%d adding neighbor %d\n", rank, to_rank);
+            }
 
-        auto halo = Cabana::Halo<memory_space>(_comm, e_new_lid_start, element_export_ids,
+        }
+
+        // printf("R%d: neighbors: (size %d): %d, %d, %d, %d\n", rank, neighbor_ranks.size(), neighbor_ranks[0], neighbor_ranks[1],neighbor_ranks[2],neighbor_ranks[3]);
+        // printf("R%d: AoSoA size: %d, owned: %d, ghost: %d eids: %d, eranks: %d\n", _rank,
+        //     (int)_edges.size(), _owned_edges, _ghost_edges, element_export_ids.extent(0), element_export_ranks1.extent(0));
+        
+        auto edge_halo = Cabana::Halo<memory_space>(_comm, _owned_edges, element_export_ids,
             element_export_ranks1, neighbor_ranks);
 
-        /*
-        template <class IdViewType, class RankViewType>
-        Halo( MPI_Comm comm, const std::size_t num_local,
-            const IdViewType& element_export_ids,
-            const RankViewType& element_export_ranks,
-            const std::vector<int>& neighbor_ranks )
-        */
+        // printf("R%d halo local/ghost: %d, %d, import/export: %d, %d\n", _rank,
+        //     edge_halo.numLocal(), edge_halo.numGhost(),
+        //     edge_halo.totalNumImport(), edge_halo.totalNumExport());
+        Cabana::gather(edge_halo, _edges);
+
+
 
 
     }
