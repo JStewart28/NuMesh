@@ -113,9 +113,14 @@ int main( int argc, char* argv[] )
     // numesh->printEdges(1, 46);
     // numesh->printEdges(1, 86);
 
-    //if (rank == 0) numesh->printEdges(2, 0);
+    // if (rank == 0) numesh->printEdges(3, 0);
 
     // numesh->printEdges(1, 105);
+
+    // Rank 0 edges, face 30
+    numesh->printEdges(1, 45);
+    numesh->printEdges(1, 46);
+
     // Rank 1 edges
     numesh->printEdges(1, 98);
     numesh->printEdges(1, 108);

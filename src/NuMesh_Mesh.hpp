@@ -59,6 +59,42 @@ auto vectorToArray( std::vector<Scalar> vector )
     return array;
 }
 
+/**
+ * Get the local ID of a ghosted edge given its global ID
+ * Performs binary search on the ghosted GIDs
+ * Assumes the AoSoA is sorted for GID
+ * Returns -1 if the global ID is not ghosted
+ */
+template <class Slice_t>
+KOKKOS_INLINE_FUNCTION
+int get_ghost_lid(Slice_t& slice, int gid, int own, int ghost)
+{
+    // Ensure valid range
+    if (own > own + ghost - 1)
+        return -1; // Not found
+
+    int pivot = own + ghost / 2;
+
+    // Value at the pivot index
+    int val = slice(pivot);
+
+    if (val == gid)
+    {
+        // Found the gid at the pivot index
+        return pivot;
+    }
+    else if (val < gid)
+    {
+        // Search in the upper half: range is (pivot + 1, own + ghost)
+        return get_ghost_lid(slice, gid, own+pivot + 1, own+ghost);
+    }
+    else
+    {
+        // Search in the lower half: range is (own, pivot)
+        return get_ghost_lid(slice, gid, own, own-pivot+ghost);
+    }
+}
+
 //---------------------------------------------------------------------------//
 /*!
   \class Mesh
@@ -637,7 +673,38 @@ class Mesh
         // initialize_edges();
     }
         
+    /**
+     * Gathers vertices/edges/faces (vef) depending on the Cabana::Halo type
+     * Sorts the vef AoSoA by global ID so make searching for
+     * ghost values more efficient. Local IDs of owned vef are
+     * unaffected because the global IDs are already in ascending order.
+     */
+    template <class Halo_t, class AoSoA_t>
+    void gather(Halo_t& halo, AoSoA_t& aosoa)
+    {
+        Cabana::gather(halo, aosoa);
 
+        // Sort the AoSoA by global ID
+        // The key slice differs depending on the AoSoA type
+        // if constexpr (std::is_same_v<AoSoA_t, v_array_type>)
+        // {
+        //     auto keys = Cabana::slice<V_GID>( aosoa );
+        //     auto sort_data = Cabana::sortByKey( keys );
+        //     Cabana::permute( sort_data, aosoa );
+        // }
+        // else if constexpr (std::is_same_v<AoSoA_t, e_array_type>)
+        // {
+        //     auto keys = Cabana::slice<E_GID>( aosoa );
+        //     auto sort_data = Cabana::sortByKey( keys );
+        //     Cabana::permute( sort_data, aosoa );
+        // }
+        // else if constexpr (std::is_same_v<AoSoA_t, f_array_type>)
+        // {
+        //     auto keys = Cabana::slice<F_GID>( aosoa );
+        //     auto sort_data = Cabana::sortByKey( keys );
+        //     Cabana::permute( sort_data, aosoa );
+        // }
+    }
     /**
      * Part one for refining a face. Splits all edges on faces
      * marked to be refined and adds new interior edges for
@@ -879,6 +946,8 @@ class Mesh
         // printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
         // printf("R%d new VGID space: %d to %d\n", rank, _vef_gid_start(_rank, 0), _vef_gid_start(_rank, 0)+_owned_vertices);
         // printf("R%d new EGID space: %d to %d\n", rank, _vef_gid_start(_rank, 1), _vef_gid_start(_rank, 1)+_owned_edges);
+        // printFaces(1, 30);
+        // printFaces(1, 31);
 
         // Copy new _vef_gid_start to device
         Kokkos::deep_copy(hv_tmp, _vef_gid_start);
@@ -1073,9 +1142,100 @@ class Mesh
         // printf("R%d halo local/ghost: %d, %d, import/export: %d, %d\n", _rank,
         //     edge_halo.numLocal(), edge_halo.numGhost(),
         //     edge_halo.totalNumImport(), edge_halo.totalNumExport());
-        Cabana::gather(edge_halo, _edges);
+        gather(edge_halo, _edges);
+        //Cabana::gather(edge_halo, _edges);
 
+        // Sort the edge AoSoA by global ID
 
+        // Face slices we need
+        auto f_eid = Cabana::slice<F_EIDS>(_faces);
+        auto f_layer = Cabana::slice<F_LAYER>(_faces);
+
+        // Lambda capture variables
+        int oe = _owned_edges, ge = _ghost_edges;
+
+        // Populate the three new, internal edges for each face
+        // local_face_lids(i) references face local IDs
+        Kokkos::parallel_for("new internal edges", Kokkos::RangePolicy<execution_space>(0, new_faces),
+            KOKKOS_LAMBDA(int i) {
+            
+            int face_id = local_face_lids(i);
+            int e_lid;
+            // Set general values for each of the three new edges
+            int offset = Kokkos::atomic_fetch_add(&edge_counter(), 3);
+            printf("R%d face %d (edges %d, %d, %d), adding edges %d, %d, %d\n", rank,
+                face_id+_vef_gid_start_d(rank, 2),
+                f_eid(face_id, 0), f_eid(face_id, 1), f_eid(face_id, 2),
+                e_new_lid_start+offset, e_new_lid_start+offset+1, e_new_lid_start+offset+2);
+            for (int j = offset; j < offset+3; j++)
+            {
+                e_lid = e_new_lid_start + j;
+
+                // Global IDs = global ID start + local ID
+                e_gid(e_lid) = _vef_gid_start_d(rank, 1) + e_lid;
+
+                // Set parent and child edges
+                e_pid(e_lid) = -1; e_cid(e_lid, 0) = -1; e_cid(e_lid, 1) = -1;
+
+                // Owning rank
+                e_rank(e_lid) = rank;
+
+                 /**
+                 * For internal edges, get their layer from the layer of the
+                 * face they are splitting
+                 */
+                e_layer(e_lid) = f_layer(face_id) + 1;
+
+                /**
+                 * Get the edges of the face we are refining. If any of them are outside our
+                 * global ID space, check the ghosted edges to get the vertex IDs
+                 * 
+                 * elid = local IDs of these face edges
+                 */
+                int elid[3];
+                for (int k = 0; k < 3; k++)
+                {
+                    int egid = f_eid(face_id, k);
+                    int lid = egid - _vef_gid_start_d(rank, 1);
+                    if ((lid < 0) || (lid >= oe))
+                    {
+                        // Ghost edge
+                        elid[k] = get_ghost_lid(e_gid, egid, oe, ge);
+                    }
+                    else
+                    {
+                        // Own edge
+                        elid[k] = lid;
+                    }
+                    
+                }
+                printf("R%d (%d, %d, %d) -> (%d, %d, %d)\n", rank,
+                    f_eid(face_id, 0), f_eid(face_id, 1), f_eid(face_id, 2),
+                    elid[0], elid[1], elid[2]);
+                
+                /**
+                 * Set vertices (nv0, nv1, nv2):
+                 *  e_lid0: (new vertex 0, new vertex 1)
+                 *  e_lid1: (new vertex 1, new vertex 2)
+                 *  e_lid2: (new vertex 0, new vertex 2)
+                 * 
+                 * If any of these new vertex IDs are 
+                 */
+                int nv0, nv1, nv2;
+                nv0 = e_vid(elid[0], 2); nv1 = e_vid(elid[1], 2); nv2 = e_vid(elid[2], 2); 
+                //int elid0, elid1, elid2, nv0, nv1, nv2;
+                // elid0 = f_eid(face_id, 0)-_vef_gid_start_d(rank, 1); elid1 = f_eid(face_id, 1)-_vef_gid_start_d(rank, 1); elid2 = f_eid(face_id, 2)-_vef_gid_start_d(rank, 1);
+                // nv0 = e_vid(elid0, 2); nv1 = e_vid(elid1, 2); nv2 = e_vid(elid2, 2); 
+                // printf("R%d: nv: %d, %d, %d\n", rank, nv0, nv1, nv2);
+                if (j == offset) {e_vid(e_lid, 0) = nv0; e_vid(e_lid, 1) = nv1;}
+                else if (j == offset+1) {e_vid(e_lid, 0) = nv1; e_vid(e_lid, 1) = nv2;}
+                else if (j == offset+2) {e_vid(e_lid, 0) =nv0; e_vid(e_lid, 1) = nv2;}
+
+                // Middle vertex not set until new edges are further refined
+                e_vid(e_lid, 2) = -1;
+                printf("R%d: ne%d: (%d, %d, %d)\n", rank, e_lid+_vef_gid_start_d(rank, 1), e_vid(e_lid, 0), e_vid(e_lid, 1), e_vid(e_lid, 2));
+            }
+        });
 
 
     }
@@ -1258,9 +1418,9 @@ class Mesh
             {
                 for (int r = comm_size-1; r >= 0; r--)
                 {
-                    if (f_vid(i, j) >= old_vef_start_d(r, 2))
+                    if (f_vid(i, j) >= old_vef_start_d(r, 0))
                     {
-                        f_vid(i, j) += vef_gid_start_d(r, 2) - old_vef_start_d(r, 2);
+                        f_vid(i, j) += vef_gid_start_d(r, 0) - old_vef_start_d(r, 0);
                         break;
                     }
                 }
@@ -1271,9 +1431,9 @@ class Mesh
             {
                 for (int r = comm_size-1; r >= 0; r--)
                 {
-                    if (f_eid(i, j) >= old_vef_start_d(r, 2))
+                    if (f_eid(i, j) >= old_vef_start_d(r, 1))
                     {
-                        f_eid(i, j) += vef_gid_start_d(r, 2) - old_vef_start_d(r, 2);
+                        f_eid(i, j) += vef_gid_start_d(r, 1) - old_vef_start_d(r, 1);
                         break;
                     }
                 }
@@ -1319,7 +1479,7 @@ class Mesh
         }
     }
     /**
-     * opt: 1 = specific edge, 2 = owned, 3 = ghost
+     * opt: 1 = specific edge, 2 = owned, 3 = own+ghost
      */
     void printEdges(int opt, int egid)
     {
@@ -1352,7 +1512,6 @@ class Mesh
         }
         int start = 0, end = _edges.size();
         if (opt == 2) end = _owned_edges;
-        else if (opt == 3) start = _owned_edges;
         Kokkos::parallel_for("print edges", Kokkos::RangePolicy<execution_space>(start, end),
             KOKKOS_LAMBDA(int i) {
             
@@ -1366,6 +1525,10 @@ class Mesh
         });
     }
 
+    /**
+     * opt = 0: print all faces
+     * opt = 1: print fgid face
+     */
     void printFaces(int opt, int fgid)
     {
         auto f_vgids = Cabana::slice<F_VIDS>(_faces);
