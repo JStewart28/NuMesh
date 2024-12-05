@@ -1265,7 +1265,7 @@ class Mesh
 
                 // Middle vertex not set until new edges are further refined
                 e_vid(e_lid, 2) = -1;
-                printf("R%d: ne%d: (%d, %d, %d)\n", rank, e_lid+_vef_gid_start_d(rank, 1), e_vid(e_lid, 0), e_vid(e_lid, 1), e_vid(e_lid, 2));
+                // printf("R%d: ne%d: (%d, %d, %d)\n", rank, e_lid+_vef_gid_start_d(rank, 1), e_vid(e_lid, 0), e_vid(e_lid, 1), e_vid(e_lid, 2));
             }
         });
 
@@ -1604,6 +1604,10 @@ class Mesh
     v_array_type vertices() {return _vertices;}
     e_array_type edges() {return _edges;}
     f_array_type faces() {return _faces;}
+
+    int count(Own, Vertex) {return _owned_vertices;}
+    int count(Own, Edge) {return _owned_edges;}
+    int count(Own, Face) {return _owned_faces;}
 
     auto get_vef_gid_start() {return _vef_gid_start;}
 

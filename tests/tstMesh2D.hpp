@@ -7,6 +7,7 @@
 
 #include "gtest/gtest.h"
 
+#include <Cabana_Core.hpp>
 #include <Cabana_Grid.hpp>
 #include <Kokkos_Core.hpp>
 #include <NuMesh_Core.hpp>
@@ -26,8 +27,12 @@ class Mesh2DTest : public ::testing::Test
     using ExecutionSpace = typename T::ExecutionSpace;
     using MemorySpace = typename T::MemorySpace;
     using numesh_t = NuMesh::Mesh<ExecutionSpace, MemorySpace>;
+    using vertex_data = typename numesh_t::vertex_data;
     using edge_data = typename numesh_t::edge_data;
+    using face_data = typename numesh_t::face_data;
+    using v_array_type = Cabana::AoSoA<vertex_data, Kokkos::HostSpace, 4>;
     using e_array_type = Cabana::AoSoA<edge_data, Kokkos::HostSpace, 4>;
+    using f_array_type = Cabana::AoSoA<face_data, Kokkos::HostSpace, 4>;
     
 
   protected:
@@ -45,138 +50,7 @@ class Mesh2DTest : public ::testing::Test
     { 
     }
 
-    template <class EdgeTuple>
-    void tstEdgeEqual(EdgeTuple ce, EdgeTuple te)
-    {
-        int gid;                                    // Global ID of test edge
-        int cev0, cev1, tev0, tev1;                 // Vertices
-        int cep, cec0, cec1, tep, tec0, tec1;       // Parents and children
-        int cegid, tegid;                           // Global IDs
-        int cer, ter;                               // Owning rank
-
-        gid = Cabana::get<E_GID>(te);
-        cev0 = Cabana::get<E_VIDS>(ce, 0); cev1 = Cabana::get<E_VIDS>(ce, 1);
-        tev0 = Cabana::get<E_VIDS>(te, 0); tev1 = Cabana::get<E_VIDS>(te, 1);
-        cep = Cabana::get<E_PID>(ce); tep = Cabana::get<E_PID>(te);
-        cec0 = Cabana::get<E_CIDS>(ce, 0); cec1 = Cabana::get<E_CIDS>(ce, 1);
-        tec0 = Cabana::get<E_CIDS>(te, 0); tec1 = Cabana::get<E_CIDS>(te, 1);
-        cegid = Cabana::get<E_GID>(ce); tegid = Cabana::get<E_GID>(te);
-        cer = Cabana::get<E_OWNER>(ce); ter = Cabana::get<E_OWNER>(te);
-
-        EXPECT_EQ(cev0, tev0) << "TGID: " << gid << ", Vertex 0 mismatch";
-        EXPECT_EQ(cev1, tev1) << "TGID: " << gid << ", Vertex 1 mismatch";
-        EXPECT_EQ(cep, tep) << "TGID: " << gid << ", Parent edge mismatch";
-        EXPECT_EQ(cec0, tec0) << "TGID: " << gid << ", Child edge 0 mismatch";
-        EXPECT_EQ(cec1, tec1) << "TGID: " << gid << ", Child edge 1 mismatch";
-        EXPECT_EQ(cegid, tegid) << "TGID: " << gid << ", Global ID mismatch";
-        EXPECT_EQ(cer, ter) << "TGID: " << gid << ", Owning rank mismatch";
-    }
-
-    template <class FaceTuple>
-    void tstFaceEqual(FaceTuple cf, FaceTuple tf)
-    {
-        int cfv0, cfv1, cfv2, tfv0, tfv1, tfv2;     // Vertices
-        int cfe0, cfe1, cfe2, tfe0, tfe1, tfe2;     // Edges
-        int cfgid, tfgid;                           // Global IDs
-        int cfp, tfp, cfc0, tfc0, cfc1, tfc1, cfc2, tfc2, cfc3, tfc3; // Parents and children
-        int cfr, tfr;                               // Owning rank
-
-        cfv0 = Cabana::get<F_VIDS>(cf, 0); cfv1 = Cabana::get<F_VIDS>(cf, 1); cfv2 = Cabana::get<F_VIDS>(cf, 2);
-        tfv0 = Cabana::get<F_VIDS>(tf, 0); tfv1 = Cabana::get<F_VIDS>(tf, 1); tfv2 = Cabana::get<F_VIDS>(tf, 2);
-        cfe0 = Cabana::get<F_EIDS>(cf, 0); cfe1 = Cabana::get<F_EIDS>(cf, 1); cfe2 = Cabana::get<F_EIDS>(cf, 2);
-        tfe0 = Cabana::get<F_EIDS>(tf, 0); tfe1 = Cabana::get<F_EIDS>(tf, 1); tfe2 = Cabana::get<F_EIDS>(tf, 2);
-        cfgid = Cabana::get<F_GID>(cf); tfgid = Cabana::get<F_GID>(tf);
-        cfp = Cabana::get<F_PID>(cf); tfp = Cabana::get<F_PID>(tf);
-        cfc0 = Cabana::get<F_CID>(cf, 0); cfc1 = Cabana::get<F_CID>(cf, 1); cfc2 = Cabana::get<F_CID>(cf, 2); cfc3 = Cabana::get<F_CID>(cf, 3);
-        tfc0 = Cabana::get<F_CID>(tf, 0); tfc1 = Cabana::get<F_CID>(tf, 1); tfc2 = Cabana::get<F_CID>(tf, 2); tfc3 = Cabana::get<F_CID>(tf, 3);
-        cfr = Cabana::get<F_OWNER>(cf); tfr = Cabana::get<F_OWNER>(tf);
-
-        EXPECT_EQ(cfv0, tfv0) << "Vertex 0 mismatch";
-        EXPECT_EQ(cfv1, tfv1) << "Vertex 1 mismatch";
-        EXPECT_EQ(cfv2, tfv2) << "Vertex 2 mismatch";
-        EXPECT_EQ(cfe0, tfe0) << "Edge 0 mismatch";
-        EXPECT_EQ(cfe1, tfe1) << "Edge 1 mismatch";
-        EXPECT_EQ(cfe2, tfe2) << "Edge 2 mismatch";
-        EXPECT_EQ(cfgid, tfgid) << "Global ID mismatch";
-        EXPECT_EQ(cfp, tfp) << "Parent face mismatch";
-        EXPECT_EQ(cfc0, tfc0) << "Child face 0 mismatch";
-        EXPECT_EQ(cfc1, tfc1) << "Child face 1 mismatch";
-        EXPECT_EQ(cfc2, tfc2) << "Child face 2 mismatch";
-        EXPECT_EQ(cfc3, tfc3) << "Child face 3 mismatch";
-        EXPECT_EQ(cfr, tfr) << "Owning rank mismatch";
-    }
-
   public:
-    
-    std::string get_filename(int comm_size, int mesh_size, int periodic)
-    {
-        std::string filename = "../tests/data/edges_";
-        filename += std::to_string(comm_size);
-        filename += "_n";
-        filename += std::to_string(mesh_size);
-        if (periodic == 1) filename += "_periodic";
-        else filename += "_free";
-        filename += ".txt";
-        return filename;
-    }
-
-    // Function to read edges from file and populate AoSoA using regex
-    void readEdgesFromFile(const std::string& filename, e_array_type& edges)
-    {
-        std::ifstream file(filename);
-        if (!file.is_open())
-        {
-            std::cerr << "Error opening file: " << filename << std::endl;
-            return;
-        }
-
-        std::string line;
-
-        // Define a regex pattern for the line format
-        std::regex pattern(R"(^(\d+),\s*v\(([-\d]+),\s*([-\d]+),\s*([-\d]+)\),\s*f\(([-\d]+),\s*([-\d]+)\),\s*c\(([-\d]+),\s*([-\d]+)\),\s*p\(([-\d]+)\)\s*(\d+),\s*\d+$)");
-
-        while (std::getline(file, line))
-        {
-            std::smatch matches;
-            if (std::regex_match(line, matches, pattern))
-            {
-                int gid = std::stoi(matches[1].str());
-                int vids[3] = { std::stoi(matches[2].str()), std::stoi(matches[3].str()), std::stoi(matches[4].str()) };
-                int fids[2] = { std::stoi(matches[5].str()), std::stoi(matches[6].str()) };
-                int cids[2] = { std::stoi(matches[7].str()), std::stoi(matches[8].str()) };
-                int pid = std::stoi(matches[9].str());
-                int owner = std::stoi(matches[10].str());
-
-                // Create and populate an edge tuple
-                Cabana::Tuple<edge_data> edge_tuple;
-                
-                Cabana::get<E_GID>(edge_tuple) = gid;
-
-                Cabana::get<E_VIDS>(edge_tuple, 0) = vids[0];
-                Cabana::get<E_VIDS>(edge_tuple, 1) = vids[1];
-                Cabana::get<E_VIDS>(edge_tuple, 2) = vids[2];
-
-                Cabana::get<E_FIDS>(edge_tuple, 0) = fids[0];
-                Cabana::get<E_FIDS>(edge_tuple, 1) = fids[1];
-
-                Cabana::get<E_CIDS>(edge_tuple, 0) = cids[0];
-                Cabana::get<E_CIDS>(edge_tuple, 1) = cids[1];
-
-                Cabana::get<E_PID>(edge_tuple) = pid;
-
-                Cabana::get<E_OWNER>(edge_tuple) = owner;
-
-                // Add the tuple to the AoSoA at the current gid
-                edges.setTuple(gid, edge_tuple);
-            }
-            else
-            {
-                std::cerr << "Error parsing line: " << line << std::endl;
-            }
-        }
-        file.close();
-    }
-
     void init(int mesh_size, int periodic)
     {
         std::array<int, 2> global_num_cell = { mesh_size, mesh_size };
@@ -223,79 +97,79 @@ class Mesh2DTest : public ::testing::Test
         numesh->refine(fids);
     }   
 
-    void testEdges(e_array_type& c_edges)
+    /**
+     * Verify the faces in fin were refined corrrectly
+     */
+    void verifyRefinement(int fin[10])
     {
-        e_array_type t_edges_host;
-        int size = (int) numesh->edges().size();
-        t_edges_host.resize(size);
-        printf("ce/te: %d, %d\n", (int)c_edges.size(), (int)t_edges_host.size());
-        Cabana::deep_copy(t_edges_host, numesh->edges());
-        for (int i = 0; i < size; i++)
-        {
-            auto t_edge = t_edges_host.getTuple(i);
-            int gid = Cabana::get<E_GID>(t_edge);
-            auto c_edge = c_edges.getTuple(gid);
-            tstEdgeEqual(c_edge, t_edge);
-        }
-    }
-
-    void test0_refineAndAddEdges()
-    {
-        if constexpr (std::is_same_v<ExecutionSpace, Kokkos::Serial>)
-        {
-            std::string filename;
-            int mesh_size = 8;
-
-            filename = this->get_filename(this->comm_size_, mesh_size, 1);
-            
-            this->init(mesh_size, 1);
-
-            int fin[10] = {12, 13, 106, 75, 51, -1, -1, -1, -1, -1};
-            this->refineEdges(fin);
-
-            // Make edges slightly larger than needed because it's easier
-            this->edges.resize(this->numesh->edges().size()*(this->comm_size_+1));
-            this->readEdgesFromFile(filename, this->edges);
-            this->testEdges(this->edges);
-        }
-    }
-
-    void test1_refineAndAddInternalEdges()
-    {
-        // Only refine internal edges
-        int fin[10] = {106, 5, 75, 51, -1, -1, -1, -1, -1, -1};
         this->refineEdges(fin);
 
-        e_array_type edges_host;
-        int size = (int) numesh->edges().size();
-        auto vef_gid_start = numesh->get_vef_gid_start();
-        int min_vgid = vef_gid_start(this->rank_, 0);
-        int max_vgid;
-        if (this->rank_ == comm_size_ - 1) max_vgid = min_vgid + (int) numesh->vertices().size();
-        else max_vgid = vef_gid_start(this->rank_+1, 0);
-        edges_host.resize(size);
-        Cabana::deep_copy(edges_host, numesh->edges());
-        auto e_vids = Cabana::slice<E_VIDS>(edges_host);
-        auto e_gids = Cabana::slice<E_GID>(edges_host);
-        auto e_layer = Cabana::slice<E_LAYER>(edges_host);
-        for (int i = 0; i < size; i ++)
-        {
-            int e_gid = e_gids(i);
+        auto vertices = numesh->vertices();
+        auto edges = numesh->edges();
+        auto faces = numesh->faces();
 
-            /**
-             * On child edges, check that no edge connects vertices greater than the max locally owned vertex GID
-             * 
-             * Level zero edges may connect accoss MPI boundaries and violate this condition
-             */ 
-            if (e_layer(i) > 0)
-            {
-                for (int j = 0; j < 2; j++)
-                {
-                    int vid = e_vids(i, j);
-                    EXPECT_GE(vid, min_vgid) << "Rank " << this->rank_ << ": Vertex " << j << " of edge " << e_gid << " : " << vid << " !>= " << min_vgid;
-                    EXPECT_LT(vid, max_vgid) << "Rank " << this->rank_ << ": Vertex " << j << " of edge " << e_gid << " : " << vid << " !< " << max_vgid;
-                }
-            }
+         // Local counts for each rank
+        int local_vef_count[3] = {numesh->count(NuMesh::Own(), NuMesh::Vertex()),
+                                numesh->count(NuMesh::Own(), NuMesh::Edge()),
+                                numesh->count(NuMesh::Own(), NuMesh::Face())};
+        
+        // Get vertices
+        Kokkos::View<int*, MemorySpace> element_export_ids("element_export_ids", local_vef_count[0]);
+        Kokkos::View<int*, MemorySpace> element_export_ranks("element_export_ranks", local_vef_count[0]);
+        Kokkos::parallel_for("init_halo_data", Kokkos::RangePolicy<ExecutionSpace>(0, local_vef_count[0]),
+            KOKKOS_LAMBDA(int i) {
+            
+            element_export_ids(i) = i;
+            element_export_ranks(i) = 0;
+
+        });
+
+        auto vert_halo = Cabana::Halo<MemorySpace>(MPI_COMM_WORLD, local_vef_count[0], element_export_ids,
+            element_export_ranks);
+
+        vertices.resize(vert_halo.numLocal() + vert_halo.numGhost() );
+
+        Cabana::gather(vert_halo, vertices);
+
+        // Get edges
+        Kokkos::resize(element_export_ids, local_vef_count[1]);
+        Kokkos::resize(element_export_ranks, local_vef_count[1]);
+        Kokkos::parallel_for("init_halo_data", Kokkos::RangePolicy<ExecutionSpace>(0, local_vef_count[1]),
+            KOKKOS_LAMBDA(int i) {
+            
+            element_export_ids(i) = i;
+            element_export_ranks(i) = 0;
+
+        });
+
+        auto edge_halo = Cabana::Halo<MemorySpace>(MPI_COMM_WORLD, local_vef_count[1], element_export_ids,
+            element_export_ranks);
+
+        edges.resize(edge_halo.numLocal() + edge_halo.numGhost() );
+
+        Cabana::gather(edge_halo, edges);
+
+        // Get Faces
+        Kokkos::resize(element_export_ids, local_vef_count[2]);
+        Kokkos::resize(element_export_ranks, local_vef_count[2]);
+        Kokkos::parallel_for("init_halo_data", Kokkos::RangePolicy<ExecutionSpace>(0, local_vef_count[2]),
+            KOKKOS_LAMBDA(int i) {
+            
+            element_export_ids(i) = i;
+            element_export_ranks(i) = 0;
+
+        });
+
+        auto face_halo = Cabana::Halo<MemorySpace>(MPI_COMM_WORLD, local_vef_count[2], element_export_ids,
+            element_export_ranks);
+
+        faces.resize(face_halo.numLocal() + face_halo.numGhost() );
+
+        Cabana::gather(face_halo, faces);
+
+        if (rank_ == 0)
+        {
+            numesh->printFaces(0, 0);
         }
     }
 };
