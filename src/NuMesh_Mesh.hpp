@@ -925,8 +925,8 @@ class Mesh
         Kokkos::deep_copy(new_faces, face_counter);
 
         // Resize arrays
-        // int f_lid_start = _owned_faces;
-        _owned_faces += new_faces;
+        int f_new_lid_start = _owned_faces;
+        _owned_faces += new_faces*4; // Each face refinement creates 4 new faces
         _faces.resize(_owned_faces);
         int e_new_lid_start = _owned_edges;
         // Each face contributes 3 new edges; each vertex contributes 2
@@ -1148,8 +1148,13 @@ class Mesh
         // Sort the edge AoSoA by global ID
 
         // Face slices we need
+        auto f_cid = Cabana::slice<F_CID>(_faces);
+        auto f_gid = Cabana::slice<F_GID>(_faces);
+        auto f_vid = Cabana::slice<F_VIDS>(_faces);
         auto f_eid = Cabana::slice<F_EIDS>(_faces);
+        auto f_pid = Cabana::slice<F_PID>(_faces);
         auto f_layer = Cabana::slice<F_LAYER>(_faces);
+        auto f_owner = Cabana::slice<F_OWNER>(_faces);
 
         // Lambda capture variables
         int oe = _owned_edges, ge = _ghost_edges;
@@ -1235,6 +1240,51 @@ class Mesh
                 e_vid(e_lid, 2) = -1;
                 printf("R%d: ne%d: (%d, %d, %d)\n", rank, e_lid+_vef_gid_start_d(rank, 1), e_vid(e_lid, 0), e_vid(e_lid, 1), e_vid(e_lid, 2));
             }
+        });
+
+        // Create the new faces
+        Kokkos::deep_copy(face_counter, 0);
+        Kokkos::parallel_for("new internal faces", Kokkos::RangePolicy<execution_space>(0, new_faces),
+            KOKKOS_LAMBDA(int i) {
+            
+            int parent_face_lid = local_face_lids(i);
+            int parent_face_gid = parent_face_lid + _vef_gid_start_d(rank, 2);
+            int layer = f_layer(parent_face_lid) + 1;
+            int offset = Kokkos::atomic_fetch_add(&face_counter(), 4);
+            int new_face_lid;
+            int new_face_gid;
+
+            // Start with values similar to all new faces; can be looped
+            for (int j = offset; j < offset+4; j++)
+            {
+                new_face_lid = f_new_lid_start + j;
+                new_face_gid = new_face_lid + _vef_gid_start_d(rank, 2);
+
+                // Set new faces as children of parent face
+                f_cid(parent_face_lid, 0) = new_face_gid;
+
+                // Owning rank
+                f_owner(new_face_lid) = rank;
+
+                // Global ID
+                f_gid(new_face_lid) = new_face_gid;
+
+                // Layer
+                f_layer(new_face_lid) = layer;
+
+                // Children
+                for (int k = 0; k < 4; k++) f_cid(new_face_lid, k) = -1;
+
+                // Parent
+                f_pid(new_face_lid) = parent_face_gid;
+            }
+
+            /******************************
+             * Face 0 vertices and edges
+             *****************************/
+            f_cid(parent_face_lid, 0) = new_face_gid;
+
+            
         });
 
 

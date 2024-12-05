@@ -115,21 +115,21 @@ int main( int argc, char* argv[] )
 
     // if (rank == 0) numesh->printEdges(3, 0);
 
-    // numesh->printEdges(1, 105);
+    // numesh->printEdges(2, 105);
 
     // Rank 0 edges, face 30
-    numesh->printEdges(1, 45);
-    numesh->printEdges(1, 46);
+    // numesh->printEdges(1, 45);
+    // numesh->printEdges(1, 46);
 
-    // Rank 1 edges
-    numesh->printEdges(1, 98);
-    numesh->printEdges(1, 108);
-    numesh->printEdges(1, 109);
+    // // Rank 1 edges
+    // numesh->printEdges(1, 98);
+    // numesh->printEdges(1, 108);
+    // numesh->printEdges(1, 109);
 
-    // Rank 2 edges
-    numesh->printEdges(1, 119);
-    numesh->printEdges(1, 158);
-    numesh->printEdges(1, 159);
+    // // Rank 2 edges
+    // numesh->printEdges(1, 119);
+    // numesh->printEdges(1, 158);
+    // numesh->printEdges(1, 159);
 
     } // Scope guard
 
