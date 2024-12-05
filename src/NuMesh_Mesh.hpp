@@ -33,12 +33,11 @@
     #define E_LAYER 4
     #define E_OWNER 5
     #define F_CID 0
-    #define F_VIDS 1
-    #define F_EIDS 2
-    #define F_GID 3
-    #define F_PID 4
-    #define F_LAYER 5
-    #define F_OWNER 6
+    #define F_EIDS 1
+    #define F_GID 2
+    #define F_PID 3
+    #define F_LAYER 4
+    #define F_OWNER 5
 #endif
 
 //#include <NuMesh_Communicator.hpp>
@@ -130,7 +129,6 @@ class Mesh
                                             int,       // Owning rank
                                             >;
     using face_data = Cabana::MemberTypes<  int[4],    // Child face global IDs
-                                            int[3],    // Vertex global IDs that make up face
                                             int[3],    // Edge global IDs that make up face 
                                             int,       // Face global ID
                                             int,       // Parent face global ID 
@@ -185,7 +183,6 @@ class Mesh
         auto e_gid = Cabana::slice<E_GID>(_edges);
         auto e_owner = Cabana::slice<E_OWNER>(_edges);
 
-        auto f_vgids = Cabana::slice<F_VIDS>(_faces);
         auto f_egids = Cabana::slice<F_EIDS>(_faces);
         auto f_gid = Cabana::slice<F_GID>(_faces);
         auto f_parent = Cabana::slice<F_PID>(_faces);
@@ -219,7 +216,6 @@ class Mesh
             
             // Populate face 1 values
             f_lid = i*2;
-            f_vgids(f_lid, 0) = v_gid0; f_vgids(f_lid, 1) = v_gid1; f_vgids(f_lid, 2) = v_gid2;
             f_egids(f_lid, 0) = e_gid0; f_egids(f_lid, 1) = e_gid1; f_egids(f_lid, 2) = e_gid2;
             f_gid(f_lid) = f_lid + vef_gid_start_d(rank, 2);
             f_parent(f_lid) = -1;
@@ -249,7 +245,6 @@ class Mesh
 
             // Populate face 2 values
             f_lid = i*2+1;
-            f_vgids(f_lid, 0) = v_gid0; f_vgids(f_lid, 1) = v_gid1; f_vgids(f_lid, 2) = v_gid2;
             f_egids(f_lid, 0) = e_gid0; f_egids(f_lid, 1) = e_gid1; f_egids(f_lid, 2) = e_gid2;
             f_gid(f_lid) = f_lid + vef_gid_start_d(rank, 2);
             f_parent(f_lid) = -1;
@@ -918,15 +913,18 @@ class Mesh
         });
 
         // Update new vertex, edge, and face values
-        int new_vertices, new_edges, remote_edges_send, new_faces;
+        int new_vertices, new_edges, remote_edges_send, face_refinements;
         Kokkos::deep_copy(new_vertices, vert_counter);
         Kokkos::deep_copy(new_edges, edge_counter);
         Kokkos::deep_copy(remote_edges_send, remote_edge_counter);
-        Kokkos::deep_copy(new_faces, face_counter);
+        Kokkos::deep_copy(face_refinements, face_counter);
+
+        // printf("R%d old FGID space: %d to %d\n", rank, _vef_gid_start(_rank, 2), _vef_gid_start(_rank, 2)+_owned_faces);
+
 
         // Resize arrays
         int f_new_lid_start = _owned_faces;
-        _owned_faces += new_faces*4; // Each face refinement creates 4 new faces
+        _owned_faces += face_refinements*4; // Each face refinement creates 4 new faces
         _faces.resize(_owned_faces);
         int e_new_lid_start = _owned_edges;
         // Each face contributes 3 new edges; each vertex contributes 2
@@ -943,9 +941,10 @@ class Mesh
         Kokkos::deep_copy(vef_gid_start_old, _vef_gid_start);
         updateGlobalIDs();
 
-        // printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, new_faces);
+        // printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, face_refinements*4);
         // printf("R%d new VGID space: %d to %d\n", rank, _vef_gid_start(_rank, 0), _vef_gid_start(_rank, 0)+_owned_vertices);
         // printf("R%d new EGID space: %d to %d\n", rank, _vef_gid_start(_rank, 1), _vef_gid_start(_rank, 1)+_owned_edges);
+        // printf("R%d new FGID space: %d to %d\n", rank, _vef_gid_start(_rank, 2), _vef_gid_start(_rank, 2)+_owned_faces);
         // printFaces(1, 30);
         // printFaces(1, 31);
 
@@ -1150,7 +1149,6 @@ class Mesh
         // Face slices we need
         auto f_cid = Cabana::slice<F_CID>(_faces);
         auto f_gid = Cabana::slice<F_GID>(_faces);
-        auto f_vid = Cabana::slice<F_VIDS>(_faces);
         auto f_eid = Cabana::slice<F_EIDS>(_faces);
         auto f_pid = Cabana::slice<F_PID>(_faces);
         auto f_layer = Cabana::slice<F_LAYER>(_faces);
@@ -1161,17 +1159,17 @@ class Mesh
 
         // Populate the three new, internal edges for each face
         // local_face_lids(i) references face local IDs
-        Kokkos::parallel_for("new internal edges", Kokkos::RangePolicy<execution_space>(0, new_faces),
+        Kokkos::parallel_for("new internal edges", Kokkos::RangePolicy<execution_space>(0, face_refinements),
             KOKKOS_LAMBDA(int i) {
             
             int face_id = local_face_lids(i);
             int e_lid;
             // Set general values for each of the three new edges
             int offset = Kokkos::atomic_fetch_add(&edge_counter(), 3);
-            printf("R%d face %d (edges %d, %d, %d), adding edges %d, %d, %d\n", rank,
-                face_id+_vef_gid_start_d(rank, 2),
-                f_eid(face_id, 0), f_eid(face_id, 1), f_eid(face_id, 2),
-                e_new_lid_start+offset, e_new_lid_start+offset+1, e_new_lid_start+offset+2);
+            // printf("R%d face %d (edges %d, %d, %d), adding edges %d, %d, %d\n", rank,
+            //     face_id+_vef_gid_start_d(rank, 2),
+            //     f_eid(face_id, 0), f_eid(face_id, 1), f_eid(face_id, 2),
+            //     e_new_lid_start+offset, e_new_lid_start+offset+1, e_new_lid_start+offset+2);
             for (int j = offset; j < offset+3; j++)
             {
                 e_lid = e_new_lid_start + j;
@@ -1214,9 +1212,9 @@ class Mesh
                     }
                     
                 }
-                printf("R%d (%d, %d, %d) -> (%d, %d, %d)\n", rank,
-                    f_eid(face_id, 0), f_eid(face_id, 1), f_eid(face_id, 2),
-                    elid[0], elid[1], elid[2]);
+                // printf("R%d (%d, %d, %d) -> (%d, %d, %d)\n", rank,
+                //     f_eid(face_id, 0), f_eid(face_id, 1), f_eid(face_id, 2),
+                //     elid[0], elid[1], elid[2]);
                 
                 /**
                  * Set vertices (nv0, nv1, nv2):
@@ -1238,13 +1236,15 @@ class Mesh
 
                 // Middle vertex not set until new edges are further refined
                 e_vid(e_lid, 2) = -1;
-                printf("R%d: ne%d: (%d, %d, %d)\n", rank, e_lid+_vef_gid_start_d(rank, 1), e_vid(e_lid, 0), e_vid(e_lid, 1), e_vid(e_lid, 2));
+                // printf("R%d: ne%d: (%d, %d, %d)\n", rank, e_lid+_vef_gid_start_d(rank, 1), e_vid(e_lid, 0), e_vid(e_lid, 1), e_vid(e_lid, 2));
             }
         });
 
         // Create the new faces
+        // printFaces(1, 31);
+        // printf("New lid start: %d\n", f_new_lid_start);
         Kokkos::deep_copy(face_counter, 0);
-        Kokkos::parallel_for("new internal faces", Kokkos::RangePolicy<execution_space>(0, new_faces),
+        Kokkos::parallel_for("new internal faces", Kokkos::RangePolicy<execution_space>(0, face_refinements),
             KOKKOS_LAMBDA(int i) {
             
             int parent_face_lid = local_face_lids(i);
@@ -1261,7 +1261,7 @@ class Mesh
                 new_face_gid = new_face_lid + _vef_gid_start_d(rank, 2);
 
                 // Set new faces as children of parent face
-                f_cid(parent_face_lid, 0) = new_face_gid;
+                f_cid(parent_face_lid, j-offset) = new_face_gid;
 
                 // Owning rank
                 f_owner(new_face_lid) = rank;
@@ -1279,14 +1279,44 @@ class Mesh
                 f_pid(new_face_lid) = parent_face_gid;
             }
 
+            /**
+             * Edges, in general:
+             *  Edge 0: V0 -> V1
+             *  Edge 1: V1 -> V2
+             *  Edge 2: V2 -> V0
+             */
+
             /******************************
-             * Face 0 vertices and edges
+             * Face 0 verts:
+             *  V0: Parent face e0, v0
+             *  V1: Parent face e0, middle vert
+             *  V2: Parent face e2, middle vert
              *****************************/
-            f_cid(parent_face_lid, 0) = new_face_gid;
+
+            /******************************
+             * Face 1 verts:
+             *  V0: Parent face e0, middle vert
+             *  V1: Parent face e1, middle vert
+             *  V2: Parent face e0, v1
+             *****************************/
+
+            /******************************
+             * Face 2 verts:
+             *  V0: Parent face e2, middle vert
+             *  V1: Parent face e1, middle vert
+             *  V2: Parent face e2, v1
+             *****************************/
+
+            /******************************
+             * Face 3 verts:
+             *  V0: Parent face e0, middle vert
+             *  V1: Parent face e1, middle vert
+             *  V2: Parent face e2, middle vert
+             *****************************/
 
             
         });
-
+        // printFaces(1, 31);
 
     }
 
@@ -1434,7 +1464,6 @@ class Mesh
         // Update Faces
         auto f_gid = Cabana::slice<F_GID>(_faces);
         auto f_cid = Cabana::slice<F_CID>(_faces);
-        auto f_vid = Cabana::slice<F_VIDS>(_faces);
         auto f_eid = Cabana::slice<F_EIDS>(_faces);
         auto f_pid = Cabana::slice<F_PID>(_faces);
         Kokkos::parallel_for("update edge GIDs", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
@@ -1458,19 +1487,6 @@ class Mesh
                     if (f_cid(i, j) >= old_vef_start_d(r, 2))
                     {
                         f_cid(i, j) += vef_gid_start_d(r, 2) - old_vef_start_d(r, 2);
-                        break;
-                    }
-                }
-            }
-
-            // Vertex association GIDs
-            for (int j = 0; j < 3; j++)
-            {
-                for (int r = comm_size-1; r >= 0; r--)
-                {
-                    if (f_vid(i, j) >= old_vef_start_d(r, 0))
-                    {
-                        f_vid(i, j) += vef_gid_start_d(r, 0) - old_vef_start_d(r, 0);
                         break;
                     }
                 }
@@ -1546,6 +1562,7 @@ class Mesh
             Kokkos::parallel_for("print edges", Kokkos::RangePolicy<execution_space>(0, 1),
             KOKKOS_LAMBDA(int x) {
             
+            if (x == 0) {
             int elid = egid - e_gid_start;
             if ((elid >= 0) && (elid < owned_edges))
             {
@@ -1556,6 +1573,7 @@ class Mesh
                 e_children(i, 0), e_children(i, 1),
                 e_parent(i),
                 e_owner(i), rank);
+            }
             }
             });
             return;
@@ -1581,23 +1599,23 @@ class Mesh
      */
     void printFaces(int opt, int fgid)
     {
-        auto f_vgids = Cabana::slice<F_VIDS>(_faces);
         auto f_egids = Cabana::slice<F_EIDS>(_faces);
         auto f_gid = Cabana::slice<F_GID>(_faces);
         auto f_parent = Cabana::slice<F_PID>(_faces);
         auto f_child = Cabana::slice<F_CID>(_faces);
         auto f_owner = Cabana::slice<F_OWNER>(_faces);
+        auto f_layer = Cabana::slice<F_LAYER>(_faces);
         if (opt == 0)
         {
             // Print all faces
             for (int i = 0; i < (int) _faces.size(); i++)
             {
-                printf("%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), %d\n",
+                printf("%d, e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), L%d, %d\n",
                     f_gid(i),
-                    f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2),
                     f_egids(i, 0), f_egids(i, 1), f_egids(i, 2),
                     f_child(i, 0), f_child(i, 1), f_child(i, 2), f_child(i, 3),
                     f_parent(i),
+                    f_layer(i),
                     f_owner(i));
             }
         }
@@ -1608,12 +1626,12 @@ class Mesh
             if ((flid >= 0) && (flid < _owned_faces))
             {
                 int i = flid;
-                printf("R%d: f%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), %d\n", _rank,
-                    f_gid(fgid),
-                    f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2),
+                printf("R%d: f%d, e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), L%d, %d\n", _rank,
+                    f_gid(i),
                     f_egids(i, 0), f_egids(i, 1), f_egids(i, 2),
                     f_child(i, 0), f_child(i, 1), f_child(i, 2), f_child(i, 3),
                     f_parent(i),
+                    f_layer(i),
                     f_owner(i));
             }
         }
