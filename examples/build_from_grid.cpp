@@ -99,18 +99,31 @@ int main( int argc, char* argv[] )
     });
 
     numesh->refine(fids);
+
+    // Second refine
+    size = 1;
+    Kokkos::resize(fids, 1);
+    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, size),
+        KOKKOS_LAMBDA(int i) {
+        
+        if (i == 0) fids(i) = 37;
+
+    });
+    numesh->refine(fids);
+
+
     //numesh->_refine(13);
     //numesh->_refine(22);
-    // numesh->printEdges(2, 0);
+    numesh->printEdges(2, 0);
     // numesh->printFaces(0, 30);
     //numesh->printVertices();
     //printf("**********\n");
     numesh->printFaces(1, 30);
     numesh->printFaces(1, 31);
-    for (int i = 32; i < 40; i++)
-    {
-        numesh->printFaces(1, i);
-    }
+    // for (int i = 32; i < 44; i++)
+    // {
+    //     numesh->printFaces(1, i);
+    // }
     // numesh->printEdges(1, 45);
     // numesh->printEdges(1, 105);
     // numesh->printEdges(1, 144);
@@ -124,17 +137,17 @@ int main( int argc, char* argv[] )
     // numesh->printEdges(2, 105);
 
     // Rank 0 edges, face 30
-    numesh->printEdges(1, 45);
-    numesh->printEdges(1, 46);
-    numesh->printEdges(1, 47);
+    // numesh->printEdges(1, 45);
+    // numesh->printEdges(1, 46);
+    // numesh->printEdges(1, 47);
 
     // Rank 1 edges
-    numesh->printEdges(1, 98);
+    // numesh->printEdges(1, 98);
     // numesh->printEdges(1, 108);
     // numesh->printEdges(1, 109);
 
     // Rank 2 edges
-    numesh->printEdges(1, 119);
+    // numesh->printEdges(1, 119);
     // numesh->printEdges(1, 158);
     // numesh->printEdges(1, 159);
 

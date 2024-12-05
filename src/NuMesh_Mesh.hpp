@@ -59,20 +59,21 @@ auto vectorToArray( std::vector<Scalar> vector )
 }
 
 /**
- * Get the local ID of a ghosted edge given its global ID
- * Performs binary search on the ghosted GIDs
+ * Get the local ID of a ghosted vert/edge/face given its global ID
+ * Performs binary search on the GIDs between range start and end.
  * Assumes the AoSoA is sorted for GID
  * Returns -1 if the global ID is not ghosted
  */
 template <class Slice_t>
 KOKKOS_INLINE_FUNCTION
-int get_ghost_lid(Slice_t& slice, int gid, int own, int ghost)
+int get_lid(Slice_t& slice, int gid, int start, int end)
 {
     // Ensure valid range
-    if (own > own + ghost - 1)
+    if (start >= end)
         return -1; // Not found
 
-    int pivot = own + ghost / 2;
+    // Correct pivot calculation
+    int pivot = start + (end - start) / 2;
 
     // Value at the pivot index
     int val = slice(pivot);
@@ -84,14 +85,40 @@ int get_ghost_lid(Slice_t& slice, int gid, int own, int ghost)
     }
     else if (val < gid)
     {
-        // Search in the upper half: range is (pivot + 1, own + ghost)
-        return get_ghost_lid(slice, gid, own+pivot + 1, own+ghost);
+        // Search in the upper half: range is [pivot + 1, end)
+        return get_lid(slice, gid, pivot + 1, end);
     }
     else
     {
-        // Search in the lower half: range is (own, pivot)
-        return get_ghost_lid(slice, gid, own, own-pivot+ghost);
+        // Search in the lower half: range is [start, pivot)
+        return get_lid(slice, gid, start, pivot);
     }
+}
+
+/**
+ * Find the local ID of an edge given its endpoints and
+ * a local ID range to search in. Performs a linear search
+ * over the domain.
+ * 
+ * XXX - can this function be optimized?
+ * 
+ * Returns the local ID, or -1 if not found
+ */
+template <class Slice_t>
+KOKKOS_INLINE_FUNCTION
+int find_edge(Slice_t& edge_vert_slice, int start, int end, int v0, int v1)
+{
+    for (int i = start; i < end; i++)
+    {
+        int iv0 = edge_vert_slice(i, 0);
+        int iv1 = edge_vert_slice(i, 1);
+        // printf("i%d: (%d, %d), actual (%d, %d)\n", i, iv0, iv1, v0, v1);
+        if ( ((iv0 == v0) && (iv1 == v1)) || ((iv0 == v1) && (iv1 == v0)) )
+        {
+            return i;
+        }
+    }
+    return -1;
 }
 
 //---------------------------------------------------------------------------//
@@ -850,6 +877,8 @@ class Mesh
                 }
             }
         });
+        Kokkos::fence();
+
         // How many remote edges we need refined
         int remote_edges_refined;
         Kokkos::deep_copy(remote_edges_refined, remote_edge_counter);
@@ -1203,7 +1232,7 @@ class Mesh
                     if ((lid < 0) || (lid >= oe))
                     {
                         // Ghost edge
-                        elid[k] = get_ghost_lid(e_gid, egid, oe, ge);
+                        elid[k] = get_lid(e_gid, egid, oe, oe+ge);
                     }
                     else
                     {
@@ -1236,7 +1265,7 @@ class Mesh
 
                 // Middle vertex not set until new edges are further refined
                 e_vid(e_lid, 2) = -1;
-                // printf("R%d: ne%d: (%d, %d, %d)\n", rank, e_lid+_vef_gid_start_d(rank, 1), e_vid(e_lid, 0), e_vid(e_lid, 1), e_vid(e_lid, 2));
+                printf("R%d: ne%d: (%d, %d, %d)\n", rank, e_lid+_vef_gid_start_d(rank, 1), e_vid(e_lid, 0), e_vid(e_lid, 1), e_vid(e_lid, 2));
             }
         });
 
@@ -1279,12 +1308,14 @@ class Mesh
                 f_pid(new_face_lid) = parent_face_gid;
             }
 
-            /**
+            /*****************************
              * Edges, in general:
              *  Edge 0: V0 -> V1
              *  Edge 1: V1 -> V2
              *  Edge 2: V2 -> V0
-             */
+             ****************************/
+            // Vertex global IDs and edge local IDs
+            int vg0, vg1, vg2, el0, el1, el2;
 
             /******************************
              * Face 0 verts:
@@ -1292,6 +1323,16 @@ class Mesh
              *  V1: Parent face e0, middle vert
              *  V2: Parent face e2, middle vert
              *****************************/
+            new_face_lid = f_new_lid_start + offset;
+            el0 = get_lid(e_gid, f_eid(parent_face_lid, 0), 0, oe+ge);
+            vg0 = e_vid(el0, 0);
+            vg1 = e_vid(el0, 2);
+            el2 = get_lid(e_gid, f_eid(parent_face_lid, 2), 0, oe+ge);
+            vg2 = e_vid(el2, 2);
+            el0 = find_edge(e_vid, e_new_lid_start, oe+ge, vg0, vg1);
+            el1 = find_edge(e_vid, e_new_lid_start, oe+ge, vg1, vg2);
+            el2 = find_edge(e_vid, e_new_lid_start, oe+ge, vg2, vg0);
+            f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
 
             /******************************
              * Face 1 verts:
@@ -1299,6 +1340,16 @@ class Mesh
              *  V1: Parent face e1, middle vert
              *  V2: Parent face e0, v1
              *****************************/
+            new_face_lid = f_new_lid_start + offset + 1;
+            el0 = get_lid(e_gid, f_eid(parent_face_lid, 0), 0, oe+ge);
+            vg0 = e_vid(el0, 2);
+            el1 = get_lid(e_gid, f_eid(parent_face_lid, 1), 0, oe+ge);
+            vg1 = e_vid(el1, 2);
+            vg2 = e_vid(el0, 1);
+            el0 = find_edge(e_vid, e_new_lid_start, oe+ge, vg0, vg1);
+            el1 = find_edge(e_vid, e_new_lid_start, oe+ge, vg1, vg2);
+            el2 = find_edge(e_vid, e_new_lid_start, oe+ge, vg2, vg0);
+            f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
 
             /******************************
              * Face 2 verts:
@@ -1306,6 +1357,18 @@ class Mesh
              *  V1: Parent face e1, middle vert
              *  V2: Parent face e2, v1
              *****************************/
+            new_face_lid = f_new_lid_start + offset + 2;
+            el2 = get_lid(e_gid, f_eid(parent_face_lid, 2), 0, oe+ge);
+            vg0 = e_vid(el2, 2);
+            el1 = get_lid(e_gid, f_eid(parent_face_lid, 1), 0, oe+ge);
+            vg1 = e_vid(el1, 2);
+            vg2 = e_vid(el2, 1);
+            // printf("Verts: %d, %d, %d\n", vg0, vg1, vg2);
+            el0 = find_edge(e_vid, e_new_lid_start, oe+ge, vg0, vg1);
+            el1 = find_edge(e_vid, e_new_lid_start, oe+ge, vg1, vg2);
+            el2 = find_edge(e_vid, e_new_lid_start, oe+ge, vg2, vg0);
+            f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
+
 
             /******************************
              * Face 3 verts:
@@ -1313,7 +1376,18 @@ class Mesh
              *  V1: Parent face e1, middle vert
              *  V2: Parent face e2, middle vert
              *****************************/
-
+            new_face_lid = f_new_lid_start + offset + 3;
+            el0 = get_lid(e_gid, f_eid(parent_face_lid, 0), 0, oe+ge);
+            vg0 = e_vid(el0, 2);
+            el1 = get_lid(e_gid, f_eid(parent_face_lid, 1), 0, oe+ge);
+            vg1 = e_vid(el1, 2);
+            el2 = get_lid(e_gid, f_eid(parent_face_lid, 2), 0, oe+ge);
+            vg2 = e_vid(el2, 2);
+            // printf("Verts: %d, %d, %d\n", vg0, vg1, vg2);
+            el0 = find_edge(e_vid, e_new_lid_start, oe+ge, vg0, vg1);
+            el1 = find_edge(e_vid, e_new_lid_start, oe+ge, vg1, vg2);
+            el2 = find_edge(e_vid, e_new_lid_start, oe+ge, vg2, vg0);
+            f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
             
         });
         // printFaces(1, 31);
