@@ -696,38 +696,6 @@ class Mesh
     }
         
     /**
-     * Gathers vertices/edges/faces (vef) depending on the Cabana::Halo type
-     * Sorts the vef AoSoA by global ID so make searching for
-     * ghost values more efficient. Local IDs of owned vef are
-     * unaffected because the global IDs are already in ascending order.
-     */
-    template <class Halo_t, class AoSoA_t>
-    void gather(Halo_t& halo, AoSoA_t& aosoa)
-    {
-        Cabana::gather(halo, aosoa);
-
-        // Sort the AoSoA by global ID
-        // The key slice differs depending on the AoSoA type
-        // if constexpr (std::is_same_v<AoSoA_t, v_array_type>)
-        // {
-        //     auto keys = Cabana::slice<V_GID>( aosoa );
-        //     auto sort_data = Cabana::sortByKey( keys );
-        //     Cabana::permute( sort_data, aosoa );
-        // }
-        // else if constexpr (std::is_same_v<AoSoA_t, e_array_type>)
-        // {
-        //     auto keys = Cabana::slice<E_GID>( aosoa );
-        //     auto sort_data = Cabana::sortByKey( keys );
-        //     Cabana::permute( sort_data, aosoa );
-        // }
-        // else if constexpr (std::is_same_v<AoSoA_t, f_array_type>)
-        // {
-        //     auto keys = Cabana::slice<F_GID>( aosoa );
-        //     auto sort_data = Cabana::sortByKey( keys );
-        //     Cabana::permute( sort_data, aosoa );
-        // }
-    }
-    /**
      * Part one for refining a face. Splits all edges on faces
      * marked to be refined and adds new interior edges for
      * faces to be refined.
@@ -979,13 +947,13 @@ class Mesh
         // printf("R%d new FGID space: %d to %d\n", rank, _vef_gid_start(_rank, 2), _vef_gid_start(_rank, 2)+_owned_faces);
         // printFaces(1, 30);
         // printFaces(1, 31);
-
+        
         // Copy new _vef_gid_start to device
         Kokkos::View<int*[3], MemorySpace> _vef_gid_start_d1("_vef_gid_start_d", _comm_size);
         auto tmp1 = Kokkos::create_mirror_view(_vef_gid_start_d1);
         Kokkos::deep_copy(tmp1, _vef_gid_start);
         Kokkos::deep_copy(_vef_gid_start_d1, tmp1);
-
+        
         // Vertex slices
         auto v_gid = Cabana::slice<V_GID>(_vertices);
         auto v_rank = Cabana::slice<V_OWNER>(_vertices);
@@ -1070,7 +1038,7 @@ class Mesh
             e_vid(i, 2) = new_vgid;
             // printf("R%d: pe%d v(%d, %d, %d)\n", rank, i+e_gid_start, e_vid(i, 0), e_vid(i, 1), e_vid(i, 2));
         });
-
+//here
         /**
          * Send the modified edges (parent and two children) back to any process that
          * originally requested them
@@ -1093,7 +1061,7 @@ class Mesh
             allowed to send to itself. The input is expected to be a Kokkos view or
             Cabana slice in the same memory space as the communication plan.
          */
-        counter_vec element_export_ranks1("element_export_ranks1", total_num_import*3);
+        Kokkos::View<int*, memory_space> element_export_ranks1("element_export_ranks1", total_num_import*3);
 
         Kokkos::parallel_for("populate element_export_ids", Kokkos::RangePolicy<execution_space>(0, total_num_import),
             KOKKOS_LAMBDA(int i) {
@@ -1171,14 +1139,25 @@ class Mesh
         // printf("R%d: neighbors: (size %d): %d, %d, %d, %d\n", rank, neighbor_ranks.size(), neighbor_ranks[0], neighbor_ranks[1],neighbor_ranks[2],neighbor_ranks[3]);
         // printf("R%d: AoSoA size: %d, owned: %d, ghost: %d eids: %d, eranks: %d\n", _rank,
         //     (int)_edges.size(), _owned_edges, _ghost_edges, element_export_ids.extent(0), element_export_ranks1.extent(0));
-        
+        // Kokkos::View<int*, memory_space> exportids("exportids", 3);
+        // Kokkos::View<int*, memory_space> rankids("rankids", 3);
+        // Kokkos::parallel_for("populate element_export_ids", Kokkos::RangePolicy<execution_space>(0, total_num_import),
+        //     KOKKOS_LAMBDA(int i) {
+            
+        //     exportids(i) = 1;
+        //     rankids(i) = rank;
+
+        // });
+
         auto edge_halo = Cabana::Halo<memory_space>(_comm, _owned_edges, element_export_ids,
             element_export_ranks1, neighbor_ranks);
 
         // printf("R%d halo local/ghost: %d, %d, import/export: %d, %d\n", _rank,
         //     edge_halo.numLocal(), edge_halo.numGhost(),
         //     edge_halo.totalNumImport(), edge_halo.totalNumExport());
-        gather(edge_halo, _edges);
+        
+        // Cabana::gather(edge_halo, _edges);
+
         //Cabana::gather(edge_halo, _edges);
 
         // Sort the edge AoSoA by global ID
