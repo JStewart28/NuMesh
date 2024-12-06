@@ -743,7 +743,7 @@ class Mesh
     {        
         const int rank = _rank, comm_size = _comm_size;
         const int num_face_refinements = fgids.extent(0);
-
+        
         /********************************************************
          * Phase 1.0: Collect all edges that need to be refined,
          * then refine them in parallel
@@ -882,7 +882,7 @@ class Mesh
         // How many remote edges we need refined
         int remote_edges_refined;
         Kokkos::deep_copy(remote_edges_refined, remote_edge_counter);
-
+        
         /********************************************************************************
          * Communicate remote edges that must be refined. We know how we are sending to
          * but not who we are receiving from.
@@ -966,10 +966,13 @@ class Mesh
 
         // Update global IDs before making edits, but store the old global IDs
         // so we know how to fix our ghosted edge IDs
-        Kokkos::View<int*[3], Kokkos::HostSpace> vef_gid_start_old("vef_gid_start_old", _comm_size);
-        Kokkos::deep_copy(vef_gid_start_old, _vef_gid_start);
+        
+        Kokkos::View<int*[3], memory_space> vef_gid_start_old("vef_gid_start_old", _comm_size);
+        auto tmp = Kokkos::create_mirror_view(vef_gid_start_old);
+        Kokkos::deep_copy(tmp, _vef_gid_start);
+        Kokkos::deep_copy(vef_gid_start_old, tmp);
         updateGlobalIDs();
-
+        
         // printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, face_refinements*4);
         // printf("R%d new VGID space: %d to %d\n", rank, _vef_gid_start(_rank, 0), _vef_gid_start(_rank, 0)+_owned_vertices);
         // printf("R%d new EGID space: %d to %d\n", rank, _vef_gid_start(_rank, 1), _vef_gid_start(_rank, 1)+_owned_edges);
@@ -1130,12 +1133,13 @@ class Mesh
             description of the topology of the point-to-point communication
             plan. The elements in this list must be unique.
          */
+       
         // Copy ranks received from slice to host memory
         Cabana::AoSoA<Cabana::MemberTypes<int>, Kokkos::HostSpace, 4> recv_ranks_host("recv_ranks_host", total_num_import);
         auto recv_ranks_host_slice = Cabana::slice<0>(recv_ranks_host);
         Cabana::deep_copy(recv_ranks_host_slice, remote_edges_rank_slice);
         std::vector<int> neighbor_ranks = {_rank};
-
+        
         // Add ranks we received from
         for (int i = 0; i < total_num_import; i++)
         {
@@ -1146,11 +1150,13 @@ class Mesh
                 //printf("R%d adding neighbor %d\n", rank, to_rank);
             }
         }
+       
         // Add ranks we sent to
+        auto element_export_ranks_host = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), element_export_ranks);
         for (int i = 0; i < remote_edges_refined; i++)
         {
             // Add ranks we sent to
-            int to_rank = element_export_ranks(i);
+            int to_rank = element_export_ranks_host(i);
             //printf("R%d send to: %d\n", rank, to_rank);
             if ((to_rank != -1) && (std::find(neighbor_ranks.begin(), neighbor_ranks.end(), to_rank) == neighbor_ranks.end()))
             {
@@ -1683,6 +1689,7 @@ class Mesh
         auto f_child = Cabana::slice<F_CID>(_faces);
         auto f_owner = Cabana::slice<F_OWNER>(_faces);
         auto f_layer = Cabana::slice<F_LAYER>(_faces);
+        printf("R%d in print Faces size: %d\n", _rank, _faces.size());
         if (opt == 0)
         {
             // Print all faces
