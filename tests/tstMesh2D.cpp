@@ -19,7 +19,10 @@ TYPED_TEST(Mesh2DTest, test_refinement)
     
     this->init(mesh_size, 1);
 
-    int fin[10] = {30, 31, -1, -1, -1, -1, -1, -1, -1, -1};
+    Kokkos::View<int[2], Kokkos::HostSpace> fin("fin");
+    fin(0) = 30; 
+    fin(1) = 31;
+
 
     this->verifyRefinement(fin);
     

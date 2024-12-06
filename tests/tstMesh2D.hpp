@@ -38,7 +38,9 @@ class Mesh2DTest : public ::testing::Test
   protected:
     int rank_, comm_size_;
     std::shared_ptr<numesh_t> numesh = NuMesh::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
+    v_array_type vertices;
     e_array_type edges;
+    f_array_type faces;
 
     void SetUp() override
     {
@@ -72,64 +74,48 @@ class Mesh2DTest : public ::testing::Test
         this->numesh->initializeFromArray(*array);
     }
 
-    void refineEdges(int fin[10])
-    {
-        int size = 10;
-        int counter = 0;
-        int fin_cp[10];
-        for (int i = 0; i < size; i++)
-        {
-            fin_cp[i] = fin[i];
-            if (fin_cp[i] != -1) counter++;
-        }
-
-        Kokkos::View<int*, MemorySpace> fids("fids", counter);
-        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<ExecutionSpace>(0, size),
-            KOKKOS_LAMBDA(int i) {
-            
-            if (fin_cp[i] == -1) return;
-                
-            if (i == 0) fids(i) = fin_cp[i];
-                
-            fids(i) = fin_cp[i];
-
-        });
-        numesh->refine(fids);
-    }   
-
     /**
-     * Verify the faces in fin were refined corrrectly
+     * Gather the entire mesh to rank 0 and copy to host memory
      */
-    void verifyRefinement(int fin[10])
+    void gatherAndCopyToHost()
     {
-        this->refineEdges(fin);
+        int rank = rank_;
 
-        auto vertices = numesh->vertices();
-        auto edges = numesh->edges();
-        auto faces = numesh->faces();
+        auto vertices_ptr = numesh->vertices();
+        auto edges_ptr = numesh->edges();
+        auto faces_ptr = numesh->faces();
 
          // Local counts for each rank
         int local_vef_count[3] = {numesh->count(NuMesh::Own(), NuMesh::Vertex()),
                                 numesh->count(NuMesh::Own(), NuMesh::Edge()),
                                 numesh->count(NuMesh::Own(), NuMesh::Face())};
-        
+        return;
         // Get vertices
         Kokkos::View<int*, MemorySpace> element_export_ids("element_export_ids", local_vef_count[0]);
         Kokkos::View<int*, MemorySpace> element_export_ranks("element_export_ranks", local_vef_count[0]);
         Kokkos::parallel_for("init_halo_data", Kokkos::RangePolicy<ExecutionSpace>(0, local_vef_count[0]),
             KOKKOS_LAMBDA(int i) {
             
-            element_export_ids(i) = i;
-            element_export_ranks(i) = 0;
+            if (rank == 0)
+            {
+                element_export_ids(i) = 0;
+                element_export_ranks(i) = -1;
+            }
+            else
+            {
+                element_export_ids(i) = i;
+                element_export_ranks(i) = 0;
+            }
 
         });
 
         auto vert_halo = Cabana::Halo<MemorySpace>(MPI_COMM_WORLD, local_vef_count[0], element_export_ids,
             element_export_ranks);
 
-        vertices.resize(vert_halo.numLocal() + vert_halo.numGhost() );
+        vertices_ptr.resize(vert_halo.numLocal() + vert_halo.numGhost());
+        vertices.resize(vert_halo.numLocal() + vert_halo.numGhost());
 
-        Cabana::gather(vert_halo, vertices);
+        Cabana::gather(vert_halo, vertices_ptr);
 
         // Get edges
         Kokkos::resize(element_export_ids, local_vef_count[1]);
@@ -137,17 +123,26 @@ class Mesh2DTest : public ::testing::Test
         Kokkos::parallel_for("init_halo_data", Kokkos::RangePolicy<ExecutionSpace>(0, local_vef_count[1]),
             KOKKOS_LAMBDA(int i) {
             
-            element_export_ids(i) = i;
-            element_export_ranks(i) = 0;
+            if (rank == 0)
+            {
+                element_export_ids(i) = 0;
+                element_export_ranks(i) = -1;
+            }
+            else
+            {
+                element_export_ids(i) = i;
+                element_export_ranks(i) = 0;
+            }
 
         });
 
         auto edge_halo = Cabana::Halo<MemorySpace>(MPI_COMM_WORLD, local_vef_count[1], element_export_ids,
             element_export_ranks);
 
-        edges.resize(edge_halo.numLocal() + edge_halo.numGhost() );
+        edges_ptr.resize(edge_halo.numLocal() + edge_halo.numGhost());
+        edges.resize(edge_halo.numLocal() + edge_halo.numGhost());
 
-        Cabana::gather(edge_halo, edges);
+        Cabana::gather(edge_halo, edges_ptr);
 
         // Get Faces
         Kokkos::resize(element_export_ids, local_vef_count[2]);
@@ -155,22 +150,49 @@ class Mesh2DTest : public ::testing::Test
         Kokkos::parallel_for("init_halo_data", Kokkos::RangePolicy<ExecutionSpace>(0, local_vef_count[2]),
             KOKKOS_LAMBDA(int i) {
             
-            element_export_ids(i) = i;
-            element_export_ranks(i) = 0;
+            if (rank == 0)
+            {
+                element_export_ids(i) = 0;
+                element_export_ranks(i) = -1;
+            }
+            else
+            {
+                element_export_ids(i) = i;
+                element_export_ranks(i) = 0;
+            }
 
         });
 
         auto face_halo = Cabana::Halo<MemorySpace>(MPI_COMM_WORLD, local_vef_count[2], element_export_ids,
             element_export_ranks);
 
-        faces.resize(face_halo.numLocal() + face_halo.numGhost() );
+        faces_ptr.resize(face_halo.numLocal() + face_halo.numGhost());
+        faces.resize(face_halo.numLocal() + face_halo.numGhost());
 
-        Cabana::gather(face_halo, faces);
+        Cabana::gather(face_halo, faces_ptr);
 
-        if (rank_ == 0)
-        {
-            numesh->printFaces(0, 0);
-        }
+        // Copy data to host
+        // if (rank == 0)
+        // {
+        //     Cabana::deep_copy(faces, faces_ptr);
+        //     Cabana::deep_copy(edges, edges_ptr);
+        //     Cabana::deep_copy(vertices, vertices_ptr);
+        // }
+
+    }
+
+    /**
+     * Verify the faces in fin were refined corrrectly
+     */
+    template <class HostView_t>
+    void verifyRefinement(HostView_t fids)
+    {
+        int size = fids.extent(0);
+        Kokkos::View<int*, MemorySpace> fids_d("fids_d", size);
+        Kokkos::deep_copy(fids_d, fids);
+        numesh->refine(fids_d);
+
+        //gatherAndCopyToHost();
     }
 };
 
