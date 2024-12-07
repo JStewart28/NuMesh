@@ -101,15 +101,15 @@ int main( int argc, char* argv[] )
     numesh->refine(fids);
 
     // Second refine
-    size = 1;
-    Kokkos::resize(fids, 1);
-    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, size),
-        KOKKOS_LAMBDA(int i) {
+    // size = 1;
+    // Kokkos::resize(fids, 1);
+    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, size),
+    //     KOKKOS_LAMBDA(int i) {
         
-        if (i == 0) fids(i) = 37;
+    //     if (i == 0) fids(i) = 37;
 
-    });
-    numesh->refine(fids);
+    // });
+    // numesh->refine(fids);
 
 
     //numesh->_refine(13);
