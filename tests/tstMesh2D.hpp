@@ -89,7 +89,7 @@ class Mesh2DTest : public ::testing::Test
         int local_vef_count[3] = {numesh->count(NuMesh::Own(), NuMesh::Vertex()),
                                 numesh->count(NuMesh::Own(), NuMesh::Edge()),
                                 numesh->count(NuMesh::Own(), NuMesh::Face())};
-        return;
+
         // Get vertices
         Kokkos::View<int*, MemorySpace> element_export_ids("element_export_ids", local_vef_count[0]);
         Kokkos::View<int*, MemorySpace> element_export_ranks("element_export_ranks", local_vef_count[0]);
@@ -172,12 +172,12 @@ class Mesh2DTest : public ::testing::Test
         Cabana::gather(face_halo, faces_ptr);
 
         // Copy data to host
-        // if (rank == 0)
-        // {
-        //     Cabana::deep_copy(faces, faces_ptr);
-        //     Cabana::deep_copy(edges, edges_ptr);
-        //     Cabana::deep_copy(vertices, vertices_ptr);
-        // }
+        if (rank == 0)
+        {
+            Cabana::deep_copy(faces, faces_ptr);
+            Cabana::deep_copy(edges, edges_ptr);
+            Cabana::deep_copy(vertices, vertices_ptr);
+        }
 
     }
 
@@ -192,7 +192,7 @@ class Mesh2DTest : public ::testing::Test
         Kokkos::deep_copy(fids_d, fids);
         numesh->refine(fids_d);
 
-        //gatherAndCopyToHost();
+        gatherAndCopyToHost();
     }
 };
 
