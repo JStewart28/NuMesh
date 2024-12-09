@@ -984,7 +984,7 @@ class Mesh
         auto e_pid = Cabana::slice<E_PID>(_edges);
         auto e_layer = Cabana::slice<E_LAYER>(_edges);
 
-        // Step 1: Refine existing  edges
+        // Step 1: Refine existing edges
         Kokkos::deep_copy(edge_counter, 0);
         Kokkos::parallel_for("refine_edges", Kokkos::RangePolicy<execution_space>(0, e_new_lid_start),
             KOKKOS_LAMBDA(int i) {
@@ -1236,6 +1236,14 @@ class Mesh
                 // printf("R%d: ne%d: (%d, %d, %d)\n", rank, e_lid+_vef_gid_start_d(rank, 1), e_vid(e_lid, 0), e_vid(e_lid, 1), e_vid(e_lid, 2));
             }
         });
+
+        /**
+         * Now that all edges are created, sort them by GID so we can
+         * binary search them to find LIDs given GIDs
+         */
+        auto keys = Cabana::slice<E_GID>( _edges );
+        auto sort_data = Cabana::sortByKey( keys );
+        Cabana::permute( sort_data, _edges );
         
         // Create the new faces
         // printFaces(1, 31);

@@ -15,7 +15,7 @@ TYPED_TEST_SUITE(Mesh2DTest, DeviceTypes);
 
 TYPED_TEST(Mesh2DTest, test_refinement)
 {
-    int mesh_size = 8;
+    int mesh_size = this->comm_size_ * 2;
     
     this->init(mesh_size, 1);
 

@@ -114,7 +114,7 @@ int main( int argc, char* argv[] )
 
     //numesh->_refine(13);
     //numesh->_refine(22);
-    //numesh->printEdges(2, 0);
+    numesh->printEdges(2, 0);
     // numesh->printFaces(0, 30);
     //numesh->printVertices();
     //printf("**********\n");
