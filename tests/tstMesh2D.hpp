@@ -200,8 +200,11 @@ class Mesh2DTest : public ::testing::Test
         gatherAndCopyToHost();
 
         checkGIDSpaceBounds();
-        checkGIDSpaceGaps();        // Performed on entire mesh on Rank 0
-        checkEdgeEndpoints();       // Performed on entire mesh on Rank 0
+
+        // The following tests are performed on the entire mesh on Rank 0
+        checkGIDSpaceGaps();
+        checkEdgeUnique();       
+        checkVertexConnection(2);
     }
 
     /**
@@ -307,7 +310,7 @@ class Mesh2DTest : public ::testing::Test
      *  2. All vertices are connected by an edge
      * Performed on Rank 0
      */
-    void checkEdgeEndpoints()
+    void checkEdgeUnique()
     {
         if (rank_ != 0) return;
 
@@ -333,24 +336,52 @@ class Mesh2DTest : public ::testing::Test
                 FAIL() << "Edges " << v2e(v[0], v[1]) << " and " << e_gid(i) << " share vertices "
                     << v[0] << " and " << v[1] << "\n";
             }
-
         }
+    }
 
-        // Check #2
+    /**
+     * Verify that all vertices are connected by 'x' edges
+     *  - If periodic with uniform refinement all vertices should have 6 edges
+     *  - If non-periodic or with partial refinement, some vertices could
+     *      have as few as 2 edges.
+     * 
+     * Performed on Rank 0
+     */
+    void checkVertexConnection(int x)
+    {
+        if (rank_ != 0) return;
+
+        auto v_gid = Cabana::slice<V_GID>(vertices);
+        auto e_vid = Cabana::slice<E_VIDS>(edges);
+        auto e_gid = Cabana::slice<E_GID>(edges);
+
+        int num_verts = lv + gv;
+        Kokkos::View<int**, Kokkos::HostSpace> v2e("v2e", num_verts, num_verts);
+        Kokkos::deep_copy(v2e, -1);
+
         for (int i = 0; i < num_verts; i++)
         {
             int connected_edges = 0;
             for (int j = 0; j < num_verts; j++)
             {
-                printf("e%d, v(%d, %d)\n", e_gid(v2e(i, j)), i, j);
-                if (v2e(i, j) != -1)
+                //printf("%3d ", v2e(i, j));
+                if ((v2e(i, j) != -1) || (v2e(j, i) != -1))
                 {
                     connected_edges++;
                 }
             }
             // All vertices should be connected by at least 2 edges
-            //EXPECT_GE(connected_edges, 2) << "VGID " << v_gid(i) << " only has " << connected_edges << " edge\n";
+            EXPECT_GE(connected_edges, x) << "VGID " << v_gid(i) << " only has " << connected_edges << " edge\n";
         }
+    }
+
+    /**
+     * Check that if an edge has children, those children share
+     * a common vertex and have one endpoint on their parent edge.
+     */
+    void checkEdgeChildren()
+    {
+
     }
 };
 

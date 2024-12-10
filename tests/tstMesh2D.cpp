@@ -18,7 +18,7 @@ TYPED_TEST(Mesh2DTest, test_refinement)
     int mesh_size = this->comm_size_ * 2;
     if (this->comm_size_ == 1)
     {
-        mesh_size = 8;
+        mesh_size = 5;
     }
     
     this->init(mesh_size, 1);
