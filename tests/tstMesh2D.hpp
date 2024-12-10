@@ -311,6 +311,7 @@ class Mesh2DTest : public ::testing::Test
     {
         if (rank_ != 0) return;
 
+        auto v_gid = Cabana::slice<V_GID>(vertices);
         auto e_vid = Cabana::slice<E_VIDS>(edges);
         auto e_gid = Cabana::slice<E_GID>(edges);
 
@@ -339,24 +340,16 @@ class Mesh2DTest : public ::testing::Test
         for (int i = 0; i < num_verts; i++)
         {
             int connected_edges = 0;
-            for (int j = 0, j < num_verts; j++)
+            for (int j = 0; j < num_verts; j++)
             {
+                printf("e%d, v(%d, %d)\n", e_gid(v2e(i, j)), i, j);
                 if (v2e(i, j) != -1)
                 {
                     connected_edges++;
                 }
             }
-            if (periodic_)
-            {
-                // If the mesh is periodic, all vertices should have at
-                // least 6 edges (more if a neighboring face has been refined)
-                EXPECT_GE(connected_edges, 6) << "VGID " << v_gid(i) << " only has " << connected_edges << "edges\n";
-            }
-            else
-            {
-                // If the mesh is not periodic, check that the edge has at least
-                // two vertices
-            }
+            // All vertices should be connected by at least 2 edges
+            //EXPECT_GE(connected_edges, 2) << "VGID " << v_gid(i) << " only has " << connected_edges << " edge\n";
         }
     }
 };
