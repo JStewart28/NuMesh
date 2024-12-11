@@ -59,6 +59,58 @@ auto vectorToArray( std::vector<Scalar> vector )
 }
 
 /**
+ * Update a global ID given the old and new starting array for
+ * global ID starts for each rank.
+ */
+template <class vef_gid_start_array>
+KOKKOS_INLINE_FUNCTION
+void updateGlobalID(Vertex, int* gid, vef_gid_start_array& n, vef_gid_start_array& o)
+{
+    int owner_rank = -1;
+    for (int r = 0; r < (int) n.extent(0); r++)
+    {
+        if (*gid >= n(r, 0))
+        {
+            owner_rank = r;
+        }
+    }
+    // printf("gid old: %d, n: %d, o: %d, rank: %d\n", *gid, n(owner_rank, 0), o(owner_rank, 0), owner_rank);
+
+    *gid += n(owner_rank, 0) - o(owner_rank, 0);
+    // printf("gid new: %d, n: %d, o: %d, rank: %d\n", *gid, n(owner_rank, 0), o(owner_rank, 0), owner_rank);
+
+}
+template <class vef_gid_start_array>
+KOKKOS_INLINE_FUNCTION
+void updateGlobalID(Edge, int* gid, vef_gid_start_array& n, vef_gid_start_array& o)
+{
+    int owner_rank = -1;
+    for (int r = 0; r < (int) n.extent(0); r++)
+    {
+        if (*gid >= n(r, 1))
+        {
+            // printf("gid old: %d, n: %d, o: %d, rank: %d\n", *gid, n(r, 1), o(r, 1), r);
+            owner_rank = r;
+        }
+    }
+    *gid += n(owner_rank, 1) - o(owner_rank, 1);
+}
+template <class vef_gid_start_array>
+KOKKOS_INLINE_FUNCTION
+void updateGlobalID(Face, int* gid, vef_gid_start_array& n, vef_gid_start_array& o)
+{
+    int owner_rank = -1;
+    for (int r = 0; r < (int) n.extent(0); r++)
+    {
+        if (*gid >= n(r, 2))
+        {
+            owner_rank = r;
+        }
+    }
+    *gid += n(owner_rank, 2) - o(owner_rank, 2);
+}
+
+/**
  * Get the local ID of a ghosted vert/edge/face given its global ID
  * Performs linear search on the GIDs between range start and end.
  * Cannot assume the AoSoA is sorted for GID
@@ -689,19 +741,10 @@ class Mesh
 
                         // Find the remote rank this edge belongs to
                         int export_rank = -1;
-                        for (int r = 0; r < comm_size-1; r++)
+                        for (int r = 0; r < comm_size; r++)
                         {
                             if (r == rank) continue;
-
-                            // Special case for highest rank because can't index into r+1
-                            if (r == comm_size - 1)
-                            {
-                                if (ex_gid >= _vef_gid_start_d(r, 1))
-                                {
-                                    export_rank = r;
-                                }
-                            }
-                            else if ((ex_gid >= _vef_gid_start_d(r, 1)) && (ex_gid < _vef_gid_start_d(r+1, 1)))
+                            if (ex_gid >= _vef_gid_start_d(r, 1))
                             {
                                 export_rank = r;
                             }
@@ -736,14 +779,18 @@ class Mesh
 
         Cabana::migrate(distributor, export_edges_aosoa, distributor_edges_import);
 
-        // for (int i = 0; i < (int) export_edges_aosoa.size(); i++)
+        // if (rank == 2)
         // {
-        //     if (remote_edge_slice(i) != -1) printf("R%d: sending edge %d to R%d\n", rank, remote_edge_slice(i), distributor_export_ranks(i));
-        // }
-        // auto recv_slice = Cabana::slice<0>(distributor_edges_import);
-        // for (int i = 0; i < (int) distributor_edges_import.size(); i++)
-        // {
-        //     if (recv_slice(i) != -1) printf("R%d: recv edge %d from R??\n", rank, recv_slice(i));
+            // for (int i = 0; i < (int) export_edges_aosoa.size(); i++)
+            // {
+            //     if (remote_edge_slice(i) != -1) printf("R%d: requesting edge %d to R%d\n", rank, remote_edge_slice(i), distributor_export_ranks(i));
+            // }
+            // auto recv_slice = Cabana::slice<0>(distributor_edges_import);
+            // auto recv_rank_slice = Cabana::slice<1>(distributor_edges_import);
+            // for (int i = 0; i < (int) distributor_edges_import.size(); i++)
+            // {
+            //     if (recv_slice(i) != -1) printf("R%d: asking edge %d from R%d\n", rank, recv_slice(i), recv_rank_slice(i));
+            // }
         // }
 
         // Reset remote edge counter to track how many edges we need to send back
@@ -791,6 +838,7 @@ class Mesh
         _owned_faces += face_refinements*4; // Each face refinement creates 4 new faces
         _faces.resize(_owned_faces);
         _owned_edges += new_edges;
+        owned_edges = _owned_edges;
         _ghost_edges = remote_edges_refined * 3; // Each remotely refined edge will return the parent and two children
         _edges.resize(_owned_edges + _ghost_edges);
         _owned_vertices += new_vertices;
@@ -804,12 +852,13 @@ class Mesh
         Kokkos::deep_copy(vef_gid_start_old_d, tmp);
         updateGlobalIDs();
         
-        // printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, face_refinements*4);
-        // printf("R%d new VGID space: %d to %d\n", rank, _vef_gid_start(_rank, 0), _vef_gid_start(_rank, 0)+_owned_vertices);
-        // printf("R%d new EGID space: %d to %d\n", rank, _vef_gid_start(_rank, 1), _vef_gid_start(_rank, 1)+_owned_edges);
-        // printf("R%d new FGID space: %d to %d\n", rank, _vef_gid_start(_rank, 2), _vef_gid_start(_rank, 2)+_owned_faces);
+        printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, face_refinements*4);
+        printf("R%d new VGID space: %d to %d\n", rank, _vef_gid_start(_rank, 0), _vef_gid_start(_rank, 0)+_owned_vertices);
+        printf("R%d new EGID space: %d to %d\n", rank, _vef_gid_start(_rank, 1), _vef_gid_start(_rank, 1)+_owned_edges);
+        printf("R%d new FGID space: %d to %d\n", rank, _vef_gid_start(_rank, 2), _vef_gid_start(_rank, 2)+_owned_faces);
         // printFaces(1, 30);
         // printFaces(1, 31);
+        return;
         
         // Copy new _vef_gid_start to device
         auto tmp1 = Kokkos::create_mirror_view(_vef_gid_start_d);
@@ -916,17 +965,10 @@ class Mesh
 
             // Modify the global ID because GIDs have been updated in the mesh but 
             // not in the distributor receive buffer
-            for (int r = comm_size-1; r >= 0; r--)
-            {
-                if (distributor_edges_import_slice(i) >= vef_gid_start_old_d(r, 1))
-                {
-                    distributor_edges_import_slice(i) += _vef_gid_start_d(r, 1) - vef_gid_start_old_d(r, 1);
-                    break;
-                }
-            }
+            updateGlobalID(Edge(), &distributor_edges_import_slice(i), _vef_gid_start_d, vef_gid_start_old_d);
 
             // Parent edge LID
-            int elid = distributor_edges_import_slice(i) - _vef_gid_start_d(rank, 1);
+            int elid = get_lid(e_gid, distributor_edges_import_slice(i), 0, owned_edges);
             halo_export_ids(idx) = elid;
 
             // First child edge LID
@@ -982,6 +1024,11 @@ class Mesh
 
         }
 
+        for (int i = 0; i < halo_export_ids.extent(0); i++)
+        {
+            printf("R%d: id->rank: %d -> %d\n", rank, halo_export_ids(i), halo_export_ranks(i));
+        }
+
         // printf("R%d: neighbors: (size %d): %d, %d, %d, %d\n", rank, neighbor_ranks.size(), neighbor_ranks[0], neighbor_ranks[1],neighbor_ranks[2],neighbor_ranks[3]);
         // printf("R%d: AoSoA size: %d, owned: %d, ghost: %d eids: %d, eranks: %d\n", _rank,
         //     (int)_edges.size(), _owned_edges, _ghost_edges, halo_export_ids.extent(0), distributor_export_ranks1.extent(0));
@@ -1001,7 +1048,7 @@ class Mesh
         printf("R%d halo local/ghost: %d, %d, import/export: %d, %d\n", _rank,
             edge_halo.numLocal(), edge_halo.numGhost(),
             edge_halo.totalNumImport(), edge_halo.totalNumExport());
-        
+        return;
         Cabana::gather(edge_halo, _edges);
 
         // Face slices we need
@@ -1251,9 +1298,6 @@ class Mesh
     {
         // Update mesh version
         _version++;
-
-        // Lambda capture variables
-        const int comm_size = _comm_size;
         
         // Temporarily save old starting positions
         Kokkos::View<int*[3], Kokkos::HostSpace> old_vef_start("old_vef_start", _comm_size);
@@ -1293,24 +1337,15 @@ class Mesh
         Kokkos::deep_copy(hv_tmp2, old_vef_start);
         Kokkos::deep_copy(old_vef_start_d, hv_tmp2);
 
-        int dv = _vef_gid_start(_rank, 0) - old_vef_start(_rank, 0);
-        int de = _vef_gid_start(_rank, 1) - old_vef_start(_rank, 1);
-        int df = _vef_gid_start(_rank, 2) - old_vef_start(_rank, 2);
-
         // Update vertices
         auto v_gid = Cabana::slice<V_GID>(_vertices);
+        int rank = _rank;
         Kokkos::parallel_for("update vertex GIDs", Kokkos::RangePolicy<execution_space>(0, _owned_vertices),
             KOKKOS_LAMBDA(int i) {
             
             // Global ID
-            for (int r = comm_size-1; r >= 0; r--)
-            {
-                if (v_gid(i) >= old_vef_start_d(r, 0))
-                {
-                    v_gid(i) += vef_gid_start_d(r, 0) - old_vef_start_d(r, 0);
-                    break;
-                }
-            }
+            printf("R%d: vgid: %d\n", rank, v_gid(i));
+            updateGlobalID(Vertex(), &v_gid(i), vef_gid_start_d, old_vef_start_d);
             
         });
 
@@ -1327,51 +1362,22 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             // Global ID
-            for (int r = comm_size-1; r >= 0; r--)
-            {
-                if (e_gid(i) >= old_vef_start_d(r, 1))
-                {
-                    e_gid(i) += vef_gid_start_d(r, 1) - old_vef_start_d(r, 1);
-                    break;
-                }
-            }
+            updateGlobalID(Edge(), &e_gid(i), vef_gid_start_d, old_vef_start_d);
 
             // Vertex association GIDs
             for (int j = 0; j < 3; j++)
             {
-                for (int r = comm_size-1; r >= 0; r--)
-                {
-                    if (e_vid(i, j) >= old_vef_start_d(r, 0))
-                    {
-                        e_vid(i, j) += vef_gid_start_d(r, 0) - old_vef_start_d(r, 0);
-                        break;
-                    }
-                }
+                updateGlobalID(Edge(), &e_vid(i, j), vef_gid_start_d, old_vef_start_d);
             }
             
             // Child edge GIDs
             for (int j = 0; j < 2; j++)
             {
-                for (int r = comm_size-1; r >= 0; r--)
-                {
-                    if (e_cid(i, j) >= old_vef_start_d(r, 1))
-                    {
-                        e_cid(i, j) += vef_gid_start_d(r, 1) - old_vef_start_d(r, 1);
-                        break;
-                    }
-                }
+                updateGlobalID(Edge(), &e_cid(i, j), vef_gid_start_d, old_vef_start_d);
             }
 
             // Parent edge GID
-            for (int r = comm_size-1; r >= 0; r--)
-            {
-                if (e_pid(i) >= old_vef_start_d(r, 1))
-                {
-                    e_pid(i) += vef_gid_start_d(r, 1) - old_vef_start_d(r, 1);
-                    break;
-                }
-            }
-
+            updateGlobalID(Edge(), &e_pid(i), vef_gid_start_d, old_vef_start_d);
         });
 
         // Update Faces
@@ -1379,55 +1385,26 @@ class Mesh
         auto f_cid = Cabana::slice<F_CID>(_faces);
         auto f_eid = Cabana::slice<F_EIDS>(_faces);
         auto f_pid = Cabana::slice<F_PID>(_faces);
-        Kokkos::parallel_for("update edge GIDs", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
+        Kokkos::parallel_for("update face GIDs", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
             KOKKOS_LAMBDA(int i) {
             
             // Global ID
-            for (int r = comm_size-1; r >= 0; r--)
-            {
-                if (f_gid(i) >= old_vef_start_d(r, 2))
-                {
-                    f_gid(i) += vef_gid_start_d(r, 2) - old_vef_start_d(r, 2);
-                    break;
-                }
-            }
+            updateGlobalID(Face(), &f_gid(i), vef_gid_start_d, old_vef_start_d);
 
             // Child face association GIDs
             for (int j = 0; j < 4; j++)
-            {
-                for (int r = comm_size-1; r >= 0; r--)
-                {
-                    if (f_cid(i, j) >= old_vef_start_d(r, 2))
-                    {
-                        f_cid(i, j) += vef_gid_start_d(r, 2) - old_vef_start_d(r, 2);
-                        break;
-                    }
-                }
+            {   
+                updateGlobalID(Face(), &f_cid(i, j), vef_gid_start_d, old_vef_start_d);
             }
 
             // Edge association GIDs
             for (int j = 0; j < 3; j++)
             {
-                for (int r = comm_size-1; r >= 0; r--)
-                {
-                    if (f_eid(i, j) >= old_vef_start_d(r, 1))
-                    {
-                        f_eid(i, j) += vef_gid_start_d(r, 1) - old_vef_start_d(r, 1);
-                        break;
-                    }
-                }
+                updateGlobalID(Face(), &f_eid(i, j), vef_gid_start_d, old_vef_start_d);
             }
 
             // Parent face
-            for (int r = comm_size-1; r >= 0; r--)
-            {
-                if (f_pid(i) >= old_vef_start_d(r, 2))
-                {
-                    f_pid(i) += vef_gid_start_d(r, 2) - old_vef_start_d(r, 2);
-                    break;
-                }
-            }
-
+            updateGlobalID(Face(), &f_pid(i), vef_gid_start_d, old_vef_start_d);
         });
     }
 
