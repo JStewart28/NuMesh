@@ -60,39 +60,23 @@ auto vectorToArray( std::vector<Scalar> vector )
 
 /**
  * Get the local ID of a ghosted vert/edge/face given its global ID
- * Performs binary search on the GIDs between range start and end.
- * Assumes the AoSoA is sorted for GID
- * Returns -1 if the global ID is not ghosted
+ * Performs linear search on the GIDs between range start and end.
+ * Cannot assume the AoSoA is sorted for GID
+ * Returns -1 if the global ID is not found
  */
 template <class Slice_t>
 KOKKOS_INLINE_FUNCTION
 int get_lid(Slice_t& slice, int gid, int start, int end)
 {
-    // Ensure valid range
-    if (start >= end)
-        return -1; // Not found
-
-    // Correct pivot calculation
-    int pivot = start + (end - start) / 2;
-
-    // Value at the pivot index
-    int val = slice(pivot);
-
-    if (val == gid)
+    for (int i = start; i < end; i++)
     {
-        // Found the gid at the pivot index
-        return pivot;
+        int val = slice(i);
+        if (val == gid)
+        {
+            return i;
+        }
     }
-    else if (val < gid)
-    {
-        // Search in the upper half: range is [pivot + 1, end)
-        return get_lid(slice, gid, pivot + 1, end);
-    }
-    else
-    {
-        // Search in the lower half: range is [start, pivot)
-        return get_lid(slice, gid, start, pivot);
-    }
+    return -1;
 }
 
 /**
@@ -291,126 +275,6 @@ class Mesh
     }
 
     /**
-     * Assign edges to locally owned faces. Must be completed before gathering edges to 
-     * ghosted edges have face global IDs of faces not owned by the remote process.
-     */
-    void updateEdges()
-    {
-        // auto e_vid = Cabana::slice<E_VIDS>(_edges);
-        // auto e_gid = Cabana::slice<E_GID>(_edges);
-        // auto e_owner = Cabana::slice<E_OWNER>(_edges);
-
-        // auto f_egids = Cabana::slice<F_EIDS>(_faces);
-
-        // /* Edges will always be one of the following for faces:
-        //  * - 1st edge and 2nd edge
-        //  * - 1st edge and 3rd edge
-        //  * - 2nd edge and 3rd edge
-        //  * 
-        //  * Iterate over faces and assign 1st and 3rd edges' face 1
-        //  */
-        // int rank = _rank;
-        // // Copy _vef_gid_start to device
-        // Kokkos::View<int*[3], MemorySpace> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
-        // auto hv_tmp = Kokkos::create_mirror_view(_vef_gid_start_d);
-        // Kokkos::deep_copy(hv_tmp, _vef_gid_start);
-        // Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
-        // Kokkos::parallel_for("assign_edges13_to_faces", Kokkos::RangePolicy<execution_space>(0, _faces.size()), KOKKOS_LAMBDA(int f_lid) {
-        //     int f_gid, eX_lid; // eX_gid;
-        //     f_gid = f_lid + _vef_gid_start_d(rank, 2);
-
-        //     // Where this edge is the first edge, set its face1
-        //     // eX_gid = f_egids(f_lid, 0);
-        //     //if (eX_gid == 14) printf("R%d: e1_gid: %d, f_gid: %d\n", rank, eX_gid, f_gid);
-        //     eX_lid = f_egids(f_lid, 0) - _vef_gid_start_d(rank, 1);
-        //     e_fids(eX_lid, 0) = f_gid;
-            
-        //     // Where this edge is the third edge, set its face2
-        //     // eX_gid = f_egids(f_lid, 2);
-        //     //if (eX_gid == 14) printf("R%d: e3_gid: %d, f_gid: %d\n", rank, eX_gid, f_gid);
-        //     eX_lid = f_egids(f_lid, 2) - _vef_gid_start_d(rank, 1);
-        //     e_fids(eX_lid, 1) = f_gid;
-        // });
-    }
-
-    /**
-     * Gather face IDs from remotely owned faces and assign them to
-     * locally owned edges
-     */
-    void gatherFaces()
-    {
-    //     /* Temporary naive solution to store which faces are needed from which processes: 
-    //      * Create a (comm_size x num_faces) view.
-    //      * If a face is needed from another process, set (owner_rank, f_lid) to the 
-    //      * global face ID needed from owner_rank.
-    //      */ 
-    //     // Set a counter to count number messages that will be sent
-    //     using CounterView = Kokkos::View<int, device_type, Kokkos::MemoryTraits<Kokkos::Atomic>>;
-    //     CounterView counter("counter");
-    //     Kokkos::deep_copy(counter, 0);
-    //     Kokkos::View<int**, device_type> sendvalunpacked("sendvalunpacked", _comm_size, _faces.size());
-    //     Kokkos::deep_copy(sendvalunpacked, -1);
-    //     int rank = _rank, comm_size = _comm_size;
-    //     // Copy _vef_gid_start to device
-    //     Kokkos::View<int*[3], device_type> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
-    //     auto hv_tmp = Kokkos::create_mirror_view(_vef_gid_start_d);
-    //     Kokkos::deep_copy(hv_tmp, _vef_gid_start);
-    //     Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
-    //     auto f_egids = Cabana::slice<F_EIDS>(_faces);
-    //     Kokkos::parallel_for("find_needed_edge2", Kokkos::RangePolicy<execution_space>(0, _faces.size()), KOKKOS_LAMBDA(int f_lid) {
-    //         int e2_gid, from_rank = -1;
-
-    //         // Where this edge is the first edge, set its face1
-    //         e2_gid = f_egids(f_lid, 1);
-
-    //         // If e2_gid < (rank GID start) or (> (rank+1) GID start), 
-    //         // this edge is owned by another process 
-    //         if ((rank != comm_size-1) && ((e2_gid < _vef_gid_start_d(rank, 1)) || (e2_gid >= _vef_gid_start_d(rank+1, 1))))
-    //         {
-    //             if (e2_gid < _vef_gid_start_d(0, 1)) from_rank = 0;
-    //             else if (e2_gid >= _vef_gid_start_d(comm_size-1, 1)) from_rank = comm_size-1;
-    //             else
-    //             {
-    //                 for (int r = 0; r < comm_size-1; r++)
-    //                 {
-    //                     if (r == rank) continue;
-    //                     //printf("checking btw R%d: [%d, %d)\n", r, _vef_gid_start_d(r, 1))
-    //                     if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1))) from_rank = r;
-    //                 }
-    //             }
-    //             sendvalunpacked(from_rank, f_lid) = e2_gid;
-    //             counter()++;
-    //             //if (rank == 1) printf("R%d: sendvalunpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvalunpacked(from_rank, f_lid));
-
-    //         }
-    //         // If rank == comsize-1 we need a seperate condition
-    //         else if (rank == comm_size-1)
-    //         {
-    //             if (e2_gid < _vef_gid_start_d(rank, 1))
-    //             {
-    //                 for (int r = 0; r < rank; r++)
-    //                 {
-    //                     //printf("checking btw R%d: [%d, %d)\n", r, _vef_gid_start_d(r, 1))
-    //                     if ((e2_gid >= _vef_gid_start_d(r, 1)) && (e2_gid < _vef_gid_start_d(r+1, 1)))
-    //                     {
-    //                         from_rank = r;
-    //                         sendvalunpacked(from_rank, f_lid) = e2_gid;
-    //                         counter()++;
-    //                         //if (rank == 1) printf("R%d: sendvalunpacked(%d, %d): %d\n", rank, from_rank, f_lid, sendvalunpacked(from_rank, f_lid));
-    //                     }
-    //                 }
-    //             }
-    //         }
-
-    //         // if (e_fids(e2_lid, 0) != -1) e_fids(e2_lid, 0) = f_gid;
-    //         // else if (e_fids(e2_lid, 1) != -1) e_fids(e2_lid, 1) = f_gid;
-    //     });
-    //     Kokkos::fence();
-    //     int num_sends = -1;
-    //     Kokkos::deep_copy(num_sends, counter);
-    }
-
-    /**
      * After the vertex and edge connectivity has been set and
      * global IDs assigned, create faces from the edges and vertices.
      *  1. Create the faces
@@ -420,10 +284,8 @@ class Mesh
     void finializeInit()
     {
         createFaces();
-        updateEdges();
     }
 
-    
     /**
      * Turn a 2D array into an unstructured mesh of vertices, edges, and faces
      * by turning each (i, j) index into a vertex and creating edges between 
@@ -1136,9 +998,9 @@ class Mesh
         auto edge_halo = Cabana::Halo<memory_space>(_comm, _owned_edges, halo_export_ids,
             halo_export_ranks, neighbor_ranks);
 
-        // printf("R%d halo local/ghost: %d, %d, import/export: %d, %d\n", _rank,
-        //     edge_halo.numLocal(), edge_halo.numGhost(),
-        //     edge_halo.totalNumImport(), edge_halo.totalNumExport());
+        printf("R%d halo local/ghost: %d, %d, import/export: %d, %d\n", _rank,
+            edge_halo.numLocal(), edge_halo.numGhost(),
+            edge_halo.totalNumImport(), edge_halo.totalNumExport());
         
         Cabana::gather(edge_halo, _edges);
 

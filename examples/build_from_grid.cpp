@@ -81,24 +81,39 @@ int main( int argc, char* argv[] )
     numesh->initializeFromArray(*array);
     int size = 2;
     Kokkos::View<int*, memory_space> fids("fids", size);
-    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, size),
+    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, size),
+    //     KOKKOS_LAMBDA(int i) {
+        
+    //     if (i == 0) fids(i) = 30;
+    //     if (i == 1) fids(i) = 31;
+    //     //if (i == 1) fids(i) = 13;
+
+    //     if (i == 2) fids(i) = 106;          // rank 3
+        
+    //     // else if (i == 1) fids(i) = 5;       // rank 0
+        
+    //     else if (i == 3) fids(i) = 75;      // rank 2
+
+    //     else if (i == 4) fids(i) = 51;      // rank 1
+
+    // });
+
+    // numesh->refine(fids);
+
+
+    // Uniform refinement
+    int num_local_faces = numesh->count(NuMesh::Own(), NuMesh::Face());
+    auto vef_gid_start = numesh->get_vef_gid_start();
+    int face_gid_start = vef_gid_start(rank, 2);
+    Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
         KOKKOS_LAMBDA(int i) {
-        
-        if (i == 0) fids(i) = 30;
-        if (i == 1) fids(i) = 31;
-        //if (i == 1) fids(i) = 13;
 
-        if (i == 2) fids(i) = 106;          // rank 3
-        
-        // else if (i == 1) fids(i) = 5;       // rank 0
-        
-        else if (i == 3) fids(i) = 75;      // rank 2
+            fin(i) = face_gid_start + i;
 
-        else if (i == 4) fids(i) = 51;      // rank 1
+        });
+    numesh->refine(fin);
 
-    });
-
-    numesh->refine(fids);
 
     // Second refine
     // size = 1;
@@ -114,7 +129,7 @@ int main( int argc, char* argv[] )
 
     //numesh->_refine(13);
     //numesh->_refine(22);
-    numesh->printEdges(2, 0);
+    // numesh->printEdges(2, 0);
     // numesh->printFaces(0, 30);
     //numesh->printVertices();
     //printf("**********\n");

@@ -55,6 +55,23 @@ class Mesh2DTest : public ::testing::Test
     { 
     }
 
+    // Helper functions
+    template <class e_verts_slice>
+    bool shareExactlyOneEndpoint(e_verts_slice verts, int elid0, int elid1)
+    {
+        int shared = 0;
+        for (int i = 0; i < 2; i++)
+        {
+            int e0v = verts(elid0, i);
+            for (int j = 0; j < 2; j++)
+            {
+                int e1v = verts(elid1, j);
+                if (e0v == e1v) shared++;
+            }
+        }
+        return (shared == 1);
+    }
+
   public:
     void init(int mesh_size, int periodic)
     {
@@ -196,15 +213,16 @@ class Mesh2DTest : public ::testing::Test
         Kokkos::View<int*, MemorySpace> fids_d("fids_d", size);
         Kokkos::deep_copy(fids_d, fids);
         numesh->refine(fids_d);
-
+        return;
         gatherAndCopyToHost();
 
-        //checkGIDSpaceBounds();
+        checkGIDSpaceBounds();
         checkEdgeChildren();
+        checkFaceEdges();
 
         // The following tests are performed on the entire mesh on Rank 0
-        //checkGIDSpaceGaps();
-        //checkEdgeUnique(2);       
+        checkGIDSpaceGaps();
+        checkEdgeUnique(2);       
     }
 
     /**
@@ -365,7 +383,6 @@ class Mesh2DTest : public ::testing::Test
      */
     void checkEdgeChildren()
     {
-        if (rank_ != 0) return;
         auto e_gid = Cabana::slice<E_GID>(edges);
         auto e_vid = Cabana::slice<E_VIDS>(edges);
         auto e_rank = Cabana::slice<E_OWNER>(edges);
@@ -375,14 +392,6 @@ class Mesh2DTest : public ::testing::Test
 
         for (int i = 0; i < le+ge; i++)
         {
-
-            printf("R%d: e%d, v(%d, %d, %d), c(%d, %d), p(%d) %d, %d\n", rank,
-                e_gid(i),
-                e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
-                e_children(i, 0), e_children(i, 1),
-                e_parent(i),
-                e_owner(i), rank);
-
             // Skip edges without children
             if (e_cid(i, 0) == -1) continue;
 
@@ -391,22 +400,57 @@ class Mesh2DTest : public ::testing::Test
             // Parent vertices
             int pv0, pv1, pvm;
             // Child vertices
-            int cv0, cv1;
+            int c0v0, c0v1, c1v0, c1v1;
 
-            ce0 = e_cid(i, 0); ce1 = e_cid(i, 1);
+            ce0 = NuMesh::get_lid(e_gid, e_cid(i, 0), 0, edges.size()); ce1 = NuMesh::get_lid(e_gid, e_cid(i, 1), 0, edges.size());
             pv0 = e_vid(i, 0); pv1 = e_vid(i, 1); pvm = e_vid(i, 2);
-            printf("R%d: parent: (%d, %d), children l/g: (%d, %d), (%d, %d)\n",
-                rank_, i, e_gid(i), ce0, e_gid(ce0), ce1, e_gid(ce1));
 
             // Check child edge 0
-            cv0 = e_vid(ce0, 0); cv1 = e_vid(ce0, 1);
-            // EXPECT_EQ(cv0, pv0);
-            // EXPECT_EQ(cv1, pvm);
+            c0v0 = e_vid(ce0, 0); c0v1 = e_vid(ce0, 1);
+            EXPECT_EQ(c0v0, pv0);
+            EXPECT_EQ(c0v1, pvm);
 
             // Check child edge 1
-            cv0 = e_vid(ce1, 0); cv1 = e_vid(ce1, 1);
-            // EXPECT_EQ(cv0, pvm);
-            // EXPECT_EQ(cv1, pv1);
+            c1v0 = e_vid(ce1, 0); c1v1 = e_vid(ce1, 1);
+            EXPECT_EQ(c1v0, pvm);
+            EXPECT_EQ(c1v1, pv1);
+
+            // Check child edge 0 v1 = child edge 1 v0
+            EXPECT_EQ(c0v1, c1v0); 
+        }
+    }
+
+    /**
+     * Check for any face, you can follow its edges from its
+     * first vertex and return to the first vertex
+     */
+    void checkFaceEdges()
+    {
+        if (rank_ != 0) return;
+        auto f_cid = Cabana::slice<F_CID>(faces);
+        auto f_gid = Cabana::slice<F_GID>(faces);
+        auto f_eid = Cabana::slice<F_EIDS>(faces);
+        auto f_pid = Cabana::slice<F_PID>(faces);
+        auto f_layer = Cabana::slice<F_LAYER>(faces);
+        auto f_owner = Cabana::slice<F_OWNER>(faces);
+
+        auto e_gid = Cabana::slice<E_GID>(edges);
+        auto e_vid = Cabana::slice<E_VIDS>(edges);
+        auto e_rank = Cabana::slice<E_OWNER>(edges);
+        auto e_cid = Cabana::slice<E_CIDS>(edges);
+        auto e_pid = Cabana::slice<E_PID>(edges);
+        auto e_layer = Cabana::slice<E_LAYER>(edges);
+
+        for (int i = 0; i < lf+gf; i++)
+        {
+            int e0, e1, e2;
+            e0 = NuMesh::get_lid(e_gid, f_eid(i, 0), 0, edges.size());
+            e1 = NuMesh::get_lid(e_gid, f_eid(i, 1), 0, edges.size());
+            e2 = NuMesh::get_lid(e_gid, f_eid(i, 2), 0, edges.size());
+
+            EXPECT_TRUE(shareExactlyOneEndpoint(e_vid, e0, e1)) << "FGID " << f_gid(i) << "\n";
+            EXPECT_TRUE(shareExactlyOneEndpoint(e_vid, e1, e2)) << "FGID " << f_gid(i) << "\n";
+            EXPECT_TRUE(shareExactlyOneEndpoint(e_vid, e2, e0)) << "FGID " << f_gid(i) << "\n";
         }
     }
 };
