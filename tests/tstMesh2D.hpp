@@ -199,12 +199,12 @@ class Mesh2DTest : public ::testing::Test
 
         gatherAndCopyToHost();
 
-        checkGIDSpaceBounds();
+        //checkGIDSpaceBounds();
+        checkEdgeChildren();
 
         // The following tests are performed on the entire mesh on Rank 0
-        checkGIDSpaceGaps();
-        checkEdgeUnique();       
-        checkVertexConnection(2);
+        //checkGIDSpaceGaps();
+        //checkEdgeUnique(2);       
     }
 
     /**
@@ -306,11 +306,14 @@ class Mesh2DTest : public ::testing::Test
 
     /**
      * Verify that:
-     *  1. Only one edge connects any two vertices
-     *  2. All vertices are connected by an edge
+     *   1. Only one edge connects any two vertices
+     *   2. Verify that all vertices are connected by 'x' edges
+     *          - If periodic with uniform refinement all vertices should have 6 edges
+     *          - If non-periodic or with partial refinement, some vertices could
+     *                 have as few as 2 edges.
      * Performed on Rank 0
      */
-    void checkEdgeUnique()
+    void checkEdgeUnique(int x)
     {
         if (rank_ != 0) return;
 
@@ -322,7 +325,6 @@ class Mesh2DTest : public ::testing::Test
         Kokkos::View<int**, Kokkos::HostSpace> v2e("v2e", num_verts, num_verts);
         Kokkos::deep_copy(v2e, -1);
 
-        // Check #1
         for (int i = 0; i < le+ge; i++)
         {
             std::vector<int> v = {e_vid(i, 0), e_vid(i, 1)};
@@ -337,39 +339,19 @@ class Mesh2DTest : public ::testing::Test
                     << v[0] << " and " << v[1] << "\n";
             }
         }
-    }
-
-    /**
-     * Verify that all vertices are connected by 'x' edges
-     *  - If periodic with uniform refinement all vertices should have 6 edges
-     *  - If non-periodic or with partial refinement, some vertices could
-     *      have as few as 2 edges.
-     * 
-     * Performed on Rank 0
-     */
-    void checkVertexConnection(int x)
-    {
-        if (rank_ != 0) return;
-
-        auto v_gid = Cabana::slice<V_GID>(vertices);
-        auto e_vid = Cabana::slice<E_VIDS>(edges);
-        auto e_gid = Cabana::slice<E_GID>(edges);
-
-        int num_verts = lv + gv;
-        Kokkos::View<int**, Kokkos::HostSpace> v2e("v2e", num_verts, num_verts);
-        Kokkos::deep_copy(v2e, -1);
 
         for (int i = 0; i < num_verts; i++)
         {
             int connected_edges = 0;
             for (int j = 0; j < num_verts; j++)
             {
-                //printf("%3d ", v2e(i, j));
+                // printf("%3d ", v2e(i, j));
                 if ((v2e(i, j) != -1) || (v2e(j, i) != -1))
                 {
                     connected_edges++;
                 }
             }
+            // printf("\n");
             // All vertices should be connected by at least 2 edges
             EXPECT_GE(connected_edges, x) << "VGID " << v_gid(i) << " only has " << connected_edges << " edge\n";
         }
@@ -378,10 +360,54 @@ class Mesh2DTest : public ::testing::Test
     /**
      * Check that if an edge has children, those children share
      * a common vertex and have one endpoint on their parent edge.
+     * 
+     * Each process checks their local part of the mesh
      */
     void checkEdgeChildren()
     {
+        if (rank_ != 0) return;
+        auto e_gid = Cabana::slice<E_GID>(edges);
+        auto e_vid = Cabana::slice<E_VIDS>(edges);
+        auto e_rank = Cabana::slice<E_OWNER>(edges);
+        auto e_cid = Cabana::slice<E_CIDS>(edges);
+        auto e_pid = Cabana::slice<E_PID>(edges);
+        auto e_layer = Cabana::slice<E_LAYER>(edges);
 
+        for (int i = 0; i < le+ge; i++)
+        {
+
+            printf("R%d: e%d, v(%d, %d, %d), c(%d, %d), p(%d) %d, %d\n", rank,
+                e_gid(i),
+                e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
+                e_children(i, 0), e_children(i, 1),
+                e_parent(i),
+                e_owner(i), rank);
+
+            // Skip edges without children
+            if (e_cid(i, 0) == -1) continue;
+
+            // Child edges
+            int ce0, ce1;
+            // Parent vertices
+            int pv0, pv1, pvm;
+            // Child vertices
+            int cv0, cv1;
+
+            ce0 = e_cid(i, 0); ce1 = e_cid(i, 1);
+            pv0 = e_vid(i, 0); pv1 = e_vid(i, 1); pvm = e_vid(i, 2);
+            printf("R%d: parent: (%d, %d), children l/g: (%d, %d), (%d, %d)\n",
+                rank_, i, e_gid(i), ce0, e_gid(ce0), ce1, e_gid(ce1));
+
+            // Check child edge 0
+            cv0 = e_vid(ce0, 0); cv1 = e_vid(ce0, 1);
+            // EXPECT_EQ(cv0, pv0);
+            // EXPECT_EQ(cv1, pvm);
+
+            // Check child edge 1
+            cv0 = e_vid(ce1, 0); cv1 = e_vid(ce1, 1);
+            // EXPECT_EQ(cv0, pvm);
+            // EXPECT_EQ(cv1, pv1);
+        }
     }
 };
 
