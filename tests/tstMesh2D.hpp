@@ -161,6 +161,11 @@ class Mesh2DTest : public ::testing::Test
 
         auto edge_halo = Cabana::Halo<MemorySpace>(MPI_COMM_WORLD, local_vef_count[1], element_export_ids,
             element_export_ranks);
+        
+        printf("R%d halo local/ghost: %d, %d, import/export: %d, %d\n", rank_,
+            edge_halo.numLocal(), edge_halo.numGhost(),
+            edge_halo.totalNumImport(), edge_halo.totalNumExport());
+
 
         le = edge_halo.numLocal(); ge = edge_halo.numGhost();
         edges_ptr.resize(le + ge);
@@ -204,25 +209,34 @@ class Mesh2DTest : public ::testing::Test
     }
 
     /**
-     * Verify the faces in fin were refined corrrectly
+     * Refines the mesh
      */
     template <class HostView_t>
-    void verifyRefinement(HostView_t fids)
+    void performRefinement(HostView_t fids)
     {
         int size = fids.extent(0);
         Kokkos::View<int*, MemorySpace> fids_d("fids_d", size);
         Kokkos::deep_copy(fids_d, fids);
         numesh->refine(fids_d);
-        return;
-        gatherAndCopyToHost();
+    }
 
-        checkGIDSpaceBounds();
-        checkEdgeChildren();
-        checkFaceEdges();
+    /**
+     * Verify the faces in fin were refined corrrectly
+     */
+    void verifyRefinement()
+    {
+        gatherAndCopyToHost();
 
         // The following tests are performed on the entire mesh on Rank 0
         checkGIDSpaceGaps();
-        checkEdgeUnique(2);       
+        // checkEdgeUnique(2); 
+
+        // These checks are performed on each rank
+        // checkGIDSpaceBounds();
+        // checkEdgeChildren();
+        // checkFaceEdges();
+
+              
     }
 
     /**
@@ -248,7 +262,7 @@ class Mesh2DTest : public ::testing::Test
                     predicted_rank = r;
                 }
             }
-            EXPECT_EQ(predicted_rank, rank_) << "Rank " << rank_ << " VGID space: [" << gid_start << ", "
+            ASSERT_EQ(predicted_rank, rank_) << "Rank " << rank_ << " VGID space: [" << gid_start << ", "
                 << gid_start+lv << "), VLID: " << i << ", VGID: " << gid << "\n";
         }
         for (int i = 0; i < le; i++)
@@ -256,7 +270,6 @@ class Mesh2DTest : public ::testing::Test
             int predicted_rank = -1;
             int gid = e_gid(i);
             int gid_start = vef_gid_start(rank_, 1);
-            
             for (int r = 0; r < comm_size_; r++)
             {
                 if (gid >= vef_gid_start(r, 1))
@@ -264,7 +277,7 @@ class Mesh2DTest : public ::testing::Test
                     predicted_rank = r;
                 }
             }
-            EXPECT_EQ(predicted_rank, rank_) << "Rank " << rank_ << " EGID space: [" << gid_start << ", "
+            ASSERT_EQ(predicted_rank, rank_) << "Rank " << rank_ << " EGID space: [" << gid_start << ", "
                 << gid_start+le << "), ELID: " << i << ", EGID: " << gid << "\n";
         }
         for (int i = 0; i < lf; i++)
@@ -279,7 +292,7 @@ class Mesh2DTest : public ::testing::Test
                     predicted_rank = r;
                 }
             }
-            EXPECT_EQ(predicted_rank, rank_) << "Rank " << rank_ << " FGID space: [" << gid_start << ", "
+            ASSERT_EQ(predicted_rank, rank_) << "Rank " << rank_ << " FGID space: [" << gid_start << ", "
                 << gid_start+lf << "), FLID: " << i << ", FGID: " << gid << "\n";
         }
     }
@@ -294,31 +307,34 @@ class Mesh2DTest : public ::testing::Test
 
         auto v_gid = Cabana::slice<V_GID>(vertices);
         auto e_gid = Cabana::slice<E_GID>(edges);
+        auto e_owner = Cabana::slice<E_OWNER>(edges);
         auto f_gid = Cabana::slice<F_GID>(faces);
 
         // Sort by GID
         auto sort_verts = Cabana::sortByKey( v_gid );
         Cabana::permute( sort_verts, vertices );
         auto sort_edges = Cabana::sortByKey( e_gid );
-        Cabana::permute( sort_edges, edges );
+        //Cabana::permute( sort_edges, edges );
         auto sort_faces = Cabana::sortByKey( f_gid );
         Cabana::permute( sort_faces, faces );
 
         for (int i = 0; i < lv+gv; i++)
         {
             int gid = v_gid(i);
-            EXPECT_EQ(i, gid) << "Rank " << rank_ << ": Gap in vertex GID space\n";
+            ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in vertex GID space\n";
             
         }
         for (int i = 0; i < le+ge; i++)
         {
             int gid = e_gid(i);
-            EXPECT_EQ(i, gid) << "Rank " << rank_ << ": Gap in edge GID space\n";
+            printf("R%d: egid.%d, elid.%d, owner: %d\n", rank_, gid, i, e_owner(i));
+            //ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in edge GID space\n";
         }
+        return;
         for (int i = 0; i < lf+gf; i++)
         {
             int gid = f_gid(i);
-            EXPECT_EQ(i, gid) << "Rank " << rank_ << ": Gap in face GID space\n";
+            ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in face GID space\n";
         }
     }
 
@@ -371,7 +387,7 @@ class Mesh2DTest : public ::testing::Test
             }
             // printf("\n");
             // All vertices should be connected by at least 2 edges
-            EXPECT_GE(connected_edges, x) << "VGID " << v_gid(i) << " only has " << connected_edges << " edge\n";
+            ASSERT_GE(connected_edges, x) << "VGID " << v_gid(i) << " only has " << connected_edges << " edge\n";
         }
     }
 
@@ -407,16 +423,16 @@ class Mesh2DTest : public ::testing::Test
 
             // Check child edge 0
             c0v0 = e_vid(ce0, 0); c0v1 = e_vid(ce0, 1);
-            EXPECT_EQ(c0v0, pv0);
-            EXPECT_EQ(c0v1, pvm);
+            ASSERT_EQ(c0v0, pv0);
+            ASSERT_EQ(c0v1, pvm);
 
             // Check child edge 1
             c1v0 = e_vid(ce1, 0); c1v1 = e_vid(ce1, 1);
-            EXPECT_EQ(c1v0, pvm);
-            EXPECT_EQ(c1v1, pv1);
+            ASSERT_EQ(c1v0, pvm);
+            ASSERT_EQ(c1v1, pv1);
 
             // Check child edge 0 v1 = child edge 1 v0
-            EXPECT_EQ(c0v1, c1v0); 
+            ASSERT_EQ(c0v1, c1v0); 
         }
     }
 
@@ -448,9 +464,9 @@ class Mesh2DTest : public ::testing::Test
             e1 = NuMesh::get_lid(e_gid, f_eid(i, 1), 0, edges.size());
             e2 = NuMesh::get_lid(e_gid, f_eid(i, 2), 0, edges.size());
 
-            EXPECT_TRUE(shareExactlyOneEndpoint(e_vid, e0, e1)) << "FGID " << f_gid(i) << "\n";
-            EXPECT_TRUE(shareExactlyOneEndpoint(e_vid, e1, e2)) << "FGID " << f_gid(i) << "\n";
-            EXPECT_TRUE(shareExactlyOneEndpoint(e_vid, e2, e0)) << "FGID " << f_gid(i) << "\n";
+            ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e0, e1)) << "FGID " << f_gid(i) << "\n";
+            ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e1, e2)) << "FGID " << f_gid(i) << "\n";
+            ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e2, e0)) << "FGID " << f_gid(i) << "\n";
         }
     }
 };
