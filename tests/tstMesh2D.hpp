@@ -324,10 +324,22 @@ class Mesh2DTest : public ::testing::Test
             ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in vertex GID space\n";
             
         }
+        auto e_vid = Cabana::slice<E_VIDS>(edges);
+        auto e_children = Cabana::slice<E_CIDS>(edges);
+        auto e_parent = Cabana::slice<E_PID>(edges);
+        for (int i = 0; i < numesh->count(NuMesh::Own(), NuMesh::Edge()); i++)
+        {
+            printf("R%d: e%d, v(%d, %d, %d), c(%d, %d), p(%d) %d, %d\n", rank_,
+                e_gid(i),
+                e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
+                e_children(i, 0), e_children(i, 1),
+                e_parent(i),
+                e_owner(i), rank_);
+        }
         for (int i = 0; i < le+ge; i++)
         {
             int gid = e_gid(i);
-            printf("R%d: egid.%d, elid.%d, owner: %d\n", rank_, gid, i, e_owner(i));
+            //printf("R%d: egid.%d, elid.%d, owner: %d\n", rank_, gid, i, e_owner(i));
             //ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in edge GID space\n";
         }
         return;

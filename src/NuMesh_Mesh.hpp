@@ -895,7 +895,7 @@ class Mesh
             int ec_gid1 = _vef_gid_start_d(rank, 1) + ec_lid1;
             int ec_layer = e_layer(i) + 1;
 
-            // printf("R%d refining edge %d: new edges %d, %d\n", rank, i+_vef_gid_start_d(rank, 1), ec_gid0, ec_gid1);
+            // if (rank == 1) printf("R%d refining edge %d: new edges %d, %d (offset %d)\n", rank, i+_vef_gid_start_d(rank, 1), ec_gid0, ec_gid1, offset);
 
             // Global IDs = global ID start + local ID
             e_gid(ec_lid0) = ec_gid0;
@@ -1024,14 +1024,30 @@ class Mesh
 
         // });
 
+        // for (int i = 0; i < halo_export_ranks.extent(0); i++)
+        // {
+        //     printf("R%d exporting %d to rank %d\n", rank, halo_export_ids(i), halo_export_ranks(i));
+        // }
+
         auto edge_halo = Cabana::Halo<memory_space>(_comm, _owned_edges, halo_export_ids,
             halo_export_ranks, neighbor_ranks);
 
         // printf("R%d halo local/ghost: %d, %d, import/export: %d, %d\n", _rank,
         //     edge_halo.numLocal(), edge_halo.numGhost(),
         //     edge_halo.totalNumImport(), edge_halo.totalNumExport());
-        
+        // if (rank == 1)
+        // {
+        //     printf("***************BEFORE GATHER***************\n");
+        //     printEdges(2, 0);
+        // }
+
         Cabana::gather(edge_halo, _edges);
+
+        // if (rank == 1)
+        // {
+        //     printf("***************BEFORE***************\n");
+        //     printEdges(3, 0);
+        // }
 
         // Face slices we need
         auto f_cid = Cabana::slice<F_CID>(_faces);
@@ -1044,7 +1060,6 @@ class Mesh
         // Update lambda capture variables
         owned_edges = _owned_edges; ghost_edges = _ghost_edges;
         int num_edges = owned_edges + ghost_edges;
-
         // Populate the three new, internal edges for each face
         // local_face_lids(i) references face local IDs
         Kokkos::parallel_for("new internal edges", Kokkos::RangePolicy<execution_space>(0, face_refinements),
@@ -1054,16 +1069,21 @@ class Mesh
             int e_lid;
             // Set general values for each of the three new edges
             int offset = Kokkos::atomic_fetch_add(&edge_counter(), 3);
-            // printf("R%d face %d (edges %d, %d, %d), adding edges %d, %d, %d\n", rank,
+            // if (rank == 1) printf("R%d face %d (edges %d, %d, %d), adding edges %d, %d, %d (offset %d)\n", rank,
             //     face_id+_vef_gid_start_d(rank, 2),
             //     f_eid(face_id, 0), f_eid(face_id, 1), f_eid(face_id, 2),
-            //     e_new_lid_start+offset, e_new_lid_start+offset+1, e_new_lid_start+offset+2);
+            //     e_new_lid_start+offset, e_new_lid_start+offset+1, e_new_lid_start+offset+2, offset);
             for (int j = offset; j < offset+3; j++)
             {
                 e_lid = e_new_lid_start + j;
 
                 // Global IDs = global ID start + local ID
                 e_gid(e_lid) = _vef_gid_start_d(rank, 1) + e_lid;
+
+                // if (rank == 1) printf("R%d face %d (edges %d, %d, %d), adding edge %d (offset %d)\n", rank,
+                // face_id+_vef_gid_start_d(rank, 2),
+                // f_eid(face_id, 0), f_eid(face_id, 1), f_eid(face_id, 2),
+                // e_gid(e_lid), offset);
 
                 // Set parent and child edges
                 e_pid(e_lid) = -1; e_cid(e_lid, 0) = -1; e_cid(e_lid, 1) = -1;
@@ -1128,13 +1148,11 @@ class Mesh
             }
         });
 
-        /**
-         * Now that all edges are created, sort them by GID so we can
-         * binary search them to find LIDs given GIDs
-         */
-        auto keys = Cabana::slice<E_GID>( _edges );
-        auto sort_data = Cabana::sortByKey( keys );
-        Cabana::permute( sort_data, _edges );
+        // if (rank == 1)
+        // {
+        //     printf("***************AFTER***************\n");
+        //     printEdges(3, 0);
+        // }
         
         // Create the new faces
         // printFaces(1, 31);
