@@ -79,40 +79,40 @@ int main( int argc, char* argv[] )
     auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
     numesh->initializeFromArray(*array);
-    int size = 2;
-    Kokkos::View<int*, memory_space> fids("fids", size);
-    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, size),
-        KOKKOS_LAMBDA(int i) {
+    // int size = 2;
+    // Kokkos::View<int*, memory_space> fids("fids", size);
+    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, size),
+    //     KOKKOS_LAMBDA(int i) {
         
-        if (i == 0) fids(i) = 30;
-        if (i == 1) fids(i) = 31;
-        //if (i == 1) fids(i) = 13;
+    //     if (i == 0) fids(i) = 30;
+    //     if (i == 1) fids(i) = 31;
+    //     //if (i == 1) fids(i) = 13;
 
-        if (i == 2) fids(i) = 106;          // rank 3
+    //     if (i == 2) fids(i) = 106;          // rank 3
         
-        // else if (i == 1) fids(i) = 5;       // rank 0
+    //     // else if (i == 1) fids(i) = 5;       // rank 0
         
-        else if (i == 3) fids(i) = 75;      // rank 2
+    //     else if (i == 3) fids(i) = 75;      // rank 2
 
-        else if (i == 4) fids(i) = 51;      // rank 1
+    //     else if (i == 4) fids(i) = 51;      // rank 1
 
-    });
+    // });
 
-    numesh->refine(fids);
+    // numesh->refine(fids);
 
 
     // Uniform refinement
-    // int num_local_faces = numesh->count(NuMesh::Own(), NuMesh::Face());
-    // auto vef_gid_start = numesh->get_vef_gid_start();
-    // int face_gid_start = vef_gid_start(rank, 2);
-    // Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
-    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
-    //     KOKKOS_LAMBDA(int i) {
+    int num_local_faces = numesh->count(NuMesh::Own(), NuMesh::Face());
+    auto vef_gid_start = numesh->get_vef_gid_start();
+    int face_gid_start = vef_gid_start(rank, 2);
+    Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
+        KOKKOS_LAMBDA(int i) {
 
-    //         fin(i) = face_gid_start + i;
+            fin(i) = face_gid_start + i;
 
-    //     });
-    // numesh->refine(fin);
+        });
+    numesh->refine(fin);
 
 
     // Second refine
