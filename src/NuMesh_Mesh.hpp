@@ -1010,6 +1010,7 @@ class Mesh
 
             // Parent edge LID
             int elid = get_lid(e_gid, distributor_edges_import_slice(i), 0, owned_edges);
+            assert(elid != -1);
             halo_export_ids(idx) = elid;
 
             // First child edge LID
@@ -1156,6 +1157,7 @@ class Mesh
                     int egid = f_eid(face_id, k);
                     int lid = egid - _vef_gid_start_d(rank, 1);
                     elid[k] = get_lid(e_gid, egid, 0, num_edges);
+                    assert(elid[k] != -1);
                     // if (e_gid(e_lid) == 699) printf("elid %d: %d\n", k, elid[k]);                 
                 }
 
@@ -1250,9 +1252,11 @@ class Mesh
              *****************************/
             new_face_lid = f_new_lid_start + offset;
             el0 = get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
+            assert(el0 != -1);
             vg0 = e_vid(el0, 0);
             vg1 = e_vid(el0, 2);
             el2 = get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
+            assert(el2 != -1);
             vg2 = e_vid(el2, 2);
             el0 = find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
             el1 = find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
@@ -1272,8 +1276,10 @@ class Mesh
              *****************************/
             new_face_lid = f_new_lid_start + offset + 1;
             el0 = get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
+            assert(el0 != -1);
             vg0 = e_vid(el0, 2);
             el1 = get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
+            assert(el1 != -1);
             vg1 = e_vid(el1, 2);
             vg2 = e_vid(el0, 1);
             el0 = find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
@@ -1294,8 +1300,10 @@ class Mesh
              *****************************/
             new_face_lid = f_new_lid_start + offset + 2;
             el2 = get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
+            assert(el2 != -1);
             vg0 = e_vid(el2, 2);
             el1 = get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
+            assert(el1 != -1);
             vg1 = e_vid(el1, 2);
             vg2 = e_vid(el2, 1);
             // printf("Verts: %d, %d, %d\n", vg0, vg1, vg2);
@@ -1318,10 +1326,13 @@ class Mesh
              *****************************/
             new_face_lid = f_new_lid_start + offset + 3;
             el0 = get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
+            assert(el0 != -1);
             vg0 = e_vid(el0, 2);
             el1 = get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
+            assert(el1 != -1);
             vg1 = e_vid(el1, 2);
             el2 = get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
+            assert(el2 != -1);
             vg2 = e_vid(el2, 2);
             // printf("Verts: %d, %d, %d\n", vg0, vg1, vg2);
             el0 = find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
