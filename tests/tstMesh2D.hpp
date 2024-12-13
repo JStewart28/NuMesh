@@ -162,9 +162,9 @@ class Mesh2DTest : public ::testing::Test
         auto edge_halo = Cabana::Halo<MemorySpace>(MPI_COMM_WORLD, local_vef_count[1], element_export_ids,
             element_export_ranks);
         
-        printf("R%d halo local/ghost: %d, %d, import/export: %d, %d\n", rank_,
-            edge_halo.numLocal(), edge_halo.numGhost(),
-            edge_halo.totalNumImport(), edge_halo.totalNumExport());
+        // printf("R%d halo local/ghost: %d, %d, import/export: %d, %d\n", rank_,
+        //     edge_halo.numLocal(), edge_halo.numGhost(),
+        //     edge_halo.totalNumImport(), edge_halo.totalNumExport());
 
 
         le = edge_halo.numLocal(); ge = edge_halo.numGhost();
@@ -229,14 +229,29 @@ class Mesh2DTest : public ::testing::Test
 
         // The following tests are performed on the entire mesh on Rank 0
         checkGIDSpaceGaps();
-        // checkEdgeUnique(2); 
+
+        auto e_gid = Cabana::slice<E_GID>(edges);
+        auto e_owner = Cabana::slice<E_OWNER>(edges);
+        auto f_gid = Cabana::slice<F_GID>(faces);
+        auto e_vid = Cabana::slice<E_VIDS>(edges);
+        auto e_children = Cabana::slice<E_CIDS>(edges);
+        auto e_parent = Cabana::slice<E_PID>(edges);
+
+        for (int i = 0; i < le+ge; i++)
+        {
+            // if (rank_ == 0) printf("i%d R%d: e%d, v(%d, %d, %d), c(%d, %d), p(%d) %d, %d\n", i, rank_,
+            //     e_gid(i),
+            //     e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
+            //     e_children(i, 0), e_children(i, 1),
+            //     e_parent(i),
+            //     e_owner(i), rank_);
+        }
+        checkEdgeUnique(2); 
 
         // These checks are performed on each rank
-        // checkGIDSpaceBounds();
-        // checkEdgeChildren();
-        // checkFaceEdges();
-
-              
+        checkGIDSpaceBounds();
+        checkEdgeChildren();
+        checkFaceEdges();   
     }
 
     /**
@@ -314,7 +329,7 @@ class Mesh2DTest : public ::testing::Test
         auto sort_verts = Cabana::sortByKey( v_gid );
         Cabana::permute( sort_verts, vertices );
         auto sort_edges = Cabana::sortByKey( e_gid );
-        //Cabana::permute( sort_edges, edges );
+        Cabana::permute( sort_edges, edges );
         auto sort_faces = Cabana::sortByKey( f_gid );
         Cabana::permute( sort_faces, faces );
 
@@ -327,22 +342,22 @@ class Mesh2DTest : public ::testing::Test
         auto e_vid = Cabana::slice<E_VIDS>(edges);
         auto e_children = Cabana::slice<E_CIDS>(edges);
         auto e_parent = Cabana::slice<E_PID>(edges);
-        for (int i = 0; i < numesh->count(NuMesh::Own(), NuMesh::Edge()); i++)
-        {
-            printf("R%d: e%d, v(%d, %d, %d), c(%d, %d), p(%d) %d, %d\n", rank_,
-                e_gid(i),
-                e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
-                e_children(i, 0), e_children(i, 1),
-                e_parent(i),
-                e_owner(i), rank_);
-        }
+        // for (int i = 0; i < numesh->count(NuMesh::Own(), NuMesh::Edge()); i++)
+        // {
+           
+        // }
         for (int i = 0; i < le+ge; i++)
         {
+            //  printf("i%d R%d: e%d, v(%d, %d, %d), c(%d, %d), p(%d) %d, %d\n", i, rank_,
+            //     e_gid(i),
+            //     e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
+            //     e_children(i, 0), e_children(i, 1),
+            //     e_parent(i),
+            //     e_owner(i), rank_);
             int gid = e_gid(i);
             //printf("R%d: egid.%d, elid.%d, owner: %d\n", rank_, gid, i, e_owner(i));
-            //ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in edge GID space\n";
+            ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in edge GID space\n";
         }
-        return;
         for (int i = 0; i < lf+gf; i++)
         {
             int gid = f_gid(i);

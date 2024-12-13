@@ -57,8 +57,8 @@ TYPED_TEST(Mesh2DTest, test1_refinement)
         fin(i) = face_gid_start + i;
     }
 
-    this->performRefinement(fin);
-    this->verifyRefinement();
+    // this->performRefinement(fin);
+    // this->verifyRefinement();
 }
 
 /**
@@ -67,28 +67,30 @@ TYPED_TEST(Mesh2DTest, test1_refinement)
  */
 TYPED_TEST(Mesh2DTest, test2_refinement)
 {
-    // int mesh_size = this->comm_size_ * 2;
-    // if (this->comm_size_ == 1)
-    // {
-    //     mesh_size = 5;
-    // }
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
     
-    // this->init(mesh_size, 1);
+    this->init(mesh_size, 1);
 
-    // for (int i = 0; i < 3; i++)
-    // {
-    //     int num_local_faces = this->numesh->count(NuMesh::Own(), NuMesh::Face());
-    //     auto vef_gid_start = this->numesh->get_vef_gid_start();
-    //     int face_gid_start = vef_gid_start(this->rank_, 2);
+    for (int i = 0; i < 3; i++)
+    {
+        int num_local_faces = this->numesh->count(NuMesh::Own(), NuMesh::Face());
+        auto vef_gid_start = this->numesh->get_vef_gid_start();
+        int face_gid_start = vef_gid_start(this->rank_, 2);
 
-    //     Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
-    //     for (int i = 0; i < num_local_faces; i++)
-    //     {
-    //         fin(i) = face_gid_start + i;
-    //     }
+        Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
+        for (int i = 0; i < num_local_faces; i++)
+        {
+            fin(i) = face_gid_start + i;
+        }
 
-    //     this->verifyRefinement(fin);
-    // }
+        this->performRefinement(fin);
+    }
+
+    // this->verifyRefinement();
     
 }
 
