@@ -1512,6 +1512,9 @@ class Mesh
     int count(Own, Edge) {return _owned_edges;}
     int count(Own, Face) {return _owned_faces;}
 
+    MPI_Comm comm() {return _comm;}
+    int version() {return _version;}
+
     auto get_vef_gid_start() {return _vef_gid_start;}
 
     void printVertices()
@@ -1644,9 +1647,9 @@ class Mesh
 
 // Static type checkers
 template <typename T>
-struct inumesh_mesh : std::false_type {};
+struct isnumesh_mesh : std::false_type {};
 template <typename ExecutionSpace, typename MemSpace>
-struct inumesh_mesh<NuMesh::Mesh<ExecutionSpace, MemSpace>> : std::true_type {};
+struct isnumesh_mesh<NuMesh::Mesh<ExecutionSpace, MemSpace>> : std::true_type {};
 
 /**
  *  Returns a mesh with no vertices, edges, or faces.

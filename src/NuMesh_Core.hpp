@@ -3,6 +3,7 @@
 
 #include <NuMesh_Types.hpp>
 #include <NuMesh_Mesh.hpp>
+#include <NuMesh_Halo.hpp>
 #include <NuMesh_Array.hpp>
 
 #endif // NUMESH_CORE_HPP

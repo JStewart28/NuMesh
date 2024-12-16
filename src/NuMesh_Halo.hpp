@@ -22,13 +22,19 @@ class Halo
 {
   public:
 
-    // using memory_space = typename Mesh::memory_space;
-    // using execution_space = typename Mesh::execution_space;
+    using memory_space = typename Mesh::memory_space;
+    using execution_space = typename Mesh::execution_space;
 
-    Halo( Mesh& numesh )
-        : _comm ( numesh.comm() )
-        , _mesh_version ( numesh.version() )
+    Halo( std::shared_ptr<Mesh> mesh, const int entity, const int level, const int depth )
+        : _mesh ( mesh )
+        , _entity ( entity )
+        , _level ( level )
+        , _depth ( depth )
+        , _comm ( mesh->comm() )
+        , _mesh_version ( mesh->version() )
     {
+        static_assert( isnumesh_mesh<Mesh>::value, "NuMesh::Halo: NuMesh Mesh required" );
+
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
     };
@@ -39,18 +45,32 @@ class Halo
         //MPIX_Comm_free(&_xcomm);
     }
 
+
+
   private:
+    std::shared_ptr<Mesh> _mesh;
     MPI_Comm _comm;
+
+    // Entity halo type: 1 = edge, 2 = face
+    const int _entity;
+
+    // Level of tree to halo at
+    const int _level;
+
+    // Halo depth into neighboring processes
+    const int _depth;
+
+    // Mesh version this halo is built from
     int _mesh_version;
 
     int _rank, _comm_size;
-
     
 };
 
-auto createHalo(Mesh<ExecutionSpace, MemorySpace> mesh)
+template <class Mesh>
+auto createHalo(std::shared_ptr<Mesh> mesh, Edge, int level, int depth)
 {
-    return 0; 
+    return Halo(mesh, 1, level, depth);
 }
 
 } // end namespce NuMesh
