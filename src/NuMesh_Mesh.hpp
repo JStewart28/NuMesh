@@ -8,6 +8,7 @@
 #include <memory>
 
 #include <algorithm> // For std::find
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <regex>
@@ -40,8 +41,6 @@
     #define F_OWNER 5
 #endif
 
-//#include <NuMesh_Communicator.hpp>
-//#include <NuMesh_Grid2DInitializer.hpp>
 #include <NuMesh_Types.hpp>
 
 #include <limits>
@@ -56,6 +55,15 @@ auto vectorToArray( std::vector<Scalar> vector )
     for ( std::size_t i = 0; i < Size; ++i )
         array[i] = vector[i];
     return array;
+}
+
+bool isPerfectSquare(int number) {
+    if (number < 0) {
+        return false; // Negative numbers can't be perfect squares
+    }
+
+    int sqrtNumber = static_cast<int>(std::sqrt(number)); // Get the integer part of the square root
+    return sqrtNumber * sqrtNumber == number;
 }
 
 /**
@@ -365,6 +373,12 @@ class Mesh
     void initializeFromArray( CabanaArray& array )
     {
         static_assert( Cabana::Grid::is_array<CabanaArray>::value, "NuMesh::Mesh::initializeFromArray: Cabana::Grid::Array required" );
+        
+        if (!isPerfectSquare(_comm_size))
+        {
+            std::cerr << "NuMesh::initializeFromArray only supports communicator sizes that are square numbers\n";
+        }
+
         auto local_grid = array.layout()->localGrid();
         auto node_space = local_grid->indexSpace( Cabana::Grid::Own(), Cabana::Grid::Node(),
                                                 Cabana::Grid::Local() );
@@ -622,9 +636,6 @@ class Mesh
         });
         Kokkos::fence();
         finializeInit();
-        // printVertices();
-        // printEdges(3);
-        // initialize_edges();
     }
         
     /**
@@ -639,7 +650,7 @@ class Mesh
      * 
      */
     template <class View>
-    void _refineAndAddEdges(View fgids)
+    void _refineFaces(View fgids)
     {        
         const int rank = _rank, comm_size = _comm_size;
         const int num_face_refinements = fgids.extent(0);
@@ -1368,7 +1379,7 @@ class Mesh
     template <class View>
     void refine(View& fgids)
     {
-        _refineAndAddEdges(fgids);
+        _refineFaces(fgids);
         // _gatherEdges()
     }
     
