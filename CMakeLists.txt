@@ -46,7 +46,7 @@ set(gtest_disable_pthreads ON CACHE BOOL "")
 include(${BLT_SOURCE_DIR}/SetupBLT.cmake)
 
 # Tell CMAKE to find MPIAdvance
-find_package(MPI_Advance REQUIRED)
+# find_package(MPI_Advance REQUIRED)
 
 # We also need MPI for this example
 find_package(MPI REQUIRED)
