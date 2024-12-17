@@ -1,6 +1,9 @@
 #ifndef _TESTING_UTILS_HPP_
 #define _TESTING_UTILS_HPP_
 
+namespace Utils
+{
+
 /**
  * Initialize a mesh from a Cabana local grid
  */
@@ -143,5 +146,7 @@ void gatherAndCopyToHost(mesh_t& mesh, v_t& vertices, e_t& edges, f_t& faces)
     Cabana::deep_copy(edges, edges_ptr);
     Cabana::deep_copy(vertices, vertices_ptr);
 }
+
+} // end namespace Utils
 
 #endif // _TESTING_UTILS_HPP_

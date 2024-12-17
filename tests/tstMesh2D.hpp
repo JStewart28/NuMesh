@@ -72,7 +72,7 @@ class Mesh2DTest : public ::testing::Test
   public:
     void init(int mesh_size, int periodic)
     {
-        init<MemorySpace>(numesh, mesh_size, periodic);
+        Utils::init<MemorySpace>(this->numesh, mesh_size, periodic);
     }
 
     /**
@@ -204,7 +204,7 @@ class Mesh2DTest : public ::testing::Test
      */
     void verifyRefinement()
     {
-        gatherAndCopyToHost<ExecutionSpace, MemorySpace>(this->numesh, this->vertices, this->edges, this->faces);
+        Utils::gatherAndCopyToHost<ExecutionSpace, MemorySpace>(this->numesh, this->vertices, this->edges, this->faces);
 
         // The following tests are performed on the entire mesh on Rank 0
         checkGIDSpaceGaps();
@@ -216,15 +216,6 @@ class Mesh2DTest : public ::testing::Test
         auto e_children = Cabana::slice<E_CIDS>(edges);
         auto e_parent = Cabana::slice<E_PID>(edges);
 
-        for (int i = 0; i < le+ge; i++)
-        {
-            // if (rank_ == 0) printf("i%d R%d: e%d, v(%d, %d, %d), c(%d, %d), p(%d) %d, %d\n", i, rank_,
-            //     e_gid(i),
-            //     e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
-            //     e_children(i, 0), e_children(i, 1),
-            //     e_parent(i),
-            //     e_owner(i), rank_);
-        }
         checkEdgeUnique(2); 
 
         // These checks are performed on each rank
@@ -243,6 +234,9 @@ class Mesh2DTest : public ::testing::Test
         auto f_gid = Cabana::slice<F_GID>(faces);
 
         auto vef_gid_start = numesh->get_vef_gid_start();
+        int lv = this->numesh->count(NuMesh::Own(), NuMesh::Vertex());
+        int le = this->numesh->count(NuMesh::Own(), NuMesh::Edge());
+        int lf = this->numesh->count(NuMesh::Own(), NuMesh::Face());
 
         for (int i = 0; i < lv; i++)
         {
@@ -312,7 +306,7 @@ class Mesh2DTest : public ::testing::Test
         auto sort_faces = Cabana::sortByKey( f_gid );
         Cabana::permute( sort_faces, faces );
 
-        for (int i = 0; i < lv+gv; i++)
+        for (int i = 0; i < (int)vertices.size(); i++)
         {
             int gid = v_gid(i);
             ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in vertex GID space\n";
@@ -325,7 +319,7 @@ class Mesh2DTest : public ::testing::Test
         // {
            
         // }
-        for (int i = 0; i < le+ge; i++)
+        for (int i = 0; i < (int)edges.size(); i++)
         {
             //  printf("i%d R%d: e%d, v(%d, %d, %d), c(%d, %d), p(%d) %d, %d\n", i, rank_,
             //     e_gid(i),
@@ -337,7 +331,7 @@ class Mesh2DTest : public ::testing::Test
             //printf("R%d: egid.%d, elid.%d, owner: %d\n", rank_, gid, i, e_owner(i));
             ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in edge GID space\n";
         }
-        for (int i = 0; i < lf+gf; i++)
+        for (int i = 0; i < (int)faces.size(); i++)
         {
             int gid = f_gid(i);
             ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in face GID space\n";
@@ -361,11 +355,11 @@ class Mesh2DTest : public ::testing::Test
         auto e_vid = Cabana::slice<E_VIDS>(edges);
         auto e_gid = Cabana::slice<E_GID>(edges);
 
-        int num_verts = lv + gv;
+        int num_verts = vertices.size();
         Kokkos::View<int**, Kokkos::HostSpace> v2e("v2e", num_verts, num_verts);
         Kokkos::deep_copy(v2e, -1);
 
-        for (int i = 0; i < le+ge; i++)
+        for (int i = 0; i < (int) edges.size(); i++)
         {
             std::vector<int> v = {e_vid(i, 0), e_vid(i, 1)};
             sort(v.begin(), v.end());
@@ -412,7 +406,7 @@ class Mesh2DTest : public ::testing::Test
         auto e_pid = Cabana::slice<E_PID>(edges);
         auto e_layer = Cabana::slice<E_LAYER>(edges);
 
-        for (int i = 0; i < le+ge; i++)
+        for (int i = 0; i < (int)edges.size(); i++)
         {
             // Skip edges without children
             if (e_cid(i, 0) == -1) continue;
@@ -463,7 +457,7 @@ class Mesh2DTest : public ::testing::Test
         auto e_pid = Cabana::slice<E_PID>(edges);
         auto e_layer = Cabana::slice<E_LAYER>(edges);
 
-        for (int i = 0; i < lf+gf; i++)
+        for (int i = 0; i < (int)faces.size(); i++)
         {
             int e0, e1, e2;
             e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), 0, edges.size());
