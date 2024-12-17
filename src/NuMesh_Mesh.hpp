@@ -1376,6 +1376,9 @@ class Mesh
     int count(Own, Vertex) {return _owned_vertices;}
     int count(Own, Edge) {return _owned_edges;}
     int count(Own, Face) {return _owned_faces;}
+    int count(Ghost, Vertex) {return _ghost_vertices;}
+    int count(Ghost, Edge) {return _ghost_edges;}
+    int count(Ghost, Face) {return _ghost_faces;}
 
     MPI_Comm comm() {return _comm;}
     int version() {return _version;}
