@@ -239,7 +239,7 @@ class Mesh
     {
         static_assert( Cabana::Grid::is_array<CabanaArray>::value, "NuMesh::Mesh::initializeFromArray: Cabana::Grid::Array required" );
         
-        if (!isPerfectSquare(_comm_size))
+        if (!Utils::isPerfectSquare(_comm_size))
         {
             std::cerr << "NuMesh::initializeFromArray only supports communicator sizes that are square numbers\n";
         }
@@ -283,7 +283,7 @@ class Mesh
         auto e_layer = Cabana::slice<E_LAYER>(_edges);
         int rank = _rank;
         auto topology = Cabana::Grid::getTopology( *local_grid );
-        auto device_topology = vectorToArray<9>( topology );
+        auto device_topology = Utils::vectorToArray<9>( topology );
         /* 0 = (-1, -1)
          * 1 = (0, -1)
          * 2 = (1, -1)
@@ -882,10 +882,10 @@ class Mesh
 
             // Modify the global ID because GIDs have been updated in the mesh but 
             // not in the distributor receive buffer
-            updateGlobalID(Edge(), &distributor_edges_import_slice(i), _vef_gid_start_d, vef_gid_start_old_d);
+            Utils::updateGlobalID(Edge(), &distributor_edges_import_slice(i), _vef_gid_start_d, vef_gid_start_old_d);
 
             // Parent edge LID
-            int elid = get_lid(e_gid, distributor_edges_import_slice(i), 0, owned_edges);
+            int elid = Utils::get_lid(e_gid, distributor_edges_import_slice(i), 0, owned_edges);
             assert(elid != -1);
             halo_export_ids(idx) = elid;
 
@@ -1032,7 +1032,7 @@ class Mesh
                 {
                     int egid = f_eid(face_id, k);
                     int lid = egid - _vef_gid_start_d(rank, 1);
-                    elid[k] = get_lid(e_gid, egid, 0, num_edges);
+                    elid[k] = Utils::get_lid(e_gid, egid, 0, num_edges);
                     assert(elid[k] != -1);
                     // if (e_gid(e_lid) == 699) printf("elid %d: %d\n", k, elid[k]);                 
                 }
@@ -1127,16 +1127,16 @@ class Mesh
              *  V2: Parent face e2, middle vert
              *****************************/
             new_face_lid = f_new_lid_start + offset;
-            el0 = get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
+            el0 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
             assert(el0 != -1);
             vg0 = e_vid(el0, 0);
             vg1 = e_vid(el0, 2);
-            el2 = get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
+            el2 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
             assert(el2 != -1);
             vg2 = e_vid(el2, 2);
-            el0 = find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            el1 = find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            el2 = find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
+            el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
+            el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
+            el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
             f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
             if (f_gid(new_face_lid) == 296)
             {
@@ -1151,16 +1151,16 @@ class Mesh
              *  V2: Parent face e0, v1
              *****************************/
             new_face_lid = f_new_lid_start + offset + 1;
-            el0 = get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
+            el0 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
             assert(el0 != -1);
             vg0 = e_vid(el0, 2);
-            el1 = get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
+            el1 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
             assert(el1 != -1);
             vg1 = e_vid(el1, 2);
             vg2 = e_vid(el0, 1);
-            el0 = find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            el1 = find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            el2 = find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
+            el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
+            el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
+            el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
             f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
             if (f_gid(new_face_lid) == 296)
             {
@@ -1175,17 +1175,17 @@ class Mesh
              *  V2: Parent face e2, v1
              *****************************/
             new_face_lid = f_new_lid_start + offset + 2;
-            el2 = get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
+            el2 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
             assert(el2 != -1);
             vg0 = e_vid(el2, 2);
-            el1 = get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
+            el1 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
             assert(el1 != -1);
             vg1 = e_vid(el1, 2);
             vg2 = e_vid(el2, 1);
             // printf("Verts: %d, %d, %d\n", vg0, vg1, vg2);
-            el0 = find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            el1 = find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            el2 = find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
+            el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
+            el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
+            el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
             f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
             if (f_gid(new_face_lid) == 296)
             {
@@ -1201,19 +1201,19 @@ class Mesh
              *  V2: Parent face e2, middle vert
              *****************************/
             new_face_lid = f_new_lid_start + offset + 3;
-            el0 = get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
+            el0 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
             assert(el0 != -1);
             vg0 = e_vid(el0, 2);
-            el1 = get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
+            el1 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
             assert(el1 != -1);
             vg1 = e_vid(el1, 2);
-            el2 = get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
+            el2 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
             assert(el2 != -1);
             vg2 = e_vid(el2, 2);
             // printf("Verts: %d, %d, %d\n", vg0, vg1, vg2);
-            el0 = find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            el1 = find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            el2 = find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
+            el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
+            el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
+            el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
             f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
             if (f_gid(new_face_lid) == 296)
             {
@@ -1297,7 +1297,7 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             // Global ID
-            updateGlobalID(Vertex(), &v_gid(i), vef_gid_start_d, old_vef_start_d);
+            Utils::updateGlobalID(Vertex(), &v_gid(i), vef_gid_start_d, old_vef_start_d);
             
         });
 
@@ -1314,22 +1314,22 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             // Global ID
-            updateGlobalID(Edge(), &e_gid(i), vef_gid_start_d, old_vef_start_d);
+            Utils::updateGlobalID(Edge(), &e_gid(i), vef_gid_start_d, old_vef_start_d);
 
             // Vertex association GIDs
             for (int j = 0; j < 3; j++)
             {
-                updateGlobalID(Vertex(), &e_vid(i, j), vef_gid_start_d, old_vef_start_d);
+                Utils::updateGlobalID(Vertex(), &e_vid(i, j), vef_gid_start_d, old_vef_start_d);
             }
             
             // Child edge GIDs
             for (int j = 0; j < 2; j++)
             {
-                updateGlobalID(Edge(), &e_cid(i, j), vef_gid_start_d, old_vef_start_d);
+                Utils::updateGlobalID(Edge(), &e_cid(i, j), vef_gid_start_d, old_vef_start_d);
             }
 
             // Parent edge GID
-            updateGlobalID(Edge(), &e_pid(i), vef_gid_start_d, old_vef_start_d);
+            Utils::updateGlobalID(Edge(), &e_pid(i), vef_gid_start_d, old_vef_start_d);
         });
 
         // Update Faces
@@ -1341,22 +1341,22 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             // Global ID
-            updateGlobalID(Face(), &f_gid(i), vef_gid_start_d, old_vef_start_d);
+            Utils::updateGlobalID(Face(), &f_gid(i), vef_gid_start_d, old_vef_start_d);
 
             // Child face association GIDs
             for (int j = 0; j < 4; j++)
             {   
-                updateGlobalID(Face(), &f_cid(i, j), vef_gid_start_d, old_vef_start_d);
+                Utils::updateGlobalID(Face(), &f_cid(i, j), vef_gid_start_d, old_vef_start_d);
             }
 
             // Edge association GIDs
             for (int j = 0; j < 3; j++)
             {
-                updateGlobalID(Edge(), &f_eid(i, j), vef_gid_start_d, old_vef_start_d);
+                Utils::updateGlobalID(Edge(), &f_eid(i, j), vef_gid_start_d, old_vef_start_d);
             }
 
             // Parent face
-            updateGlobalID(Face(), &f_pid(i), vef_gid_start_d, old_vef_start_d);
+            Utils::updateGlobalID(Face(), &f_pid(i), vef_gid_start_d, old_vef_start_d);
         });
     }
 

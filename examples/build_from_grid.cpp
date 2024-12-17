@@ -79,26 +79,44 @@ int main( int argc, char* argv[] )
     auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
     numesh->initializeFromArray(*array);
+    auto vef_gid_start = numesh->get_vef_gid_start();
 
     // Uniform refinement
-    for (int i = 0; i < 2; i++)
-    {
-        int num_local_faces = numesh->count(NuMesh::Own(), NuMesh::Face());
-        auto vef_gid_start = numesh->get_vef_gid_start();
-        int face_gid_start = vef_gid_start(rank, 2);
-        Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
-        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
-            KOKKOS_LAMBDA(int i) {
+    // for (int i = 0; i < 2; i++)
+    // {
+    //     int num_local_faces = numesh->count(NuMesh::Own(), NuMesh::Face());
+    //     int face_gid_start = vef_gid_start(rank, 2);
+    //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+    //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
+    //         KOKKOS_LAMBDA(int i) {
 
-                fin(i) = face_gid_start + i;
+    //             fin(i) = face_gid_start + i;
 
-            });
-        numesh->refine(fin);
-    }
+    //         });
+    //     numesh->refine(fin);
+    // }
 
     // Test haloing
+    auto v2e = NuMesh::V2E_Map(numesh);
     auto halo = NuMesh::createHalo(numesh, NuMesh::Edge(), 1, 1);
 
+    auto vertex_edge_indices = v2e.vertex_edge_indices();
+    auto vertex_edge_offsets = v2e.vertex_edge_offsets();
+    if (rank == 0)
+    {
+    Kokkos::parallel_for("vertex_edge_offsets", Kokkos::RangePolicy<execution_space>(0, vertex_edge_offsets.extent(0)),
+        KOKKOS_LAMBDA(int i) {
+
+            printf("R%d: l/g offset (%d, %d): %d\n", rank, i, vef_gid_start(rank, 0)+i, vertex_edge_offsets(i));
+
+        });
+    Kokkos::parallel_for("vertex_edge_indices", Kokkos::RangePolicy<execution_space>(0, vertex_edge_indices.extent(0)),
+        KOKKOS_LAMBDA(int i) {
+
+            printf("R%d: vertex_edge_indices %d: (%d, %d)\n", rank, i, vertex_edge_indices(i), vertex_edge_indices(i)+vef_gid_start(rank, 1));
+
+        });
+    }
 
     } // Scope guard
 

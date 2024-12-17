@@ -5,11 +5,12 @@
 #include <Kokkos_Core.hpp>
 #include <memory>
 
-#include <NuMesh_Mesh.hpp>
-
 #include <mpi.h>
 
 namespace NuMesh
+{
+
+namespace Utils
 {
 
 //---------------------------------------------------------------------------//
@@ -152,7 +153,7 @@ int find_edge(Slice_t& edge_vert_slice, int start, int end, int v0, int v1)
     return -1;
 }
 
-
+} // end namespace Utils
 } // end namespce NuMesh
 
 
