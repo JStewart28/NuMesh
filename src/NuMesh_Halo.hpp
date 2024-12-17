@@ -5,6 +5,7 @@
 #include <Kokkos_Core.hpp>
 #include <memory>
 
+#include <NuMesh_Utils.hpp>
 #include <NuMesh_Mesh.hpp>
 
 #include <mpi.h>
@@ -58,7 +59,7 @@ class Halo
      */
     integer_view gather_local_neighbors(integer_view verts, int level)
     {
-        if (_halo_version != mesh->version())
+        if (_halo_version != _mesh->version())
         {
             throw std::runtime_error(
                 "NuMesh::Halo::gather_local_neighbors: mesh and halo version do not match" );
@@ -80,24 +81,24 @@ class Halo
         auto edges = _mesh->edges();
 
         // Get vef_gid_start and copy to device
-        auto vef_gid_start = mesh->get_vef_gid_start();
-        Kokkos::View<int*[3], MemorySpace> vef_gid_start_d("vef_gid_start_d", _comm_size);
+        auto vef_gid_start = _mesh->get_vef_gid_start();
+        Kokkos::View<int*[3], memory_space> vef_gid_start_d("vef_gid_start_d", _comm_size);
         auto hv_tmp = Kokkos::create_mirror_view(vef_gid_start_d);
         Kokkos::deep_copy(hv_tmp, vef_gid_start);
         Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
 
-        int owned_vertices = mesh->count(Own(), Vertex());
+        int owned_vertices = _mesh->count(Own(), Vertex());
 
         // Vertex slices
-        auto v_gid = Cabana::slice<V_GID>(_vertices);
+        auto v_gid = Cabana::slice<V_GID>(vertices);
 
         // Edge slices
-        auto e_gid = Cabana::slice<E_GID>(_edges);
-        auto e_vid = Cabana::slice<E_VIDS>(_edges);
-        auto e_rank = Cabana::slice<E_OWNER>(_edges);
-        auto e_cid = Cabana::slice<E_CIDS>(_edges);
-        auto e_pid = Cabana::slice<E_PID>(_edges);
-        auto e_layer = Cabana::slice<E_LAYER>(_edges);
+        auto e_gid = Cabana::slice<E_GID>(edges);
+        auto e_vid = Cabana::slice<E_VIDS>(edges);
+        auto e_rank = Cabana::slice<E_OWNER>(edges);
+        auto e_cid = Cabana::slice<E_CIDS>(edges);
+        auto e_pid = Cabana::slice<E_PID>(edges);
+        auto e_layer = Cabana::slice<E_LAYER>(edges);
 
 
         // Map edges to vertices and edges to faces
