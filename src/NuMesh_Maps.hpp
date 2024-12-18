@@ -17,7 +17,7 @@ namespace NuMesh
   \class V2E_Map
   \brief Builds a local CSR-like structure for mapping local vertices to local edges:
         View<int*> vertex_edge_offsets for the starting index of edges per vertex.
-        View<int*> vertex_edge_indices for storing edge indices in the adjacency list.
+        View<int*> vertex_edge_indices for storing local edge indices in the adjacency list.
         However, IDs stored are global IDs
 */
 template <class Mesh>
@@ -51,8 +51,6 @@ class V2E_Map
     {
         auto vertices = _mesh->vertices();
         auto edges = _mesh->edges();
-
-        const int rank = _rank;
 
         // Number of local vertices and edges.
         int num_vertices = vertices.size();
