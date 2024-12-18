@@ -102,7 +102,7 @@ int main( int argc, char* argv[] )
 
     auto vertex_edge_indices = v2e.vertex_edge_indices();
     auto vertex_edge_offsets = v2e.vertex_edge_offsets();
-    if (rank == 0)
+    if (rank == 1)
     {
     Kokkos::parallel_for("vertex_edge_offsets", Kokkos::RangePolicy<execution_space>(0, vertex_edge_offsets.extent(0)),
         KOKKOS_LAMBDA(int i) {
