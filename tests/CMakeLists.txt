@@ -7,6 +7,14 @@ if (ENABLE_TESTS)
                        OUTPUT_DIR ${TEST_OUTPUT_DIRECTORY})
     blt_add_test(NAME MeshTests
                  COMMAND tstMesh2D)
+
+    blt_add_executable(NAME tstMaps
+                       SOURCES tstMaps.cpp 
+                       HEADERS tstMaps.hpp
+                       DEPENDS_ON numesh gtest
+                       OUTPUT_DIR ${TEST_OUTPUT_DIRECTORY})
+    blt_add_test(NAME MapTests
+                 COMMAND tstMaps)
     
                  
     # blt_add_executable( NAME     tstBoundaryCondition
