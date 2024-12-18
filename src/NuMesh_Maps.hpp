@@ -12,16 +12,19 @@
 namespace NuMesh
 {
 
+namespace Maps
+{
+
 //---------------------------------------------------------------------------//
 /*!
-  \class V2E_Map
+  \class V2E
   \brief Builds a local CSR-like structure for mapping local vertices to local edges:
         View<int*> vertex_edge_offsets for the starting index of edges per vertex.
         View<int*> vertex_edge_indices for storing local edge indices in the adjacency list.
         However, IDs stored are global IDs
 */
 template <class Mesh>
-class V2E_Map
+class V2E
 {
   public:
 
@@ -29,12 +32,12 @@ class V2E_Map
     using execution_space = typename Mesh::execution_space;
     using integer_view = Kokkos::View<int*, memory_space>;
 
-    V2E_Map( std::shared_ptr<Mesh> mesh )
+    V2E( std::shared_ptr<Mesh> mesh )
         : _mesh ( mesh )
         , _comm ( mesh->comm() )
         , _map_version ( mesh->version() )
     {
-        static_assert( isnumesh_mesh<Mesh>::value, "NuMesh::V2E_Map: NuMesh Mesh required" );
+        static_assert( isnumesh_mesh<Mesh>::value, "NuMesh::V2E: NuMesh Mesh required" );
 
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
@@ -42,10 +45,10 @@ class V2E_Map
         build();
     };
 
-    ~V2E_Map() {}
+    ~V2E() {}
 
     /**
-     * Build the V2E_Map
+     * Build the V2E
      */
     void build()
     {
@@ -135,6 +138,8 @@ class V2E_Map
     integer_view _vertex_edge_indices;
     
 };
+
+} // end namespace Maps
 
 } // end namespce NuMesh
 

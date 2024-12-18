@@ -97,7 +97,7 @@ int main( int argc, char* argv[] )
     // }
 
     // Test haloing
-    auto v2e = NuMesh::V2E_Map(numesh);
+    auto v2e = NuMesh::Maps::V2E(numesh);
     auto halo = NuMesh::createHalo(numesh, NuMesh::Edge(), 1, 1);
 
     auto vertex_edge_indices = v2e.vertex_edge_indices();

@@ -42,43 +42,33 @@ class MapsTest : public Mesh2DTest<T>
     }
     
     /**
-     * Tests the v2e_map by checking that for each edge,
+     * Tests the V2E by checking that for each edge,
      * its local ID appears in the correct spot in the map
      */
     void test_v2e()
     {
         this->gatherAndCopyToHost();
 
-        auto v2e = NuMesh::V2E_Map(this->mesh_);
+        auto v2e = NuMesh::Maps::V2E(this->mesh_);
         auto vertex_edge_offsets_d = v2e.vertex_edge_offsets();
         auto vertex_edge_indices_d = v2e.vertex_edge_indices();
         auto vertex_edge_offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), vertex_edge_offsets_d);
         auto vertex_edge_indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), vertex_edge_indices_d);
-
-        // if (this->rank_ != 0) return;
-        if (this->rank_ == 0) return;
-
+        
         auto e_gid = Cabana::slice<E_GID>(this->edges);
         auto v_gid = Cabana::slice<V_GID>(this->vertices);
         auto e_vid = Cabana::slice<E_VIDS>(this->edges);
-
-        int num_vertices = this->vertices.size();
-        int num_edges = this->edges.size();
 
         /**
          * For some reason, gatherAndCopyToHost does not update the size of the 
          * mesh in mesh_, only the local vertices, edges, and faces values.
          * 
          * This means v2e only builds on the values in mesh_ before
-         * gatherAndCopyToHost is called. Since gatherAndCopyToHost copies
-         * all values to rank 0, rank 0 needs to adjust num_vertices
-         * and num_edges
+         * gatherAndCopyToHost is called. To not index out-of-bounds,
+         * we need to get the size from the mesh_ object
          */
-        if (this->rank_ == 0)
-        {
-            num_vertices = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
-            num_edges = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
-        }
+        int num_vertices = this->mesh_->vertices().size();
+        int num_edges = this->mesh_->edges().size();
 
         for (int i = 0; i < num_edges; i++)
         {
