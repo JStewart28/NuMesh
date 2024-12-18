@@ -3,6 +3,7 @@
 
 #include <Cabana_Core.hpp>
 #include <Kokkos_Core.hpp>
+#include <Kokkos_Sort.hpp> // From KokkosKernels
 #include <memory>
 
 #include <mpi.h>
@@ -17,6 +18,82 @@ namespace Utils
 /*!
   Utility functions
 */
+//---------------------------------------------------------------------------//
+
+template <typename ViewType>
+ViewType filter_unique(const ViewType& input) {
+    using ValueType = typename ViewType::value_type;
+    using memory_space = typename ViewType::memory_space;
+    using execution_space = typename ViewType::execution_space;
+
+    size_t n = input.extent(0);
+
+     if (n == 0)
+     {
+        return ViewType("unique", 0); // Handle empty input case
+    }
+
+    // for (size_t i = 0; i < n; i++)
+    // {
+    //     printf("input %d: %d\n", i, input(i));
+    // }
+
+    // Sort the input view
+    Kokkos::View<ValueType*, memory_space> sorted("sorted", n);
+    Kokkos::deep_copy(sorted, input);
+    Kokkos::sort(sorted);
+
+    // for (size_t i = 0; i < n; i++)
+    // {
+    //     printf("sorted %d: %d\n", i, sorted(i));
+    // }
+
+    // Create a mask to identify unique elements
+    Kokkos::View<int*, memory_space> unique_mask("unique_mask", n);
+    Kokkos::parallel_for("MarkUnique", Kokkos::RangePolicy<execution_space>(0, n), KOKKOS_LAMBDA(int i) {
+        if (i == 0) {
+            unique_mask(i) = 1; // First element is always unique
+        } else {
+            unique_mask(i) = (sorted(i) != sorted(i - 1)) ? 1 : 0;
+        }
+    });
+
+    // for (size_t i = 0; i < n; i++)
+    // {
+    //     printf("mask %d: %d\n", i, unique_mask(i));
+    // }
+
+    // Perform a prefix sum to find new indices for unique elements
+    Kokkos::View<int*, memory_space> unique_indices("unique_indices", n);
+    Kokkos::parallel_scan("PrefixSum", Kokkos::RangePolicy<execution_space>(0, n), 
+        KOKKOS_LAMBDA(int i, int& sum, bool final) {
+        if (final) {
+            unique_indices(i) = sum;
+        }
+        sum += unique_mask(i);
+    });
+
+    // Get the count of unique elements
+    int unique_count;
+    Kokkos::deep_copy(unique_count, Kokkos::subview(unique_indices, n - 1));
+    unique_count++; // Why do we need this?
+
+    // Create a new view for the unique elements
+    ViewType unique("unique", unique_count);
+    Kokkos::parallel_for("CompactUnique", Kokkos::RangePolicy<execution_space>(0, n),
+        KOKKOS_LAMBDA(int i) {
+        if (unique_mask(i)) {
+            unique(unique_indices(i)) = sorted(i);
+        }
+    });
+
+    // for (int i = 0; i < unique_count; i++)
+    // {
+    //     printf("unique %d: %d\n", i, unique(i));
+    // }
+
+    return unique;
+}
 
 template <std::size_t Size, class Scalar>
 auto vectorToArray( std::vector<Scalar> vector )
