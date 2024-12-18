@@ -100,23 +100,20 @@ int main( int argc, char* argv[] )
     auto v2e = NuMesh::Maps::V2E(numesh);
     auto halo = NuMesh::createHalo(numesh, NuMesh::Edge(), 1, 1);
 
-    auto vertex_edge_indices = v2e.vertex_edge_indices();
-    auto vertex_edge_offsets = v2e.vertex_edge_offsets();
-    if (rank == 1)
-    {
-    Kokkos::parallel_for("vertex_edge_offsets", Kokkos::RangePolicy<execution_space>(0, vertex_edge_offsets.extent(0)),
+    size_t vsize = 1;
+    Kokkos::View<int*, memory_space> verts("verts", vsize);
+    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, vsize),
         KOKKOS_LAMBDA(int i) {
 
-            printf("R%d: l/g offset (%d, %d): %d\n", rank, i, vef_gid_start(rank, 0)+i, vertex_edge_offsets(i));
+            verts(i) = i;
 
         });
-    Kokkos::parallel_for("vertex_edge_indices", Kokkos::RangePolicy<execution_space>(0, vertex_edge_indices.extent(0)),
-        KOKKOS_LAMBDA(int i) {
+    auto halo_verts = halo.gather_local_neighbors(verts, 0);
 
-            printf("R%d: vertex_edge_indices %d: (%d, %d)\n", rank, i, vertex_edge_indices(i), vertex_edge_indices(i)+vef_gid_start(rank, 1));
-
-        });
-    }
+    // for (size_t i = 0; i < halo_verts.extent(0); i++)
+    // {
+    //     printf("R%d: vert %d added\n", rank, halo_verts(i));
+    // }
 
     } // Scope guard
 

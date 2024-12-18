@@ -26,6 +26,7 @@ class Halo
     using memory_space = typename Mesh::memory_space;
     using execution_space = typename Mesh::execution_space;
     using integer_view = Kokkos::View<int*, memory_space>;
+    using int_d = Kokkos::View<int, memory_space>;
 
     Halo( std::shared_ptr<Mesh> mesh, const int entity, const int level, const int depth )
         : _mesh ( mesh )
@@ -51,11 +52,11 @@ class Halo
     }
 
     /**
-     * Given a list of vertices and a level of the tree, update
+     * Given a list of vertex GIDs and a level of the tree, update
      * _vertex_ids and _edge_ids with edges connected to vertices
      * in the input list and the vertices of those connected edges.
      * 
-     * Returns a list of new vertices added to the halo.
+     * Returns a list of new vertex GIDs added to the halo.
      */
     integer_view gather_local_neighbors(integer_view verts, int level)
     {
@@ -67,16 +68,6 @@ class Halo
 
         const int rank = _rank, comm_size = _comm_size;
 
-        /**
-         * Allocate views. Each vertex can have at most six edges and six vertices
-         * extending from it.
-         * 
-         * XXX - optimize this size estimate
-         */
-        int size = verts.extent(0);
-        Kokkos::resize(_vertex_ids, _vertex_ids.extent(0) + size*6);
-        Kokkos::resize(_edge_ids, _edge_ids.extent(0) + size*6);
-
         auto vertices = _mesh->vertices();
         auto edges = _mesh->edges();
 
@@ -87,7 +78,10 @@ class Halo
         Kokkos::deep_copy(hv_tmp, vef_gid_start);
         Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
 
-        int owned_vertices = _mesh->count(Own(), Vertex());
+        // Create vertices to edges map
+        auto v2e = Maps::V2E(_mesh);
+        auto vertex_edge_offsets = v2e.vertex_edge_offsets();
+        auto vertex_edge_indices = v2e.vertex_edge_indices();
 
         // Vertex slices
         auto v_gid = Cabana::slice<V_GID>(vertices);
@@ -100,19 +94,84 @@ class Halo
         auto e_pid = Cabana::slice<E_PID>(edges);
         auto e_layer = Cabana::slice<E_LAYER>(edges);
 
-
-        // Map edges to vertices and edges to faces
+        /**
+         * Allocate views. Each vertex can have at most six edges and six vertices
+         * extending from it.
+         * 
+         * XXX - optimize this size estimate
+         */
+        size_t size = verts.extent(0);
+        integer_view vids_view("vids_view", size*6);
+        integer_view eids_view("eids_view", size*6);
+        int_d vertex_idx("vertex_idx");
+        int_d edge_idx("edge_idx");
+        Kokkos::deep_copy(vertex_idx, 0);
+        Kokkos::deep_copy(edge_idx, 0);
         
+        int owned_vertices = _mesh->count(Own(), Vertex());
         Kokkos::parallel_for("gather neighboring vertex and edge IDs", Kokkos::RangePolicy<execution_space>(0, size),
             KOKKOS_LAMBDA(int i) {
             
-            int vlid = v_gid(i) - vef_gid_start_d(rank, 0);
+            int vgid = v_gid(i);
+            int vlid = vgid - vef_gid_start_d(rank, 0);
             if ((vlid >= 0) && (vlid < owned_vertices)) // Make sure we own the vertex
             {
-                
+                int offset = vertex_edge_offsets(vlid);
+                int next_offset = (vlid + 1 < (int) vertex_edge_offsets.extent(0)) ? 
+                          vertex_edge_offsets(vlid + 1) : 
+                          (int) vertex_edge_indices.extent(0);
+
+                // Loop over connected edges
+                for (int j = offset; j < next_offset; j++)
+                {
+                    int elid = vertex_edge_indices(j); // Local edge ID
+
+                    // Add edge to list of edges if it's on our layer
+                    int egid = e_gid(elid);
+                    int elayer = e_layer(elid);
+                    if (elayer == level)
+                    {
+                        int edx = Kokkos::atomic_fetch_add(&edge_idx(), 1);
+                        eids_view(edx) = egid;
+                        // printf("R%d: for VGID %d, adding EGID %d\n", rank, vgid, egid);
+                    }
+                    
+                    // Get the vertices connected by this edge
+                    for (int v = 0; v < 2; v++)
+                    {
+                        int neighbor_vgid = e_vid(elid, v);
+
+                        if (neighbor_vgid != vgid)
+                        {
+                            int vdx = Kokkos::atomic_fetch_add(&vertex_idx(), 1);
+                            vids_view(vdx) = neighbor_vgid;
+                            // printf("R%d: for VGID %d, adding VGID %d\n", rank, vgid, neighbor_vgid);
+                        }
+                    }
+                }
             }
         });
         Kokkos::fence();
+        int num_verts, num_edges;
+        Kokkos::deep_copy(num_verts, vertex_idx);
+        Kokkos::deep_copy(num_edges, edge_idx);
+
+        // Resize views and remove unique values
+        Kokkos::resize(vids_view, num_verts);
+        Kokkos::resize(eids_view, num_edges);
+        auto unique_vids = Utils::filter_unique(vids_view);
+        auto unique_eids = Utils::filter_unique(eids_view);
+
+        // Resize and copy into class variables
+        /**
+         * Resize and copy into class variables, keeping
+         * existing values and removing any added duplicates
+         */
+        // Kokkos::resize(_vertex_ids, unique_vids.extent(0));
+        // Kokkos::resize(_edge_ids, unique_eids.extent(0));
+        // Kokkos::deep_copy(_vertex_ids, unique_)
+
+        return unique_vids;
     }
 
   private:
