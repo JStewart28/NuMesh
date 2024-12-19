@@ -122,6 +122,64 @@ class Mesh
     }
 
     /**
+     * Returns a vector of length communicator size,
+     * where vector(other_rank) is true if the rank is a neighbor.
+     * 
+     * vector(rank) is false
+     * 
+     * XXX - store this data so we don't have to recompute each time
+     */
+    Kokkos::View<bool*, memory_space> get_neighbors()
+    {
+        auto e_vids = Cabana::slice<E_VIDS>(_edges);
+        const int rank = _rank;
+
+        // Copy _vef_gid_start to device
+        Kokkos::View<int*[3], MemorySpace> vef_gid_start_d("vef_gid_start_d", _comm_size);
+        auto hv_tmp = Kokkos::create_mirror_view(vef_gid_start_d);
+        Kokkos::deep_copy(hv_tmp, _vef_gid_start);
+        Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
+
+        Kokkos::View<bool*, memory_space> is_neighbor("is_neighbor", _comm_size);
+        Kokkos::deep_copy(is_neighbor, false);
+        Kokkos::parallel_for("find_neighbors", Kokkos::RangePolicy<execution_space>(0, _owned_edges),
+            KOKKOS_LAMBDA(int i) {
+
+            for (int v = 0; v < 2; v++)
+            {
+                int vgid = e_vids(i, v);
+                int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
+
+                if (vertex_owner != rank)
+                {
+                    Kokkos::atomic_store(&is_neighbor(vertex_owner), true);
+                }
+            }
+        });
+
+        return is_neighbor;
+    }
+
+    /**
+     * Retuns the number of neighbors we have
+     * 
+     * XXX - store this data so we don't have to recompute each time
+     */
+    int num_neighbors()
+    {
+        auto is_neighbor = get_neighbors();
+        int num_neighbors = 0;
+        Kokkos::parallel_reduce("count_neighbors", Kokkos::RangePolicy<execution_space>(0, _is_neighbor.extent(0)),
+            KOKKOS_LAMBDA(const int i, int& local_count) {
+
+            if (is_neighbor(i)) {
+                local_count += 1;
+            }
+        }, num_neighbors);
+        return num_neighbors;
+    }
+
+    /**
      * Create faces from vertices and edges
      * Each vertex is associated with at least one face
      */
