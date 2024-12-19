@@ -27,8 +27,14 @@ class Halo
     using execution_space = typename Mesh::execution_space;
     using integer_view = Kokkos::View<int*, memory_space>;
     using int_d = Kokkos::View<int, memory_space>;
+    using RankToEntityListMap = Kokkos::UnorderedMap<int, integer_view>;
 
-    Halo( std::shared_ptr<Mesh> mesh, const int entity, const int level, const int depth )
+    /**
+     * x_guess parameters: guesses to how many vertices, edges, and faces, per rank,
+     * will be in the halo to avoid frequent resizing.
+     */
+    Halo( std::shared_ptr<Mesh> mesh, const int entity, const int level, const int depth,
+          const int vert_guess=50, const int edge_guess=50, const int face_guess=50 )
         : _mesh ( mesh )
         , _entity ( entity )
         , _level ( level )
@@ -41,6 +47,29 @@ class Halo
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
 
+        int num_edges = _mesh->count(Own(), Edge());
+        _boundary_edges = Kokkos::View<bool*>("boundary_edges", num_edges);
+
+        // Create and initalize rank-to-boundary-entities maps
+        _rank_to_boundary_vertices = RankToEntityListMap("_rank_to_boundary_vertices", _comm_size);
+        _rank_to_boundary_edges = RankToEntityListMap("_rank_to_boundary_edges", _comm_size);
+        rank_to_boundary_vertices = _rank_to_boundary_vertices;
+        rank_to_boundary_edges = _rank_to_boundary_edges;
+        Kokkos::parallel_for("Insert keys", Kokkos::RangePolicy<execution_space>(0, _comm_size),
+            KOKKOS_LAMBDA(const int key) {
+
+            if (rank_to_boundary_vertices.insert(key) != MapType::invalid_index) {
+                // Allocate a view for each key
+                rank_to_boundary_vertices.value_at(
+                    rank_to_boundary_vertices.find(key)) = VectorType("vertex_rank_vector", vert_guess);
+            }
+            if (rank_to_boundary_edges.insert(key) != MapType::invalid_index) {
+                // Allocate a view for each key
+                rank_to_boundary_edges.value_at(
+                    rank_to_boundary_edges.find(key)) = VectorType("vertex_rank_vector", vert_guess);
+            }
+        });
+
         _vertex_ids = integer_view("_vertex_ids", 0);
         _edge_ids = integer_view("_edge_ids", 0);
     };
@@ -49,6 +78,89 @@ class Halo
     {
         //MPIX_Info_free(&_xinfo);
         //MPIX_Comm_free(&_xcomm);
+    }
+
+    /**
+     * Functor to add values to maps
+     * 
+     * XXX - currently performs linear search. Can be optimized.
+     */
+    auto add_value_to_map = KOKKOS_LAMBDA(int key, int value) {
+        auto key_index = map.find(key);
+        if (key_index != MapType::invalid_index) {
+            auto& vec = map.value_at(key_index);
+
+            // Check if the value is already in the vector
+            bool found = false;
+            for (size_t i = 0; i < vec.extent(0); ++i) {
+                if (vec(i) == value) {
+                    found = true;
+                    break;
+                }
+            }
+
+            // If the value is not found, add it to the vector
+            if (!found) {
+                auto new_size = vec.extent(0) + 1;
+                VectorType temp("temp", new_size);
+                Kokkos::deep_copy(temp, vec); // Copy old data
+                temp(new_size - 1) = value;   // Add new value
+                vec = temp;                  // Assign the new view
+            }
+        }
+    };
+
+    void build()
+    {
+
+    }
+
+    void find_boundary_edges_and_vertices()
+    {
+        const int rank = _rank;
+
+        auto vertices = _mesh->vertices();
+        auto edges = _mesh->edges();
+        auto e_vids = Cabana::slice<E_VIDS>(edges);
+        
+        // Get vef_gid_start and copy to device
+        auto vef_gid_start = _mesh->get_vef_gid_start();
+        Kokkos::View<int*[3], memory_space> vef_gid_start_d("vef_gid_start_d", _comm_size);
+        auto hv_tmp = Kokkos::create_mirror_view(vef_gid_start_d);
+        Kokkos::deep_copy(hv_tmp, vef_gid_start);
+        Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
+
+        int num_edges = _mesh->count(Own(), Edge());
+
+        Kokkos::parallel_for("MarkBoundaryEdges", Kokkos::RangePolicy<execution_space>(0, num_edges),
+            KOKKOS_LAMBDA(int edge_idx) {
+        
+            bool is_boundary = false;
+
+            // Iterate over the vertices of this edge
+            for (int v = 0; v < 2; v++) {
+                int vgid = e_vids(edge_idx, v);
+                int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
+
+                if (vertex_owner != rank) {
+                    is_boundary = true;
+
+                    // Insert this vertex into the rank-to-vertices map
+                    // Need atomics for safe parallel insertion
+                    auto result = rank_to_boundary_vertices.insert(vertex_owner);
+                    if (result.failed()) {
+                        // Handle failed insert due to collisions
+                    } else {
+                        auto vertex_list = result.value();
+                        Kokkos::atomic_fetch_add(&vertex_list(vertex_id), 1);
+                    }
+                }
+            }
+
+            if (is_boundary) {
+                boundary_edges(edge_idx) = true;
+            }
+        });
     }
 
     /**
@@ -125,11 +237,12 @@ class Halo
                 for (int j = offset; j < next_offset; j++)
                 {
                     int elid = vertex_edge_indices(j); // Local edge ID
-
-                    // Add edge to list of edges if it's on our layer
                     int egid = e_gid(elid);
                     int elayer = e_layer(elid);
-                    if (elayer == level)
+                    int erank = e_rank(elid);
+                    // Add edge to list of edges if it's on our layer
+                    // AND it is not ghosted
+                    if (elayer == level && erank == rank)
                     {
                         int edx = Kokkos::atomic_fetch_add(&edge_idx(), 1);
                         eids_view(edx) = egid;
@@ -196,6 +309,10 @@ class Halo
     integer_view _vertex_ids;
     integer_view _edge_ids;
     integer_view _face_ids;
+
+    Kokkos::View<bool*> _boundary_edges;
+    RankToEntityListMap _rank_to_boundary_vertices;
+    RankToEntityListMap _rank_to_boundary_edges;
     
 };
 
