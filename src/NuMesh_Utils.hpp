@@ -76,7 +76,7 @@ ViewType filter_unique(const ViewType& input) {
     // Get the count of unique elements
     int unique_count;
     Kokkos::deep_copy(unique_count, Kokkos::subview(unique_indices, n - 1));
-    unique_count++; // Why do we need this?
+    unique_count++; // Why do we need to do this?
 
     // Create a new view for the unique elements
     ViewType unique("unique", unique_count);
