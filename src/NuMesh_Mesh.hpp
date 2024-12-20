@@ -1588,8 +1588,8 @@ class Mesh
     int _owned_vertices, _owned_edges, _owned_faces, _ghost_vertices, _ghost_edges, _ghost_faces;
 
     // Neighbor ranks and boundary data
-    Kokkos::View<int*, memory_space> _neighbors;
-    Kokkos::View<int*, memory_space> _boundary_edges;
+    Kokkos::View<int*, memory_space> _neighbors;      // Ranks we are neighbors with
+    Kokkos::View<int*, memory_space> _boundary_edges; // GIDs of edges on an MPI boundary
 
     // How many vertices, edges, and faces each process owns
     // Index = rank
