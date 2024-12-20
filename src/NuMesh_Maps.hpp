@@ -65,7 +65,7 @@ class V2E
         auto v_gid = Cabana::slice<V_GID>(vertices);
 
         // Step 1: Count edges per vertex.
-        auto vef_gid_start = _mesh->get_vef_gid_start();
+        auto vef_gid_start = _mesh->vef_gid_start();
         int vertex_gid_start = vef_gid_start(_rank, 0);
         Kokkos::parallel_for("Count edges per vertex", Kokkos::RangePolicy<execution_space>(0, num_edges),
             KOKKOS_LAMBDA(const int e) {

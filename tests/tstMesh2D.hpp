@@ -263,7 +263,7 @@ class Mesh2DTest : public ::testing::Test
         auto e_gid = Cabana::slice<E_GID>(edges);
         auto f_gid = Cabana::slice<F_GID>(faces);
 
-        auto vef_gid_start = mesh_->get_vef_gid_start();
+        auto vef_gid_start = mesh_->vef_gid_start();
 
         for (int i = 0; i < lv; i++)
         {
