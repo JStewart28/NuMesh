@@ -27,10 +27,9 @@ class Halo
     using execution_space = typename Mesh::execution_space;
     using integer_view = Kokkos::View<int*, memory_space>;
     using int_d = Kokkos::View<int, memory_space>;
-    using RankToEntityListMap = Kokkos::UnorderedMap<int, integer_view>;
 
     /**
-     * guess parameter: guesses to how many vertices will be in the halo
+     * guess parameter: guess to how many vertices will be in the halo
      * to avoid frequent resizing.
      */
     Halo( std::shared_ptr<Mesh> mesh, const int entity, const int level, const int depth,
@@ -47,16 +46,19 @@ class Halo
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
 
-        _num_neighbors = -1;
-
         _num_vertices = guess;
-        _num_edges = _num_vertices / 2; // There will be about twice as many vertices as edges
+        _num_edges = _num_vertices; // There will be about twice as many vertices as edges,
+                                    // but a split edge adds two edges and one vertex
         _num_faces = _num_edges / 3; // Each face contains three edges
 
         int num_edges = _mesh->count(Own(), Edge());        
 
-        _vertex_ids = integer_view("_vertex_ids", 0);
-        _edge_ids = integer_view("_edge_ids", 0);
+        _vertex_send_offsets = integer_view("_vertex_send_offsets", _comm_size);
+        _vertex_send_ids = integer_view("_vertex_send_ids", _num_vertices);
+        _edge_send_offsets = integer_view("_edge_send_offsets", _comm_size);
+        _edge_send_ids =integer_view("_edge_send_ids", _num_edges);
+        _face_send_offsets = integer_view("_face_send_offsets", _comm_size);
+        _face_send_ids = integer_view("_face_send_ids", _num_faces);
 
         build();
     };
@@ -69,11 +71,6 @@ class Halo
 
     void build()
     {
-        // Neighbor data
-        _is_neighbor = _mesh->get_neighbors();
-        _num_neighbors = _mesh->num_neighbors();
-
-        find_boundary_edges_and_vertices();
 
 
     }
@@ -87,7 +84,7 @@ class Halo
         auto e_vids = Cabana::slice<E_VIDS>(edges);
         
         // Get vef_gid_start and copy to device
-        auto vef_gid_start = _mesh->get_vef_gid_start();
+        auto vef_gid_start = _mesh->vef_gid_start();
         Kokkos::View<int*[3], memory_space> vef_gid_start_d("vef_gid_start_d", _comm_size);
         auto hv_tmp = Kokkos::create_mirror_view(vef_gid_start_d);
         Kokkos::deep_copy(hv_tmp, vef_gid_start);
@@ -99,85 +96,85 @@ class Halo
          * Step 1: Initialize maps to map neighbor ranks to
          *  indicies into the offset views
          */
-        _rank_to_boundary_vertices = RankToEntityListMap(_num_neighbors);
-        _rank_to_boundary_edges = RankToEntityListMap(_num_neighbors);
-        _map_idx_counter = Kokkos::View<int*[3], memory_space>("_map_idx_counter", _comm_size);
-        Kokkos::deep_copy(_map_idx_counter, 0);
+        // _rank_to_boundary_vertices = RankToEntityListMap(_num_neighbors);
+        // _rank_to_boundary_edges = RankToEntityListMap(_num_neighbors);
+        // _map_idx_counter = Kokkos::View<int*[3], memory_space>("_map_idx_counter", _comm_size);
+        // Kokkos::deep_copy(_map_idx_counter, 0);
 
-        auto rank_to_boundary_vertices = _rank_to_boundary_vertices;
-        auto rank_to_boundary_edges = _rank_to_boundary_edges;
-        auto is_neighbor = _is_neighbor;
-        auto map_idx_counter = _map_idx_counter;
-        int num_vertices = _num_vertices, num_edges = _num_edges;
-        Kokkos::parallel_for("Insert keys", Kokkos::RangePolicy<execution_space>(0, _comm_size),
-            KOKKOS_LAMBDA(const int i) {
+        // auto rank_to_boundary_vertices = _rank_to_boundary_vertices;
+        // auto rank_to_boundary_edges = _rank_to_boundary_edges;
+        // auto is_neighbor = _is_neighbor;
+        // auto map_idx_counter = _map_idx_counter;
+        // int num_vertices = _num_vertices, num_edges = _num_edges;
+        // Kokkos::parallel_for("Insert keys", Kokkos::RangePolicy<execution_space>(0, _comm_size),
+        //     KOKKOS_LAMBDA(const int i) {
             
-            if (!is_neighbor(i)) return;
+        //     if (!is_neighbor(i)) return;
 
-            if (rank_to_boundary_vertices.insert(i) != RankToEntityListMap::invalid_index) {
-                // Allocate a view for each key
-                rank_to_boundary_vertices.value_at(
-                    rank_to_boundary_vertices.find(i)) = integer_view("vertex_rank_vector", num_vertices);
-            }
-            if (rank_to_boundary_edges.insert(i) != RankToEntityListMap::invalid_index) {
-                // Allocate a view for each key
-                rank_to_boundary_edges.value_at(
-                    rank_to_boundary_edges.find(i)) = integer_view("edge_rank_vector", num_edges);
-            }
-        });
+        //     if (rank_to_boundary_vertices.insert(i) != RankToEntityListMap::invalid_index) {
+        //         // Allocate a view for each key
+        //         rank_to_boundary_vertices.value_at(
+        //             rank_to_boundary_vertices.find(i)) = integer_view("vertex_rank_vector", num_vertices);
+        //     }
+        //     if (rank_to_boundary_edges.insert(i) != RankToEntityListMap::invalid_index) {
+        //         // Allocate a view for each key
+        //         rank_to_boundary_edges.value_at(
+        //             rank_to_boundary_edges.find(i)) = integer_view("edge_rank_vector", num_edges);
+        //     }
+        // });
         
 
-        /**
-         * Step 2: Iterate over edges to get the ranks we *know* we need to
-         * send to, i.e. we have an edge that connects to their vertex.
-         * 
-         * Add this vertex to the list of vertices going to this remote rank.
-         * 
-         * Store the counts for the edges and vertices in _map_idx_counter
-         */
-        _map_idx_counter = Kokkos::View<int*[3], memory_space>("_map_idx_counter", _comm_size);
-        //int_d num_neighbors("num_neighbors");
-        Kokkos::deep_copy(_map_idx_counter, 0);
-        //Kokkos::deep_copy(num_neighbors, 0);
-        Kokkos::parallel_for("MarkNeighborRanks", Kokkos::RangePolicy<execution_space>(0, edge_count),
-            KOKKOS_LAMBDA(int edge_idx) {
+        // /**
+        //  * Step 2: Iterate over edges to get the ranks we *know* we need to
+        //  * send to, i.e. we have an edge that connects to their vertex.
+        //  * 
+        //  * Add this vertex to the list of vertices going to this remote rank.
+        //  * 
+        //  * Store the counts for the edges and vertices in _map_idx_counter
+        //  */
+        // _map_idx_counter = Kokkos::View<int*[3], memory_space>("_map_idx_counter", _comm_size);
+        // //int_d num_neighbors("num_neighbors");
+        // Kokkos::deep_copy(_map_idx_counter, 0);
+        // //Kokkos::deep_copy(num_neighbors, 0);
+        // Kokkos::parallel_for("MarkNeighborRanks", Kokkos::RangePolicy<execution_space>(0, edge_count),
+        //     KOKKOS_LAMBDA(int edge_idx) {
 
-            for (int v = 0; v < 2; v++) {
-                int vgid = e_vids(edge_idx, v);
-                int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
+        //     for (int v = 0; v < 2; v++) {
+        //         int vgid = e_vids(edge_idx, v);
+        //         int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
 
-                if (vertex_owner != rank)
-                {
-                    // We need to send the other vertex on this edge
-                    int other_vert = !v;
+        //         if (vertex_owner != rank)
+        //         {
+        //             // We need to send the other vertex on this edge
+        //             int other_vert = !v;
 
-                    // Add this vertex ID to the vertex map
-                    auto key_index = rank_to_boundary_edges.find(vertex_owner);
+        //             // Add this vertex ID to the vertex map
+        //             auto key_index = rank_to_boundary_edges.find(vertex_owner);
 
-                    // If the key is already in the map, check and add the value if necessary
-                    if (key_index != RankToEntityListMap::invalid_index) {
-                        auto& vec = rank_to_boundary_edges.value_at(key_index);
+        //             // If the key is already in the map, check and add the value if necessary
+        //             if (key_index != RankToEntityListMap::invalid_index) {
+        //                 auto& vec = rank_to_boundary_edges.value_at(key_index);
 
-                        // Check if the value is already in the vector
-                        bool found = false;
-                        for (size_t i = 0; i < vec.extent(0); i++) {
-                            if (vec(i) == other_vert) {
-                                found = true;
-                                break;
-                            }
-                        }
+        //                 // Check if the value is already in the vector
+        //                 bool found = false;
+        //                 for (size_t i = 0; i < vec.extent(0); i++) {
+        //                     if (vec(i) == other_vert) {
+        //                         found = true;
+        //                         break;
+        //                     }
+        //                 }
 
-                        // If the value is not found, add it to the vector
-                        if (!found)
-                        {
-                            // Increment neighbor rank counter
-                            int vdx = Kokkos::atomic_fetch_add(&map_idx_counter(vertex_owner, 0), 1);
-                            vec(vdx) = other_vert;
-                        }
-                    }
-                }
-            }
-        });
+        //                 // If the value is not found, add it to the vector
+        //                 if (!found)
+        //                 {
+        //                     // Increment neighbor rank counter
+        //                     int vdx = Kokkos::atomic_fetch_add(&map_idx_counter(vertex_owner, 0), 1);
+        //                     vec(vdx) = other_vert;
+        //                 }
+        //             }
+        //         }
+        //     }
+        // });
     }
 
     /**
@@ -201,7 +198,7 @@ class Halo
         auto edges = _mesh->edges();
 
         // Get vef_gid_start and copy to device
-        auto vef_gid_start = _mesh->get_vef_gid_start();
+        auto vef_gid_start = _mesh->vef_gid_start();
         Kokkos::View<int*[3], memory_space> vef_gid_start_d("vef_gid_start_d", _comm_size);
         auto hv_tmp = Kokkos::create_mirror_view(vef_gid_start_d);
         Kokkos::deep_copy(hv_tmp, vef_gid_start);
@@ -323,12 +320,9 @@ class Halo
     int _rank, _comm_size;
 
     /**
-     * _map_idx_counter: for each rank, store the number of
-     * vertices, edges, and faces we must halo them
+     * Boundary edges
      */
-    Kokkos::View<int*[3], memory_space> _map_idx_counter;
-    Kokkos::View<bool*, memory_space> _is_neighbor;
-    int _num_neighbors;
+
     
     /**
      * Vertex, Edge, and Face global IDs included in this halo
@@ -346,9 +340,6 @@ class Halo
 
     // Number of vertices, edges, and faces in the halo
     int _num_vertices, _num_edges, _num_faces; 
-
-    RankToEntityListMap _rank_to_boundary_vertices;
-    RankToEntityListMap _rank_to_boundary_edges;
     
 };
 
