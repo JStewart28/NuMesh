@@ -131,6 +131,7 @@ class Mesh
     void _populate_neighbors_and_boundary_edges()
     {
         auto e_vids = Cabana::slice<E_VIDS>(_edges);
+        auto e_gid = Cabana::slice<E_GID>(_edges);
         const int rank = _rank;
 
         // Copy _vef_gid_start to device
@@ -207,7 +208,7 @@ class Mesh
             if (is_n)
             {
                 int idx = Kokkos::atomic_fetch_add(&counter_e(), 1);
-                boundary_edges(idx) = i; 
+                boundary_edges(idx) = e_gid(i); 
             }
         });
         Kokkos::sort(boundary_edges);
@@ -322,6 +323,7 @@ class Mesh
     void _finializeInit()
     {
         _createFaces();
+        _populate_neighbors_and_boundary_edges();
     }
 
         /**
