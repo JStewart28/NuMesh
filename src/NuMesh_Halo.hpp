@@ -7,7 +7,7 @@
 
 #include <NuMesh_Utils.hpp>
 #include <NuMesh_Mesh.hpp>
-#include <NuMhes_Maps.hpp>
+#include <NuMesh_Maps.hpp>
 
 #include <mpi.h>
 
@@ -41,6 +41,7 @@ class Halo
         , _depth ( depth )
         , _comm ( mesh->comm() )
         , _halo_version ( mesh->version() )
+        , _v2e ( Maps::V2E<Mesh>(_mesh) )
     {
         static_assert( isnumesh_mesh<Mesh>::value, "NuMesh::Halo: NuMesh Mesh required" );
 
@@ -68,8 +69,6 @@ class Halo
         Kokkos::deep_copy(_face_send_offsets, -1);
         Kokkos::deep_copy(_face_send_ids, -1);
 
-        _v2e = Maps::V2E<Mesh>(_mesh);
-
         build();
     };
 
@@ -81,7 +80,7 @@ class Halo
 
     void build()
     {
-
+        create_push_halo();
 
     }
 
@@ -108,7 +107,7 @@ class Halo
         auto e_vids = Cabana::slice<E_VIDS>(edges);
 
         auto boundary_edges = _mesh->boundary_edges();
-        auto neighbor_ranks = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), _mesh->neighbor_ranks());
+        auto neighbor_ranks = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), _mesh->neighbors());
         
         // Get vef_gid_start and copy to device
         auto vef_gid_start = _mesh->vef_gid_start();
@@ -128,9 +127,11 @@ class Halo
          * 
          * XXX - can this be done in parallel?
          */
-        for (size_t i = 0; i < nieghbor_ranks.extent(0); i++)
+        for (size_t i = 0; i < neighbor_ranks.extent(0); i++)
         {
             int neighbor_rank = neighbor_ranks(i);
+
+            // Set the offsets where the data for this rank will start in the indices views
             int v_offset = _vdx;
             int e_offset = _edx;
             auto v_subview = Kokkos::subview(_vertex_send_offsets, neighbor_rank);
@@ -167,7 +168,12 @@ class Halo
             Kokkos::deep_copy(max_idx, counter);
             Kokkos::resize(vert_seeds, max_idx+1);
 
-            auto added_verts = gather_local_neighbors(vert_seeds);
+            // Store true if added to the halo to avoid uniqueness searches
+            Kokkos::View<bool*, memory_space> vb("vb", vertex_count);
+            Kokkos::View<bool*, memory_space> eb("eb", edge_count);
+            Kokkos::deep_copy(vb, false);
+            Kokkos::deep_copy(eb, false);
+            auto added_verts = gather_local_neighbors(vert_seeds, vb, eb);
 
             // _vdx = ; 
 
@@ -196,9 +202,13 @@ class Halo
      * _vertex_ids and _edge_ids with edges connected to vertices
      * in the input list and the vertices of those connected edges.
      * 
+     * bool_views are of length num_vertices and num_edges, and are true
+     * if the element LID is already present in the push halo of GIDs
+     * 
      * Returns a list of new vertex GIDs added to the halo.
      */
-    integer_view gather_local_neighbors(integer_view verts)
+    template <class bool_view>
+    integer_view gather_local_neighbors(const integer_view& verts, bool_view& vb, bool_view& eb)
     {
         if (_halo_version != _mesh->version())
         {
@@ -206,7 +216,7 @@ class Halo
                 "NuMesh::Halo::gather_local_neighbors: mesh and halo version do not match" );
         }
 
-        const int rank = _rank, comm_size = _comm_size;
+        const int level = _level, rank = _rank, comm_size = _comm_size;
 
         auto vertices = _mesh->vertices();
         auto edges = _mesh->edges();
@@ -250,7 +260,7 @@ class Halo
         Kokkos::parallel_for("gather neighboring vertex and edge IDs", Kokkos::RangePolicy<execution_space>(0, size),
             KOKKOS_LAMBDA(int i) {
             
-            int vgid = v_gid(i);
+            int vgid = verts(i);
             int vlid = vgid - vef_gid_start_d(rank, 0);
             if ((vlid >= 0) && (vlid < owned_vertices)) // Make sure we own the vertex
             {
@@ -268,20 +278,28 @@ class Halo
                     int erank = e_rank(elid);
                     // Add edge to list of edges if it's on our layer
                     // AND it is not ghosted
-                    if (elayer == level && erank == rank)
+                    // AND it is not already added
+                    if ((elayer == level) && (erank == rank))
                     {
-                        int edx = Kokkos::atomic_fetch_add(&edge_idx(), 1);
-                        eids_view(edx) = egid;
+                        // auto old = atomic_compare_exchange(&obj, expected, desired);
+                        bool val = Kokkos::atomic_compare_exchange(&eb(elid), false, true);
+                        if (!val)
+                        {
+                            int edx = Kokkos::atomic_fetch_add(&edge_idx(), 1);
+                            eids_view(edx) = egid;
+                        }
+                        
                         // printf("R%d: for VGID %d, adding EGID %d\n", rank, vgid, egid);
                     }
                     
-                    // Get the vertices connected by this edge
+                    // Get the other vertex connected by this edge
                     for (int v = 0; v < 2; v++)
                     {
                         int neighbor_vgid = e_vid(elid, v);
-
-                        if (neighbor_vgid != vgid)
+                        if (neighbor_vgid != vgid) // Checks this is the other vertex
                         {
+                            int neighbor_vlid = neighbor_vgid - vef_gid_start_d(rank, 0);
+                            bool val = Kokkos::atomic_compare_exchange(&vb(neighbor_vlid), false, true);
                             int vdx = Kokkos::atomic_fetch_add(&vertex_idx(), 1);
                             vids_view(vdx) = neighbor_vgid;
                             // printf("R%d: for VGID %d, adding VGID %d\n", rank, vgid, neighbor_vgid);
@@ -298,19 +316,22 @@ class Halo
         // Resize views and remove unique values
         Kokkos::resize(vids_view, num_verts);
         Kokkos::resize(eids_view, num_edges);
-        auto unique_vids = Utils::filter_unique(vids_view);
-        auto unique_eids = Utils::filter_unique(eids_view);
+        // auto unique_vids = Utils::filter_unique(vids_view);
+        // auto unique_eids = Utils::filter_unique(eids_view);
 
-        // Resize and copy into class variables
         /**
-         * Resize and copy into class variables, keeping
-         * existing values and removing any added duplicates
+         * Add IDs to offset views starting at offsets
+         * _vdx and _edx
          */
-        // Kokkos::resize(_vertex_ids, unique_vids.extent(0));
-        // Kokkos::resize(_edge_ids, unique_eids.extent(0));
-        // Kokkos::deep_copy(_vertex_ids, unique_)
+        auto v_subview = Kokkos::subview(_vertex_send_ids, std::make_pair(_vdx, _vdx + num_verts));
+        Kokkos::deep_copy(v_subview, vids_view);
+        auto e_subview = Kokkos::subview(_vertex_send_ids, std::make_pair(_edx, _edx + num_edges));
+        Kokkos::deep_copy(e_subview, eids_view);
 
-        return unique_vids;
+        // Update values of _vdx and _edx
+        _vdx += num_verts; _edx += num_edges;
+
+        return vids_view;
     }
 
   private:
@@ -341,7 +362,8 @@ class Halo
      * Vertex, Edge, and Face global IDs included in this halo
      * 
      * offsets and IDs views: for each rank, specifies the 'offset' 
-     *  into 'ids' where the vertex/edge/face GID data resides
+     *  into 'ids' where the vertex/edge/face GID data resides.
+     * IDs are global IDs.
      *          
      */
     integer_view _vertex_send_offsets;

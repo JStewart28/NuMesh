@@ -100,15 +100,15 @@ int main( int argc, char* argv[] )
     auto v2e = NuMesh::Maps::V2E(numesh);
     auto halo = NuMesh::createHalo(numesh, NuMesh::Edge(), 1, 1);
 
-    size_t vsize = 1;
-    Kokkos::View<int*, memory_space> verts("verts", vsize);
-    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, vsize),
-        KOKKOS_LAMBDA(int i) {
+    // size_t vsize = 1;
+    // Kokkos::View<int*, memory_space> verts("verts", vsize);
+    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, vsize),
+    //     KOKKOS_LAMBDA(int i) {
 
-            verts(i) = i;
+    //         verts(i) = i;
 
-        });
-    auto halo_verts = halo.gather_local_neighbors(verts, 0);
+    //     });
+    
 
     // for (size_t i = 0; i < halo_verts.extent(0); i++)
     // {
