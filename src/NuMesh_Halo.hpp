@@ -144,19 +144,20 @@ class Halo
             Kokkos::View<int, memory_space> counter("counter");
             Kokkos::deep_copy(vert_seeds, -1);
             Kokkos::deep_copy(counter, 0);
-
             Kokkos::parallel_for("populate vertex seeds",
                 Kokkos::RangePolicy<execution_space>(0, boundary_edges.extent(0)),
                 KOKKOS_LAMBDA(int edge_idx) {
                 
                 int egid = boundary_edges(edge_idx);
                 int elid = Utils::get_lid(e_gid, egid, 0, edge_count);
+                if (rank == 1) printf("R%d: elg: %d, %d\n", rank, elid, egid);
 
                 for (int v = 0; v < 2; v++)
                 {
-                    int vgid = e_vids(i, v);
+                    int vgid = e_vids(elid, v);
                     int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
-
+                    // if (rank == 1) printf("R%d: elg: %d, %d, vg: %d, vowner: %d, neighbor rank: %d\n", rank, elid, egid,
+                    //     vgid, vertex_owner, neighbor_rank);
                     if (vertex_owner == neighbor_rank)
                     {
                         int idx = Kokkos::atomic_fetch_add(&counter(), 1);
@@ -164,15 +165,26 @@ class Halo
                     }
                 }
             });
+            return;
             int max_idx;
             Kokkos::deep_copy(max_idx, counter);
-            Kokkos::resize(vert_seeds, max_idx+1);
+            Kokkos::resize(vert_seeds, max_idx);
+            auto verts_unique = Utils::filter_unique(vert_seeds);
+            printf("R%d max idx: %d\n", rank, max_idx);
 
+            Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, verts_unique.extent(0)),
+                KOKKOS_LAMBDA(int i) {
+
+                if (rank == 0) printf("R%d: rank %d: verts_unique %d: %d\n", rank, neighbor_rank, i, verts_unique(i));
+
+            });
+            return;
             // Store true if added to the halo to avoid uniqueness searches
             Kokkos::View<bool*, memory_space> vb("vb", vertex_count);
             Kokkos::View<bool*, memory_space> eb("eb", edge_count);
             Kokkos::deep_copy(vb, false);
             Kokkos::deep_copy(eb, false);
+            
             auto added_verts = gather_local_neighbors(vert_seeds, vb, eb);
 
             // _vdx = ; 
@@ -193,6 +205,22 @@ class Halo
 
             // }
             // auto added_verts = gather_local_neighbors(vert_seeds);
+            auto vertex_send_offsets = _vertex_send_offsets;
+            auto vertex_send_ids = _vertex_send_ids;
+            Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, neighbor_ranks.extent(0)),
+                KOKKOS_LAMBDA(int i) {
+
+                if (rank == 0) printf("R%d: rank: %d, offset: %d\n", rank, neighbor_ranks(i), vertex_send_offsets(neighbor_ranks(i)));
+
+            });
+
+            Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _vdx),
+                KOKKOS_LAMBDA(int i) {
+
+                if (rank == 0) printf("R%d: offset %d: VGID: %d\n", rank, i, vertex_send_ids(i));
+
+            });
+            break;
         }
         
     }
