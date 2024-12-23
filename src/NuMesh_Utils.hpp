@@ -64,6 +64,7 @@ ViewType filter_unique(const ViewType& input) {
     // }
 
     // Perform a prefix sum to find new indices for unique elements
+    int unique_count;
     Kokkos::View<int*, memory_space> unique_indices("unique_indices", n);
     Kokkos::parallel_scan("PrefixSum", Kokkos::RangePolicy<execution_space>(0, n), 
         KOKKOS_LAMBDA(int i, int& sum, bool final) {
@@ -71,13 +72,9 @@ ViewType filter_unique(const ViewType& input) {
             unique_indices(i) = sum;
         }
         sum += unique_mask(i);
-    });
-
-    // Get the count of unique elements
-    int unique_count;
-    Kokkos::deep_copy(unique_count, Kokkos::subview(unique_indices, n - 1));
-    unique_count++; // Why do we need to do this?
-
+    }, unique_count);
+    // printf("unique count: %d\n", unique_count);
+    
     // Create a new view for the unique elements
     ViewType unique("unique", unique_count);
     Kokkos::parallel_for("CompactUnique", Kokkos::RangePolicy<execution_space>(0, n),
