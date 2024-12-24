@@ -185,7 +185,7 @@ class Halo
             Kokkos::deep_copy(vb, false);
             Kokkos::deep_copy(eb, false);
             
-            auto added_verts = gather_local_neighbors(vert_seeds, vb, eb);
+            auto added_verts = gather_local_neighbors(verts_unique, vb, eb);
             
             // _vdx = ; 
 
@@ -220,6 +220,7 @@ class Halo
                 if (rank == 1) printf("R%d: offset %d: VGID: %d\n", rank, i, vertex_send_ids(i));
 
             });
+            break;
         }
         
     }
@@ -288,13 +289,15 @@ class Halo
             KOKKOS_LAMBDA(int i) {
             
             int vgid = verts(i);
+            if (rank == 1) printf("R%d: seed VGID: %d\n", rank, vgid);
             int vlid = vgid - vef_gid_start_d(rank, 0);
-            if ((vlid >= 0) && (vlid < owned_vertices)) // Make sure we own the vertex
+            if ((vlid >= 0) && (vlid < owned_vertices)) // If we own the vertex
             {
                 int offset = vertex_edge_offsets(vlid);
                 int next_offset = (vlid + 1 < (int) vertex_edge_offsets.extent(0)) ? 
                           vertex_edge_offsets(vlid + 1) : 
                           (int) vertex_edge_indices.extent(0);
+                if (rank == 1) printf("R%d: offset, next offset: %d, %d\n", rank, offset, next_offset);
 
                 // Loop over connected edges
                 for (int j = offset; j < next_offset; j++)
@@ -333,6 +336,17 @@ class Halo
                         }
                     }
                 }
+            }
+
+            /**
+             * If these are the initial seeds, we may not own the vertex, but the vertex
+             * may be connected by an edge we own. Find this edge with a linear search through
+             * the boundary edges
+             * XXX - Make this search more efficient
+             */
+            else
+            {
+
             }
         });
         Kokkos::fence();
