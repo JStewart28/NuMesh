@@ -185,22 +185,17 @@ class Halo
             Kokkos::deep_copy(vb, false);
             Kokkos::deep_copy(eb, false);
             
-            auto added_verts = gather_local_neighbors(verts_unique, vb, eb);
+            // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, added_verts.extent(0)),
+            //     KOKKOS_LAMBDA(int i) {
 
-            Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, added_verts.extent(0)),
-                KOKKOS_LAMBDA(int i) {
+            //     if (rank == 1) printf("R%d: added_verts(%d): %d\n", rank, i, added_verts(i));
 
-                if (rank == 1) printf("R%d: added_verts(%d): %d\n", rank, i, added_verts(i));
-
-            });
+            // });
             
             // _vdx = ; 
 
             //auto added_verts = gather_local_neighbors(vert_seeds);
-            for (int i = 0; i < _depth; i++)
-            {
-                //added_verts = gather_local_neighbors(added_verts);
-            }
+            collect_entities(verts_unique, vb, eb);
 
             // int d = 1;
 
@@ -217,7 +212,7 @@ class Halo
 
             // }
            
-            // break;
+            break;
         }
 
         
@@ -237,6 +232,52 @@ class Halo
 
         });
         
+    }
+
+    /**
+     * Calls gather_local_neighbors 'depth' number of times to collect
+     * all entities needed for the halo
+     * 
+     * XXX - is there a way to do this with loops?
+     */
+    template <class VertexView, class bool_view>
+    void collect_entities(const VertexView& v, bool_view& vb, bool_view& eb)
+    {
+        if (_depth > 5)
+        {
+            throw std::runtime_error(
+                "NuMesh::Halo::collect_entities: a maxmimum halo depth of 5 is supported" );
+        }
+
+        if (_depth >= 1)
+        {
+            if (_rank == 1) printf("R%d: start 1: vdx: %d, edx: %d, v extent: %d\n", 
+                _rank, _vdx, _edx, (int)v.extent(0));
+            auto out1 = gather_local_neighbors(v, vb, eb);
+            // End depth 1
+            if (_depth >= 2)
+            {
+                if (_rank == 1) printf("R%d: start 2: vdx: %d, edx: %d, out1 extent: %d\n", 
+                    _rank, _vdx, _edx, (int)out1.extent(0));
+                auto out2 = gather_local_neighbors(out1, vb, eb);
+                // End depth 2
+                if (_depth >= 3)
+                {
+                    auto out3 = gather_local_neighbors(out2, vb, eb);
+                    // End depth 3
+                    if (_depth >= 4)
+                    {
+                        auto out4 = gather_local_neighbors(out3, vb, eb);
+                        // End depth 4
+                        if (_depth >= 5)
+                        {
+                            auto out5 = gather_local_neighbors(out4, vb, eb);
+                            // End depth 5
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -349,9 +390,9 @@ class Halo
                                 {
                                     int vdx = Kokkos::atomic_fetch_add(&vertex_idx(), 1);
                                     vids_view(vdx) = neighbor_vgid;
+                                    if (rank == 1) printf("R%d: for VGID %d, adding VGID %d\n", rank, vgid, neighbor_vgid);
                                 }
                                 break;
-                                // printf("R%d: for VGID %d, adding VGID %d\n", rank, vgid, neighbor_vgid);
                             }
                         }
                     }
@@ -372,6 +413,9 @@ class Halo
                     int elid = egid - vef_gid_start_d(rank, 1);
                     if ((elid >= 0) && (elid < owned_edges))
                     {
+                        // Ensure this edge is on our level
+                        if (e_layer(elid) != level) continue;
+
                         // Check if this edge connects the vertex in question
                         for (int j = 0; j < 2; j++)
                         {
@@ -421,7 +465,7 @@ class Halo
          */
         auto v_subview = Kokkos::subview(_vertex_send_ids, std::make_pair(_vdx, _vdx + num_verts));
         Kokkos::deep_copy(v_subview, vids_view);
-        auto e_subview = Kokkos::subview(_vertex_send_ids, std::make_pair(_edx, _edx + num_edges));
+        auto e_subview = Kokkos::subview(_edge_send_ids, std::make_pair(_edx, _edx + num_edges));
         Kokkos::deep_copy(e_subview, eids_view);
 
         // Update values of _vdx and _edx
