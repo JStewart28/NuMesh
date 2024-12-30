@@ -212,7 +212,7 @@ class Halo
 
             // }
            
-            break;
+            // break;
         }
 
         
@@ -374,25 +374,27 @@ class Halo
                         {
                             int edx = Kokkos::atomic_fetch_add(&edge_idx(), 1);
                             eids_view(edx) = egid;
-                        }
-                        
-                        // printf("R%d: for VGID %d, adding EGID %d\n", rank, vgid, egid);
+                            // if (rank == 1) printf("R%d: for VGID %d, adding EGID %d\n", rank, vgid, egid);
 
-                        // Get the other vertex connected by this edge
-                        for (int v = 0; v < 2; v++)
-                        {
-                            int neighbor_vgid = e_vid(elid, v);
-                            if (neighbor_vgid != vgid) // Checks this is the other vertex
+                            // Get the other vertex connected by this edge
+                            for (int v = 0; v < 2; v++)
                             {
+                                int neighbor_vgid = e_vid(elid, v);
+                                // if (rank == 1) printf("R%d: egid %d, checking neighbor_vgid %d: %d\n", rank, egid, v, neighbor_vgid);
                                 int neighbor_vlid = neighbor_vgid - vef_gid_start_d(rank, 0);
-                                val = Kokkos::atomic_compare_exchange(&vb(neighbor_vlid), false, true);
-                                if (!val)
+                                int vertex_owner = Utils::owner_rank(Vertex(), neighbor_vgid, vef_gid_start_d);
+                                // printf("R%d: EGID: %d, neighbor_vgid: %d, neighbor_vlid")
+                                if ((neighbor_vgid != vgid) && (vertex_owner == rank)) // Checks this is the other vertex, and make sure we own it
                                 {
-                                    int vdx = Kokkos::atomic_fetch_add(&vertex_idx(), 1);
-                                    vids_view(vdx) = neighbor_vgid;
-                                    if (rank == 1) printf("R%d: for VGID %d, adding VGID %d\n", rank, vgid, neighbor_vgid);
+                                    // if (rank == 1) printf("R%d: egid %d, neighbor_vgid %d: %d\n", rank, egid, v, neighbor_vgid);
+                                    val = Kokkos::atomic_compare_exchange(&vb(neighbor_vlid), false, true);
+                                    if (!val)
+                                    {
+                                        int vdx = Kokkos::atomic_fetch_add(&vertex_idx(), 1);
+                                        vids_view(vdx) = neighbor_vgid;
+                                        // if (rank == 1) printf("R%d: from edge %d and VGID %d, adding VGID %d\n", rank, egid, vgid, neighbor_vgid);
+                                    }
                                 }
-                                break;
                             }
                         }
                     }
