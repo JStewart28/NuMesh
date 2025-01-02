@@ -82,14 +82,14 @@ class Halo
      * Find the vertices, edges, and/or faces that must be exchanged for the halo 
      * 
      * Step 1:
-     *  Iterate over boundary edges to populate distributor_export_data.
+     *  Iterate over boundary edges to populate distributor_export.
      *      - If a boundary edge has a vertex we do not own, add
-     *        (VGID, my_rank, vert_owner_rank) tuple to distributor_export_data
+     *        (VGID, my_rank, vert_owner_rank) tuple to distributor_export
      */
     void build()
     {
         // (global ID, from_rank, to_rank) tuples
-        using int_vector_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int, int>, memory_space, 4>;
+        using distributor_data_aosoa_t = Cabana::AoSoA<Cabana::MemberTypes<int, int, int>, memory_space, 4>;
 
         const int rank = _rank;
 
@@ -104,7 +104,7 @@ class Halo
         auto boundary_edges = _mesh->boundary_edges();
         // auto neighbor_ranks = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), _mesh->neighbors());
 
-        int_vector_aosoa distributor_export_data("distributor_export_data", boundary_edges.extent(0));
+        distributor_data_aosoa_t distributor_export("distributor_export", boundary_edges.extent(0));
         int_d counter("counter");
         Kokkos::deep_copy(counter, 0);
 
@@ -128,9 +128,9 @@ class Halo
          * Step 1
          **********/
         {
-        auto distributor_export_gids = Cabana::slice<0>(distributor_export_data);
-        auto distributor_export_from_ranks = Cabana::slice<1>(distributor_export_data);
-        auto distributor_export_to_ranks = Cabana::slice<2>(distributor_export_data);
+        auto distributor_export_gids = Cabana::slice<0>(distributor_export);
+        auto distributor_export_from_ranks = Cabana::slice<1>(distributor_export);
+        auto distributor_export_to_ranks = Cabana::slice<2>(distributor_export);
         
         Kokkos::parallel_for("fill distributor data", Kokkos::RangePolicy<execution_space>(0, boundary_edges.extent(0)),
             KOKKOS_LAMBDA(int edge_idx) {
@@ -159,17 +159,15 @@ class Halo
         // Resize distributor data to correct sizes
         int size;
         Kokkos::deep_copy(size, counter);
-        distributor_export_data.resize(size);
+        distributor_export.resize(size);
 
-        // Sort the distributor data by increasing VGID
-        
-        auto distributor_export_gids = Cabana::slice<0>(distributor_export_data);
-        auto distributor_export_from_ranks = Cabana::slice<1>(distributor_export_data);
-        auto distributor_export_to_ranks = Cabana::slice<2>(distributor_export_data);
-
+        // Sort the distributor data by increasing VGID to filter duplicates
+        auto distributor_export_gids = Cabana::slice<0>(distributor_export);
+        auto distributor_export_from_ranks = Cabana::slice<1>(distributor_export);
+        auto distributor_export_to_ranks = Cabana::slice<2>(distributor_export);
         // Sort by GID
         auto sort_gids = Cabana::sortByKey( distributor_export_gids );
-        Cabana::permute( sort_gids, distributor_export_data );
+        Cabana::permute( sort_gids, distributor_export );
         
 
         // Iterate over the distirutor data to remove repeated vertices
@@ -185,17 +183,32 @@ class Halo
             if (current == prev)
             {
                 distributor_export_to_ranks(i) = -1;
-                Kokkos::atomic_incretment(&counter());
+                Kokkos::atomic_increment(&counter());
             }
         });
         int num_dups;
         Kokkos::deep_copy(num_dups, counter);
+
+        auto distributor = Cabana::Distributor<memory_space>(_comm, distributor_export_to_ranks);
+        const int distributor_total_num_import = distributor.totalNumImport();
+        distributor_data_aosoa_t distributor_import("distributor_import", distributor_total_num_import);
+        Cabana::migrate(distributor, distributor_export, distributor_import);
 
         Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, size),
             KOKKOS_LAMBDA(int i) {
 
             if (rank == 1) printf("R%d: to: R%d, data: (%d, %d)\n", rank,
                 distributor_export_to_ranks(i), distributor_export_gids(i), distributor_export_from_ranks(i));
+
+        });
+        auto distributor_import_gids = Cabana::slice<0>(distributor_import);
+        auto distributor_import_from_ranks = Cabana::slice<1>(distributor_import);
+        auto distributor_import_to_ranks = Cabana::slice<2>(distributor_import);
+        Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+            KOKKOS_LAMBDA(int i) {
+
+            if (rank == 1) printf("R%d: from: R%d, data: (%d, %d)\n", rank,
+                distributor_import_to_ranks(i), distributor_import_gids(i), distributor_import_from_ranks(i));
 
         });
 
