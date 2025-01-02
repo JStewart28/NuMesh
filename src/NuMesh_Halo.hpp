@@ -208,7 +208,7 @@ class Halo
             KOKKOS_LAMBDA(int i) {
 
             if (rank == 1) printf("R%d: from: R%d, data: (%d, %d)\n", rank,
-                distributor_import_to_ranks(i), distributor_import_gids(i), distributor_import_from_ranks(i));
+                distributor_import_from_ranks(i), distributor_import_gids(i), distributor_import_from_ranks(i));
 
         });
 
