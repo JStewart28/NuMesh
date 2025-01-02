@@ -197,7 +197,7 @@ class Mesh
         });
         Kokkos::sort(neighbors);
 
-        // Populate neighbors
+        // Populate boundary edges
         Kokkos::View<int*, memory_space> boundary_edges("boundary_edges", num_b_edges);
         Kokkos::View<int, memory_space> counter_e("counter_e");
         Kokkos::deep_copy(counter_e, 0);
