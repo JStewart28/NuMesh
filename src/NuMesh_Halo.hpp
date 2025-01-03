@@ -48,10 +48,11 @@ class Halo
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
 
+        // XXX - Optimize these approximations
         _num_vertices = guess;
-        _num_edges = _num_vertices; // There will be about twice as many vertices as edges,
-                                    // but a split edge adds two edges and one vertex
-        _num_faces = _num_edges / 3; // Each face contains three edges
+        _num_edges = _num_vertices*3; // There will be about thrice as many vertices as edges,
+                                      // but a split edge adds two edges and one vertex
+        _num_faces = _num_vertices;   // Each face contains three edges
 
         int num_edges = _mesh->count(Own(), Edge());        
 
@@ -241,6 +242,7 @@ class Halo
         for (size_t i = 0; i < neighbor_ranks.extent(0); i++)
         {
             const int neighbor_rank = neighbor_ranks(i);
+            // if (rank == 1) printf("R%d: neighbor_rank: %d\n", rank, neighbor_rank);
 
             // Store true if added to the halo to avoid uniqueness searches
             Kokkos::View<bool*, memory_space> vb("vb", vertex_count);
@@ -273,33 +275,31 @@ class Halo
                 int vgid = distributor_import_gids(j);
                 int vdx = Kokkos::atomic_fetch_add(&vdx_d(), 1);
                 int svdx = Kokkos::atomic_fetch_add(&vgid_seeds_idx(), 1);
+                // if (rank == 1) printf("R%d: adding import VGID %d at %d\n", rank, vgid, vdx);
                 vgid_seeds(svdx) = vgid;
                 vertex_send_ids(vdx) = vgid;
 
                 // Set these vgids as added to the halo
                 // Don't need atomics because the vlid will be unique for the kernel
-                int vlid = vgid - vef_gid_start_d(0, rank);
+                int vlid = vgid - vef_gid_start_d(rank, 0);
                 vb(vlid) = true;
+                // if (rank == 1) printf("R%d: setting vb(%d) = %d\n", rank, vlid, vb(vlid));
 
             });
 
             // Update offset counter
-            int v_added;
-            Kokkos::deep_copy(v_added, vdx_d);
-            _vdx += v_added;
+            Kokkos::deep_copy(_vdx, vdx_d);
 
             // Add exported VGIDs to seeds
             Kokkos::parallel_for("add export VGIDS", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_export),
                 KOKKOS_LAMBDA(int j) {
 
                 int to_rank = distributor_export_to_ranks(j);
-                // printf("R%d: j: %d, to_rank: %d, vgid: %d\n", rank, j, to_rank, distributor_export_gids(j));
                 if (to_rank != neighbor_rank) return;
 
                 int vgid = distributor_export_gids(j);
                 int svdx = Kokkos::atomic_fetch_add(&vgid_seeds_idx(), 1);
                 vgid_seeds(svdx) = vgid;
-                // if (rank == 1) printf("R%d: to_rank: %d, vgid_seeds(%d) = %d\n", rank, to_rank, svdx, vgid);
 
             });
 
@@ -308,15 +308,30 @@ class Halo
             Kokkos::deep_copy(vgid_seeds_size, vgid_seeds_idx);
             Kokkos::resize(vgid_seeds, vgid_seeds_size);
 
-            
 
+            // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vb.extent(0)),
+            // KOKKOS_LAMBDA(int i) {
 
-            Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vgid_seeds.extent(0)),
-                KOKKOS_LAMBDA(int i) {
+            //     if (rank == 1) printf("R%d: vb(%d): %d\n", rank, i, vb(i));
 
-                if (rank == 1) printf("R%d: to: %d, seed%d: %d\n", rank, neighbor_rank, i, vgid_seeds(i));
+            // });
+            // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, eb.extent(0)),
+            // KOKKOS_LAMBDA(int i) {
 
-            });
+            //     if (rank == 1) printf("R%d: eb(%d): %d\n", rank, i, eb(i));
+
+            // });
+
+            // Build halo data for this rank
+            collect_entities(vgid_seeds, vb, eb);
+
+            // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vgid_seeds.extent(0)),
+            //     KOKKOS_LAMBDA(int i) {
+
+            //     if (rank == 1) printf("R%d: to: %d, seed%d: %d\n", rank, neighbor_rank, i, vgid_seeds(i));
+
+            // });
+            if (i == 2) break;
         }
 
         auto vertex_send_offsets = _vertex_send_offsets;
@@ -514,14 +529,21 @@ class Halo
 
         if (_depth >= 1)
         {
-            if (_rank == 1) printf("R%d: start 1: vdx: %d, edx: %d, v extent: %d\n", 
-                _rank, _vdx, _edx, (int)v.extent(0));
+            // if (_rank == 1) printf("R%d: start 1: vdx: %d, edx: %d, v extent: %d\n", 
+            //     _rank, _vdx, _edx, (int)v.extent(0));
             auto out1 = gather_local_neighbors(v, vb, eb);
             // End depth 1
             if (_depth >= 2)
             {
-                if (_rank == 1) printf("R%d: start 2: vdx: %d, edx: %d, out1 extent: %d\n", 
-                    _rank, _vdx, _edx, (int)out1.extent(0));
+                // if (_rank == 1) printf("R%d: start 2: vdx: %d, edx: %d, out1 extent: %d\n", 
+                //     _rank, _vdx, _edx, (int)out1.extent(0));
+                // int rank = _rank;
+                // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, out1.extent(0)),
+                //     KOKKOS_LAMBDA(int i) {
+
+                //     if (rank == 1) printf("R%d: depth2: seed(%d): %d\n", rank, i, out1(i));
+
+                // });
                 auto out2 = gather_local_neighbors(out1, vb, eb);
                 // End depth 2
                 if (_depth >= 3)
@@ -610,7 +632,7 @@ class Halo
             KOKKOS_LAMBDA(int i) {
             
             int vgid = verts(i);
-            if (rank == 1) printf("R%d: seed VGID: %d\n", rank, vgid);
+            // if (rank == 1) printf("R%d: seed VGID: %d\n", rank, vgid);
             int vlid = vgid - vef_gid_start_d(rank, 0);
             if ((vlid >= 0) && (vlid < owned_vertices)) // If we own the vertex
             {
@@ -696,7 +718,7 @@ class Halo
                                 {
                                     int vdx = Kokkos::atomic_fetch_add(&vertex_idx(), 1);
                                     vids_view(vdx) = neighbor_vgid;
-                                    if (rank == 1) printf("R%d: vids_view(%d) = %d\n", rank, vdx, neighbor_vgid);
+                                    // if (rank == 1) printf("R%d: vids_view(%d) = %d\n", rank, vdx, neighbor_vgid);
                                 }
 
                                 // Add this edge to our list of edges
@@ -705,6 +727,8 @@ class Halo
                                 {
                                     int edx = Kokkos::atomic_fetch_add(&edge_idx(), 1);
                                     eids_view(edx) = egid;
+                                    // if (rank == 1) printf("R%d: from edge %d and VGID %d, adding VGID %d\n", rank, egid, vgid, neighbor_vgid);
+
                                 }
                             }
                         }
@@ -724,10 +748,27 @@ class Halo
         // auto unique_vids = Utils::filter_unique(vids_view);
         // auto unique_eids = Utils::filter_unique(eids_view);
 
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, eids_view.extent(0)),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     if (rank == 1) printf("R%d: eids_view(%d): %d\n", rank, i, eids_view(i));
+
+        // });
+
         /**
          * Add IDs to offset views starting at offsets
          * _vdx and _edx
          */
+        if (_vdx+num_verts > _vertex_send_ids.extent(0))
+        {
+            throw std::runtime_error(
+                "NuMesh::Halo::gather_local_neighbors: _vertex_send_ids not large enough to hold new vertices" );
+        }
+        if (_edx+num_edges > _edge_send_ids.extent(0))
+        {
+            throw std::runtime_error(
+                "NuMesh::Halo::gather_local_neighbors: _edge_send_ids not large enough to hold new edges" );
+        }
         auto v_subview = Kokkos::subview(_vertex_send_ids, std::make_pair(_vdx, _vdx + num_verts));
         Kokkos::deep_copy(v_subview, vids_view);
         auto e_subview = Kokkos::subview(_edge_send_ids, std::make_pair(_edx, _edx + num_edges));
