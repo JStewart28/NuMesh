@@ -253,6 +253,8 @@ class Halo
             // Set the offsets where the data for this rank will start in the indices views
             auto v_subview = Kokkos::subview(_vertex_send_offsets, neighbor_rank);
             Kokkos::deep_copy(v_subview, _vdx);
+            auto e_subview = Kokkos::subview(_edge_send_offsets, neighbor_rank);
+            Kokkos::deep_copy(e_subview, _edx);
 
             int_d vdx_d("vdx_d");
             int_d edx_d("edx_d");
@@ -331,22 +333,38 @@ class Halo
             //     if (rank == 1) printf("R%d: to: %d, seed%d: %d\n", rank, neighbor_rank, i, vgid_seeds(i));
 
             // });
-            if (i == 2) break;
+            // if (i == 2) break;
         }
 
         auto vertex_send_offsets = _vertex_send_offsets;
         // auto vertex_send_ids = _vertex_send_ids;
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, neighbor_ranks.extent(0)),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     if (rank == 1) printf("R%d: rank: %d, V offset: %d\n", rank, neighbor_ranks(i), vertex_send_offsets(neighbor_ranks(i)));
+
+        // });
+
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _vdx),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     if (rank == 1) printf("R%d: offset %d: VGID: %d\n", rank, i, vertex_send_ids(i));
+
+        // });
+
+        auto edge_send_offsets = _edge_send_offsets;
+        auto edge_send_ids = _edge_send_ids;
         Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, neighbor_ranks.extent(0)),
             KOKKOS_LAMBDA(int i) {
 
-            if (rank == 1) printf("R%d: rank: %d, offset: %d\n", rank, neighbor_ranks(i), vertex_send_offsets(neighbor_ranks(i)));
+            if (rank == 1) printf("R%d: rank: %d, E offset: %d\n", rank, neighbor_ranks(i), edge_send_offsets(neighbor_ranks(i)));
 
         });
 
-        Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _vdx),
+        Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _edx),
             KOKKOS_LAMBDA(int i) {
 
-            if (rank == 1) printf("R%d: offset %d: VGID: %d\n", rank, i, vertex_send_ids(i));
+            if (rank == 1) printf("R%d: offset %d: EGID: %d\n", rank, i, edge_send_ids(i));
 
         });
 
@@ -752,7 +770,19 @@ class Halo
                 int ecid = e_cid(elid, j);
                 while (ecid != -1)
                 {
-                    
+                    int eclid = ecid - vef_gid_start_d(rank, 1);
+
+                    // Add the third vertex of the parent edge to the halo
+                    int eplid = e_pid(eclid) - vef_gid_start_d(rank, 1);
+                    int vdx = Kokkos::atomic_fetch_add(&vertex_idx(), 1);
+                    vids_view(vdx) = e_vid(eplid, 2);
+
+                    // Add the child edge to the halo
+                    int edx = Kokkos::atomic_fetch_add(&edge_idx(), 1);
+                    eids_view(edx) = ecid;
+
+                    // Update ecid for for this edge's child
+                    ecid = e_cid(eclid, j);
                 }
             }
         
@@ -795,6 +825,7 @@ class Halo
         Kokkos::deep_copy(e_subview, eids_view);
 
         // Update values of _vdx and _edx
+        if (rank == 1) printf("R%d: old edx: %d, new: %d\n", rank, _edx, _edx+num_edges);
         _vdx += num_verts; _edx += num_edges;
 
         return vids_view;
@@ -857,9 +888,14 @@ class Halo
 };
 
 template <class Mesh>
-auto createHalo(std::shared_ptr<Mesh> mesh, Edge, int level, int depth)
+auto createHalo(std::shared_ptr<Mesh> mesh, Edge, const int level, const int depth)
 {
     return Halo(mesh, 1, level, depth);
+}
+template <class Mesh>
+auto createHalo(std::shared_ptr<Mesh> mesh, Edge, const int level, const int depth, const int guess)
+{
+    return Halo(mesh, 1, level, depth, guess);
 }
 
 } // end namespce NuMesh
