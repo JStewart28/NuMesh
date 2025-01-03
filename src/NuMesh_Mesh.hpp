@@ -124,16 +124,19 @@ class Mesh
     }
 
     /**
-     * Populates vector of neighbor ranks.
+     * Populates vector of neighbor ranks. Derives neighbor
+     * ranks from boundary edges.
      * 
-     * Populates vector of GIDS of boundary edges
-     * along our upper boundary, i.e. edges we KNOW are on
+     * Populates vector of GIDS of boundary edges and faces
+     * along our upper boundary, i.e. elements we KNOW are on
      * the boundary.
      */
-    void _populate_neighbors_and_boundary_edges()
+    void _populate_boundary_elements()
     {
         auto e_vids = Cabana::slice<E_VIDS>(_edges);
         auto e_gid = Cabana::slice<E_GID>(_edges);
+        auto f_vids = Cabana::slice<F_VIDS>(_faces);
+        auto f_gid = Cabana::slice<F_GID>(_faces);
         const int rank = _rank;
 
         // Copy _vef_gid_start to device
@@ -142,7 +145,7 @@ class Mesh
         Kokkos::deep_copy(hv_tmp, _vef_gid_start);
         Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
 
-        // Identify
+        // Identify edges and vertices not owned by this rank
         Kokkos::View<bool*, memory_space> is_neighbor("is_neighbor", _comm_size);
         Kokkos::View<bool*, memory_space> is_b_edge("is_b_edge", _owned_edges);
         Kokkos::deep_copy(is_neighbor, false);
@@ -159,6 +162,31 @@ class Mesh
                 {
                     Kokkos::atomic_store(&is_neighbor(vertex_owner), true);
                     Kokkos::atomic_store(&is_b_edge(i), true);
+
+                    // Once we know this is a boundary edge we don't need to check other vertices
+                    // because an edge will always have at most one remote vertex
+                    break;
+                }
+            }
+        });
+
+        // Identify faces
+        Kokkos::View<bool*, memory_space> is_b_face("is_b_face", _owned_faces);
+        Kokkos::deep_copy(is_b_face, false);
+        Kokkos::parallel_for("find", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
+            KOKKOS_LAMBDA(int i) {
+
+            for (int v = 0; v < 3; v++)
+            {
+                int vgid = f_vids(i, v);
+                int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
+
+                if (vertex_owner != rank)
+                {
+                    Kokkos::atomic_store(&is_b_face(i), true);
+
+                    // Once we know this is a boundary face we don't need to check other vertices
+                    break;
                 }
             }
         });
@@ -182,6 +210,17 @@ class Mesh
                 local_count += 1;
             }
         }, num_b_edges);
+
+        // Count boundary faces
+        int num_b_faces = 0;
+        Kokkos::parallel_reduce("count_boundary_faces", Kokkos::RangePolicy<execution_space>(0, is_b_face.extent(0)),
+            KOKKOS_LAMBDA(const int i, int& local_count) {
+
+            if (is_b_face(i)) {
+                local_count += 1;
+            }
+        }, num_b_faces);
+
 
         // Populate neighbors
         Kokkos::View<int*, memory_space> neighbors("neighbors", num_neighbors);
@@ -215,8 +254,25 @@ class Mesh
         });
         Kokkos::sort(boundary_edges);
 
+        // Populate boundary faces
+        Kokkos::View<int*, memory_space> boundary_faces("boundary_faces", num_b_faces);
+        Kokkos::View<int, memory_space> counter_f("counter_f");
+        Kokkos::deep_copy(counter_f, 0);
+        Kokkos::parallel_for("populate_boundary_faces", Kokkos::RangePolicy<execution_space>(0, is_b_face.extent(0)),
+            KOKKOS_LAMBDA(int i) {
+
+            bool is_n = is_b_face(i);
+            if (is_n)
+            {
+                int idx = Kokkos::atomic_fetch_add(&counter_f(), 1);
+                boundary_faces(idx) = f_gid(i); 
+            }
+        });
+        Kokkos::sort(boundary_faces);
+
         _neighbors = neighbors;
         _boundary_edges = boundary_edges;
+        _boundary_faces = boundary_faces;
     }
 
     /**
@@ -328,7 +384,7 @@ class Mesh
     void _finializeInit()
     {
         _createFaces();
-        _populate_neighbors_and_boundary_edges();
+        _populate_boundary_elements();
     }
 
         /**
@@ -1460,7 +1516,7 @@ class Mesh
     void refine(View& fgids)
     {
         _refineFaces(fgids);
-        _populate_neighbors_and_boundary_edges();
+        _populate_boundary_elements();
     }
     
     v_array_type vertices() {return _vertices;}
@@ -1480,6 +1536,7 @@ class Mesh
     auto vef_gid_start() {return _vef_gid_start;}
     auto neighbors() {return _neighbors;}
     auto boundary_edges() {return _boundary_edges;}
+    auto boundary_faces() {return _boundary_faces;}
 
     void printVertices()
     {
@@ -1603,8 +1660,9 @@ class Mesh
     int _owned_vertices, _owned_edges, _owned_faces, _ghost_vertices, _ghost_edges, _ghost_faces;
 
     // Neighbor ranks and boundary data
-    Kokkos::View<int*, memory_space> _neighbors;      // Ranks we are neighbors with
+    Kokkos::View<int*, memory_space> _neighbors;      // Ranks that own a vertex of an owned edge or face
     Kokkos::View<int*, memory_space> _boundary_edges; // GIDs of edges on an MPI boundary
+    Kokkos::View<int*, memory_space> _boundary_faces; // GIDs of faces on an MPI boundary
 
     // How many vertices, edges, and faces each process owns
     // Index = rank
