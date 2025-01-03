@@ -740,6 +740,26 @@ class Halo
         int num_verts, num_edges;
         Kokkos::deep_copy(num_verts, vertex_idx);
         Kokkos::deep_copy(num_edges, edge_idx);
+
+        // For each edge, add all child edges and vertices connected to those child edges to the halo
+        Kokkos::parallel_for("gather child vertex and edge IDs", Kokkos::RangePolicy<execution_space>(0, num_edges),
+            KOKKOS_LAMBDA(int i) {
+        
+            int egid = eids_view(i);
+            int elid = egid - vef_gid_start_d(rank, 1);
+            for (int j = 0; j < 2; j++)
+            {
+                int ecid = e_cid(elid, j);
+                while (ecid != -1)
+                {
+                    
+                }
+            }
+        
+        });
+
+        Kokkos::deep_copy(num_verts, vertex_idx);
+        Kokkos::deep_copy(num_edges, edge_idx);
         // printf("R%d: num verts, edges: %d, %d\n", _rank, num_verts, num_edges);
 
         // Resize views and remove unique values

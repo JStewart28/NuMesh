@@ -98,7 +98,7 @@ int main( int argc, char* argv[] )
 
     // Test haloing
     auto v2e = NuMesh::Maps::V2E(numesh);
-    auto halo = NuMesh::createHalo(numesh, NuMesh::Edge(), 0, 2);
+    auto halo = NuMesh::createHalo(numesh, NuMesh::Edge(), 0, 2, 100);
 
     // size_t vsize = 1;
     // Kokkos::View<int*, memory_space> verts("verts", vsize);
