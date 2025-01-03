@@ -35,10 +35,11 @@
     #define E_OWNER 5
     #define F_CID 0
     #define F_EIDS 1
-    #define F_GID 2
-    #define F_PID 3
-    #define F_LAYER 4
-    #define F_OWNER 5
+    #define F_VIDS 2
+    #define F_GID 3
+    #define F_PID 4
+    #define F_LAYER 5
+    #define F_OWNER 6
 #endif
 
 #include <NuMesh_Types.hpp>
@@ -84,6 +85,7 @@ class Mesh
                                             >;
     using face_data = Cabana::MemberTypes<  int[4],    // Child face global IDs
                                             int[3],    // Edge global IDs that make up face 
+                                            int[3],    // Vertex global IDs that make up the face
                                             int,       // Face global ID
                                             int,       // Parent face global ID 
                                             int,       // Layer of the tree this face lives on                       
@@ -234,6 +236,7 @@ class Mesh
         auto e_owner = Cabana::slice<E_OWNER>(_edges);
 
         auto f_egids = Cabana::slice<F_EIDS>(_faces);
+        auto f_vgids = Cabana::slice<F_VIDS>(_faces);
         auto f_gid = Cabana::slice<F_GID>(_faces);
         auto f_parent = Cabana::slice<F_PID>(_faces);
         auto f_child = Cabana::slice<F_CID>(_faces);
@@ -267,6 +270,7 @@ class Mesh
             // Populate face 1 values
             f_lid = i*2;
             f_egids(f_lid, 0) = e_gid0; f_egids(f_lid, 1) = e_gid1; f_egids(f_lid, 2) = e_gid2;
+            f_vgids(f_lid, 0) = v_gid0; f_vgids(f_lid, 1) = v_gid1; f_vgids(f_lid, 2) = v_gid2;
             f_gid(f_lid) = f_lid + vef_gid_start_d(rank, 2);
             f_parent(f_lid) = -1;
             f_child(f_lid, 0) = -1; f_child(f_lid, 1) = -1; f_child(f_lid, 2) = -1; f_child(f_lid, 3) = -1;
@@ -296,6 +300,7 @@ class Mesh
             // Populate face 2 values
             f_lid = i*2+1;
             f_egids(f_lid, 0) = e_gid0; f_egids(f_lid, 1) = e_gid1; f_egids(f_lid, 2) = e_gid2;
+            f_vgids(f_lid, 0) = v_gid0; f_vgids(f_lid, 1) = v_gid1; f_vgids(f_lid, 2) = v_gid2;
             f_gid(f_lid) = f_lid + vef_gid_start_d(rank, 2);
             f_parent(f_lid) = -1;
             f_child(f_lid, 0) = -1; f_child(f_lid, 1) = -1; f_child(f_lid, 2) = -1; f_child(f_lid, 3) = -1;
@@ -577,6 +582,7 @@ class Mesh
         auto f_cid = Cabana::slice<F_CID>(_faces);
         auto f_gid = Cabana::slice<F_GID>(_faces);
         auto f_eid = Cabana::slice<F_EIDS>(_faces);
+        auto f_vid = Cabana::slice<F_VIDS>(_faces);
         auto f_pid = Cabana::slice<F_PID>(_faces);
         auto f_layer = Cabana::slice<F_LAYER>(_faces);
         auto f_owner = Cabana::slice<F_OWNER>(_faces);
@@ -955,12 +961,13 @@ class Mesh
             el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
             el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
             el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
-            f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            if (f_gid(new_face_lid) == 296)
-            {
-                printf("Face 0: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-                    vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            }
+            f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
+            f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2);
+            // if (f_gid(new_face_lid) == 296)
+            // {
+            //     printf("Face 0: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
+            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
+            // }
 
             /******************************
              * Face 1 verts:
@@ -979,12 +986,13 @@ class Mesh
             el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
             el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
             el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
+            f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2; 
             f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            if (f_gid(new_face_lid) == 296)
-            {
-                printf("Face 1: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-                    vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            }
+            // if (f_gid(new_face_lid) == 296)
+            // {
+            //     printf("Face 1: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
+            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
+            // }
 
             /******************************
              * Face 2 verts:
@@ -1004,12 +1012,13 @@ class Mesh
             el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
             el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
             el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
+            f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
             f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            if (f_gid(new_face_lid) == 296)
-            {
-                printf("Face 2: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-                    vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            }
+            // if (f_gid(new_face_lid) == 296)
+            // {
+            //     printf("Face 2: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
+            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
+            // }
 
 
             /******************************
@@ -1032,12 +1041,13 @@ class Mesh
             el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
             el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
             el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
+            f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
             f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            if (f_gid(new_face_lid) == 296)
-            {
-                printf("Face 3: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-                    vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            }
+            // if (f_gid(new_face_lid) == 296)
+            // {
+            //     printf("Face 3: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
+            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
+            // }
         });
         // if (rank == 0) printFaces(0, 0);
         // printFaces(1, 345);
@@ -1539,6 +1549,7 @@ class Mesh
     void printFaces(int opt, int fgid)
     {
         auto f_egids = Cabana::slice<F_EIDS>(_faces);
+        auto f_vgids = Cabana::slice<F_VIDS>(_faces);
         auto f_gid = Cabana::slice<F_GID>(_faces);
         auto f_parent = Cabana::slice<F_PID>(_faces);
         auto f_child = Cabana::slice<F_CID>(_faces);
@@ -1549,8 +1560,9 @@ class Mesh
             // Print all faces
             for (int i = 0; i < (int) _faces.size(); i++)
             {
-                printf("R%d: i%d, f%d, e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), L%d, %d\n", _rank, i,
+                printf("R%d: i%d, f%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), L%d, %d\n", _rank, i,
                     f_gid(i),
+                    f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2),
                     f_egids(i, 0), f_egids(i, 1), f_egids(i, 2),
                     f_child(i, 0), f_child(i, 1), f_child(i, 2), f_child(i, 3),
                     f_parent(i),
@@ -1565,8 +1577,9 @@ class Mesh
             if ((flid >= 0) && (flid < _owned_faces))
             {
                 int i = flid;
-                printf("R%d: i%d, f%d, e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), L%d, %d\n", _rank, i,
+                printf("R%d: i%d, f%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), L%d, %d\n", _rank, i,
                     f_gid(i),
+                    f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2),
                     f_egids(i, 0), f_egids(i, 1), f_egids(i, 2),
                     f_child(i, 0), f_child(i, 1), f_child(i, 2), f_child(i, 3),
                     f_parent(i),

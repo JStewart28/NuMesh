@@ -338,33 +338,34 @@ class Halo
 
         auto vertex_send_offsets = _vertex_send_offsets;
         // auto vertex_send_ids = _vertex_send_ids;
-        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, neighbor_ranks.extent(0)),
-        //     KOKKOS_LAMBDA(int i) {
+        int d_rank = 3;
+        Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, neighbor_ranks.extent(0)),
+            KOKKOS_LAMBDA(int i) {
 
-        //     if (rank == 1) printf("R%d: rank: %d, V offset: %d\n", rank, neighbor_ranks(i), vertex_send_offsets(neighbor_ranks(i)));
+            if (rank == d_rank) printf("R%d: rank: %d, V offset: %d\n", rank, neighbor_ranks(i), vertex_send_offsets(neighbor_ranks(i)));
 
-        // });
+        });
 
-        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _vdx),
-        //     KOKKOS_LAMBDA(int i) {
+        Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _vdx),
+            KOKKOS_LAMBDA(int i) {
 
-        //     if (rank == 1) printf("R%d: offset %d: VGID: %d\n", rank, i, vertex_send_ids(i));
+            if (rank == d_rank) printf("R%d: offset %d: VGID: %d\n", rank, i, vertex_send_ids(i));
 
-        // });
+        });
 
         auto edge_send_offsets = _edge_send_offsets;
         auto edge_send_ids = _edge_send_ids;
         Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, neighbor_ranks.extent(0)),
             KOKKOS_LAMBDA(int i) {
 
-            if (rank == 1) printf("R%d: rank: %d, E offset: %d\n", rank, neighbor_ranks(i), edge_send_offsets(neighbor_ranks(i)));
+            if (rank == d_rank) printf("R%d: rank: %d, E offset: %d\n", rank, neighbor_ranks(i), edge_send_offsets(neighbor_ranks(i)));
 
         });
 
         Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _edx),
             KOKKOS_LAMBDA(int i) {
 
-            if (rank == 1) printf("R%d: offset %d: EGID: %d\n", rank, i, edge_send_ids(i));
+            if (rank == d_rank) printf("R%d: offset %d: EGID: %d\n", rank, i, edge_send_ids(i));
 
         });
 

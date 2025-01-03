@@ -50,10 +50,10 @@ class MapsTest : public Mesh2DTest<T>
         this->gatherAndCopyToHost();
 
         auto v2e = NuMesh::Maps::V2E(this->mesh_);
-        auto vertex_edge_offsets_d = v2e.vertex_edge_offsets();
-        auto vertex_edge_indices_d = v2e.vertex_edge_indices();
-        auto vertex_edge_offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), vertex_edge_offsets_d);
-        auto vertex_edge_indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), vertex_edge_indices_d);
+        auto offsets_d = v2e.offsets();
+        auto indices_d = v2e.indices();
+        auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
+        auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
         
         auto e_gid = Cabana::slice<E_GID>(this->edges);
         auto v_gid = Cabana::slice<V_GID>(this->vertices);
@@ -80,17 +80,17 @@ class MapsTest : public Mesh2DTest<T>
                 int vlid = NuMesh::Utils::get_lid(v_gid, vgid, 0, num_vertices);
                 if (vlid == -1) continue;
 
-                int offset = vertex_edge_offsets(vlid);
+                int offset = offsets(vlid);
 
-                // **Handle the last vertex case**
-                int next_offset = (vlid + 1 < (int)vertex_edge_offsets.extent(0)) ? 
-                                vertex_edge_offsets(vlid + 1) : 
-                                (int)vertex_edge_indices.extent(0);
+                // Handle the last vertex case
+                int next_offset = (vlid + 1 < (int)offsets.extent(0)) ? 
+                                offsets(vlid + 1) : 
+                                (int)indices.extent(0);
 
                 bool is_present = false;
                 while (offset < next_offset)
                 {
-                    int elid_in_map = vertex_edge_indices(offset);
+                    int elid_in_map = indices(offset);
                     //printf("R%d: vlid: %d, elid: %d, elid in map: %d, offset: %d\n", this->rank_, vlid, elid, elid_in_map, offset);
                     if (elid_in_map == elid)
                     {
@@ -100,6 +100,69 @@ class MapsTest : public Mesh2DTest<T>
                     offset++;
                 }
                 ASSERT_TRUE(is_present) << "Rank " << this->rank_ << ": VIDS: " << vlid << "/" << vgid << ", offset: " << offset << ", EIDS: " << elid << "/" << egid << std::endl;
+            }
+        }
+    }
+
+    /**
+     * Tests the V2F by checking that for each face,
+     * its local ID appears in the correct spot in the map
+     */
+    void test_v2f()
+    {
+        this->gatherAndCopyToHost();
+
+        auto v2f = NuMesh::Maps::V2F(this->mesh_);
+        auto offsets_d = v2f.offsets();
+        auto indices_d = v2f.indices();
+        auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
+        auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
+        
+        auto f_gid = Cabana::slice<F_GID>(this->faces);
+        auto v_gid = Cabana::slice<V_GID>(this->vertices);
+        auto f_vid = Cabana::slice<E_VIDS>(this->faces);
+
+        /**
+         * For some reason, gatherAndCopyToHost does not update the size of the 
+         * mesh in mesh_, only the local vertices, edges, and faces values.
+         * 
+         * This means v2e only builds on the values in mesh_ before
+         * gatherAndCopyToHost is called. To not index out-of-bounds,
+         * we need to get the size from the mesh_ object
+         */
+        int num_vertices = this->mesh_->vertices().size();
+        int num_faces = this->mesh_->faces().size();
+
+        for (int i = 0; i < num_faces; i++)
+        {
+            int fgid = f_gid(i);
+            int flid = NuMesh::Utils::get_lid(f_gid, fgid, 0, num_faces);
+            for (int v = 0; v < 3; v++)
+            {
+                int vgid = f_vid(i, v);
+                int vlid = NuMesh::Utils::get_lid(v_gid, vgid, 0, num_vertices);
+                if (vlid == -1) continue;
+
+                int offset = offsets(vlid);
+
+                // Handle the last vertex case
+                int next_offset = (vlid + 1 < (int)offsets.extent(0)) ? 
+                                offsets(vlid + 1) : 
+                                (int)indices.extent(0);
+
+                bool is_present = false;
+                while (offset < next_offset)
+                {
+                    int flid_in_map = indices(offset);
+                    //printf("R%d: vlid: %d, elid: %d, elid in map: %d, offset: %d\n", this->rank_, vlid, elid, elid_in_map, offset);
+                    if (flid_in_map == flid)
+                    {
+                        is_present = true;
+                        break;
+                    }
+                    offset++;
+                }
+                ASSERT_TRUE(is_present) << "Rank " << this->rank_ << ": VIDS: " << vlid << "/" << vgid << ", offset: " << offset << ", FIDS: " << flid << "/" << fgid << std::endl;
             }
         }
     }

@@ -74,17 +74,17 @@ int main( int argc, char* argv[] )
     int halo_width = 2;
     auto local_grid = Cabana::Grid::createLocalGrid( global_grid, halo_width );
 
-    auto numesh = NuMesh::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
+    auto mesh = NuMesh::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
 
     auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
-    numesh->initializeFromArray(*array);
-    auto vef_gid_start = numesh->vef_gid_start();
+    mesh->initializeFromArray(*array);
+    auto vef_gid_start = mesh->vef_gid_start();
 
     // Uniform refinement
     // for (int i = 0; i < 2; i++)
     // {
-    //     int num_local_faces = numesh->count(NuMesh::Own(), NuMesh::Face());
+    //     int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
     //     int face_gid_start = vef_gid_start(rank, 2);
     //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
     //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
@@ -93,12 +93,15 @@ int main( int argc, char* argv[] )
     //             fin(i) = face_gid_start + i;
 
     //         });
-    //     numesh->refine(fin);
+    //     mesh->refine(fin);
     // }
 
     // Test haloing
-    auto v2e = NuMesh::Maps::V2E(numesh);
-    auto halo = NuMesh::createHalo(numesh, NuMesh::Edge(), 0, 2, 100);
+    auto v2e = NuMesh::Maps::V2E(mesh);
+    auto v2f = NuMesh::Maps::V2F(mesh);
+    //auto halo = NuMesh::createHalo(mesh, NuMesh::Edge(), 0, 2, 100);
+
+    // mesh->printFaces(0, 0);
 
     // size_t vsize = 1;
     // Kokkos::View<int*, memory_space> verts("verts", vsize);
