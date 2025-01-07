@@ -676,7 +676,7 @@ class Halo
         Kokkos::deep_copy(vertex_idx, 0);
         Kokkos::deep_copy(edge_idx, 0);
         Kokkos::deep_copy(face_idx, 0);
-        
+        // printf("R%d: vef view sizes: %d, %d, %d\n", rank, vids_view.extent(0), eids_view.extent(0), fids_view.extent(0));
         int owned_vertices = _mesh->count(Own(), Vertex());
         int owned_faces = _mesh->count(Own(), Face());
         Kokkos::parallel_for("gather neighboring vertex and edge IDs", Kokkos::RangePolicy<execution_space>(0, num_vert_seeds),
@@ -699,60 +699,61 @@ class Halo
                     int fgid = f_gid(flid);
                     // if (rank == 1) printf("R%d: seed vgid (owned): %d, f l/g: %d, %d\n", rank, vgid, flid, fgid);
                     
-                    // int flayer = f_layer(flid);
-                    // int frank = f_rank(flid);
-                    // if ((flayer == level) && (frank == rank))
-                    // {
-                    //     // Add face to list of faces if it's on our layer
-                    //     // AND it is not ghosted
-                    //     // AND it is not already added
-                    //     bool fval = Kokkos::atomic_compare_exchange(&fb(flid), false, true);
-                    //     if (!fval)
-                    //     {
-                    //         int fdx = Kokkos::atomic_fetch_add(&face_idx(), 1);
-                    //         fids_view(fdx) = fgid;
+                    int flayer = f_layer(flid);
+                    int fowner = Utils::owner_rank(Face(), fgid, vef_gid_start_d);
+                    if ((flayer == level) && (fowner == rank))
+                    {
+                        // Add face to list of faces if it's on our layer
+                        // AND it is not ghosted
+                        // AND it is not already added
+                        bool fval = Kokkos::atomic_compare_exchange(&fb(flid), false, true);
+                        if (!fval)
+                        {
+                            int fdx = Kokkos::atomic_fetch_add(&face_idx(), 1);
+                            fids_view(fdx) = fgid;
 
-                    //         // Loop over edges that make up this face and add to the
-                    //         // halo, following the same conditions above
-                    //         for (int e = 0; e < 3; e++)
-                    //         {
-                    //             int egid = f_eid(flid, e);
-                    //             int elid = egid - vef_gid_start_d(rank, 1);
-                    //             // The edge will always be on the same level as the face
-                    //             if ((elid > -1) && (e_rank(elid) == rank))
-                    //             {
-                    //                 bool eval = Kokkos::atomic_compare_exchange(&eb(elid), false, true);
-                    //                 if (!eval)
-                    //                 {
-                    //                     int edx = Kokkos::atomic_fetch_add(&edge_idx(), 1);
-                    //                     eids_view(edx) = egid;
-                    //                     // if (rank == 1) printf("R%d: for VGID %d, adding EGID %d\n", rank, vgid, egid);
+                            // Loop over edges that make up this face and add to the
+                            // halo, following the same conditions above
+                            for (int e = 0; e < 3; e++)
+                            {
+                                int egid = f_eid(flid, e);
+                                int elid = egid - vef_gid_start_d(rank, 1);
+                                int eowner = Utils::owner_rank(Edge(), egid, vef_gid_start_d);
+                                // The edge will always be on the same level as the face
+                                if ((elid > -1) && (eowner == rank))
+                                {
+                                    bool eval = Kokkos::atomic_compare_exchange(&eb(elid), false, true);
+                                    if (!eval)
+                                    {
+                                        int edx = Kokkos::atomic_fetch_add(&edge_idx(), 1);
+                                        eids_view(edx) = egid;
+                                        // if (rank == 1) printf("R%d: for VGID %d, adding EGID %d\n", rank, vgid, egid);
 
-                    //                     // Add the vertices connected by this edge
-                    //                     for (int v = 0; v < 2; v++)
-                    //                     {
-                    //                         int edge_vgid = e_vid(elid, v);
-                    //                         // if (rank == 1) printf("R%d: egid %d, checking neighbor_vgid %d: %d\n", rank, egid, v, neighbor_vgid);
-                    //                         int edge_vlid = edge_vgid - vef_gid_start_d(rank, 0);
-                    //                         int vertex_owner = Utils::owner_rank(Vertex(), edge_vgid, vef_gid_start_d);
-                    //                         // printf("R%d: EGID: %d, neighbor_vgid: %d, neighbor_vlid")
-                    //                         if (vertex_owner == rank)
-                    //                         {
-                    //                             // if (rank == 1) printf("R%d: egid %d, neighbor_vgid %d: %d\n", rank, egid, v, neighbor_vgid);
-                    //                             bool vval = Kokkos::atomic_compare_exchange(&vb(edge_vlid), false, true);
-                    //                             if (!vval)
-                    //                             {
-                    //                                 int vdx = Kokkos::atomic_fetch_add(&vertex_idx(), 1);
-                    //                                 vids_view(vdx) = edge_vgid;
-                    //                                 // if (rank == 1) printf("R%d: from edge %d and VGID %d, adding VGID %d\n", rank, egid, vgid, neighbor_vgid);
-                    //                             }
-                    //                         }
-                    //                     }
-                    //                 }
-                    //             }
-                    //         }
-                    //     }
-                    // }
+                                        // Add the vertices connected by this edge
+                                        for (int v = 0; v < 2; v++)
+                                        {
+                                            int edge_vgid = e_vid(elid, v);
+                                            // if (rank == 1) printf("R%d: egid %d, checking neighbor_vgid %d: %d\n", rank, egid, v, neighbor_vgid);
+                                            int edge_vlid = edge_vgid - vef_gid_start_d(rank, 0);
+                                            int vertex_owner = Utils::owner_rank(Vertex(), edge_vgid, vef_gid_start_d);
+                                            // printf("R%d: EGID: %d, neighbor_vgid: %d, neighbor_vlid")
+                                            if (vertex_owner == rank)
+                                            {
+                                                // if (rank == 1) printf("R%d: egid %d, neighbor_vgid %d: %d\n", rank, egid, v, neighbor_vgid);
+                                                bool vval = Kokkos::atomic_compare_exchange(&vb(edge_vlid), false, true);
+                                                if (!vval)
+                                                {
+                                                    int vdx = Kokkos::atomic_fetch_add(&vertex_idx(), 1);
+                                                    vids_view(vdx) = edge_vgid;
+                                                    // if (rank == 1) printf("R%d: from edge %d and VGID %d, adding VGID %d\n", rank, egid, vgid, neighbor_vgid);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                 }
             }
@@ -781,7 +782,6 @@ class Halo
                             // if (vgid == 12) printf("R%d: vgid: %d, exvgid: %d\n", rank, vgid, exvgid);
                             if (fxvgid == vgid)
                             {
-                                if (rank == 1) printf("R%d: seed vgid (remote): %d, f l/g: %d, %d\n", rank, vgid, flid, fgid);
                                 // Add this face, its edges, and its vertices to the halo
                                 // following the same procedure as above
                                 bool fval = Kokkos::atomic_compare_exchange(&fb(flid), false, true);
@@ -789,6 +789,7 @@ class Halo
                                 {
                                     int fdx = Kokkos::atomic_fetch_add(&face_idx(), 1);
                                     fids_view(fdx) = fgid;
+                                    // if (rank == 1) printf("R%d: seed vgid (remote): %d, f l/g: %d, %d, fdx: %d\n", rank, vgid, flid, fgid, fdx);
 
                                     // Loop over edges that make up this face and add to the
                                     // halo, following the same conditions above
@@ -796,8 +797,9 @@ class Halo
                                     {
                                         int egid = f_eid(flid, e);
                                         int elid = egid - vef_gid_start_d(rank, 1);
+                                        int eowner = Utils::owner_rank(Edge(), egid, vef_gid_start_d);
                                         // The edge will always be on the same level as the face
-                                        if ((elid > -1) && (e_rank(elid) == rank))
+                                        if ((elid > -1) && (eowner == rank))
                                         {
                                             bool eval = Kokkos::atomic_compare_exchange(&eb(elid), false, true);
                                             if (!eval)
