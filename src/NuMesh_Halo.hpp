@@ -315,6 +315,12 @@ class Halo
             Kokkos::deep_copy(vgid_seeds_size, vgid_seeds_idx);
             Kokkos::resize(vgid_seeds, vgid_seeds_size);
 
+            // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vgid_seeds_size),
+            // KOKKOS_LAMBDA(int i) {
+
+            //     if (rank == 1) printf("R%d: vgid_seeds(%d): %d\n", rank, i, vgid_seeds(i));
+
+            // });
 
             // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vb.extent(0)),
             // KOKKOS_LAMBDA(int i) {
@@ -338,47 +344,57 @@ class Halo
             //     if (rank == 1) printf("R%d: to: %d, seed%d: %d\n", rank, neighbor_rank, i, vgid_seeds(i));
 
             // });
-            // if (i == 2) break;
+            // if (i == 1) break;
         }
 
-        auto vertex_send_offsets = _vertex_send_offsets;
-        // auto vertex_send_ids = _vertex_send_ids;
-        int d_rank = 3;
-        Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, neighbor_ranks.extent(0)),
-            KOKKOS_LAMBDA(int i) {
+        // auto vertex_send_offsets = _vertex_send_offsets;
+        // // auto vertex_send_ids = _vertex_send_ids;
+        // int d_rank = 1;
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, neighbor_ranks.extent(0)),
+        //     KOKKOS_LAMBDA(int i) {
 
-            if (rank == d_rank) printf("R%d: rank: %d, V offset: %d\n", rank, neighbor_ranks(i), vertex_send_offsets(neighbor_ranks(i)));
+        //     if (rank == d_rank) printf("R%d: rank: %d, V offset: %d\n", rank, neighbor_ranks(i), vertex_send_offsets(neighbor_ranks(i)));
 
-        });
+        // });
 
-        Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _vdx),
-            KOKKOS_LAMBDA(int i) {
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _vdx),
+        //     KOKKOS_LAMBDA(int i) {
 
-            if (rank == d_rank) printf("R%d: offset %d: VGID: %d\n", rank, i, vertex_send_ids(i));
+        //     if (rank == d_rank) printf("R%d: offset %d: VGID: %d\n", rank, i, vertex_send_ids(i));
 
-        });
+        // });
 
-        auto edge_send_offsets = _edge_send_offsets;
-        auto edge_send_ids = _edge_send_ids;
-        Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, neighbor_ranks.extent(0)),
-            KOKKOS_LAMBDA(int i) {
+        // auto edge_send_offsets = _edge_send_offsets;
+        // auto edge_send_ids = _edge_send_ids;
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, neighbor_ranks.extent(0)),
+        //     KOKKOS_LAMBDA(int i) {
 
-            if (rank == d_rank) printf("R%d: rank: %d, E offset: %d\n", rank, neighbor_ranks(i), edge_send_offsets(neighbor_ranks(i)));
+        //     if (rank == d_rank) printf("R%d: rank: %d, E offset: %d\n", rank, neighbor_ranks(i), edge_send_offsets(neighbor_ranks(i)));
 
-        });
+        // });
 
-        Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _edx),
-            KOKKOS_LAMBDA(int i) {
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _edx),
+        //     KOKKOS_LAMBDA(int i) {
 
-            if (rank == d_rank) printf("R%d: offset %d: EGID: %d\n", rank, i, edge_send_ids(i));
+        //     if (rank == d_rank) printf("R%d: offset %d: EGID: %d\n", rank, i, edge_send_ids(i));
 
-        });
+        // });
 
-        
+        // auto face_send_offsets = _face_send_offsets;
+        // auto face_send_ids = _face_send_ids;
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, neighbor_ranks.extent(0)),
+        //     KOKKOS_LAMBDA(int i) {
 
-        
+        //     if (rank == d_rank) printf("R%d: rank: %d, F offset: %d\n", rank, neighbor_ranks(i), face_send_offsets(neighbor_ranks(i)));
 
+        // });
 
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, _fdx),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     if (rank == d_rank) printf("R%d: offset %d: FGID: %d\n", rank, i, face_send_ids(i));
+
+        // });
 
 
         // Update halo version
@@ -681,60 +697,62 @@ class Halo
                 {
                     int flid = vertex_face_indices(f); // Local face ID
                     int fgid = f_gid(flid);
-                    int flayer = f_layer(flid);
-                    int frank = f_rank(flid);
-                    if ((flayer == level) && (frank == rank))
-                    {
-                        // Add face to list of faces if it's on our layer
-                        // AND it is not ghosted
-                        // AND it is not already added
-                        bool fval = Kokkos::atomic_compare_exchange(&fb(flid), false, true);
-                        if (!fval)
-                        {
-                            int fdx = Kokkos::atomic_fetch_add(&face_idx(), 1);
-                            fids_view(fdx) = fgid;
+                    // if (rank == 1) printf("R%d: seed vgid (owned): %d, f l/g: %d, %d\n", rank, vgid, flid, fgid);
+                    
+                    // int flayer = f_layer(flid);
+                    // int frank = f_rank(flid);
+                    // if ((flayer == level) && (frank == rank))
+                    // {
+                    //     // Add face to list of faces if it's on our layer
+                    //     // AND it is not ghosted
+                    //     // AND it is not already added
+                    //     bool fval = Kokkos::atomic_compare_exchange(&fb(flid), false, true);
+                    //     if (!fval)
+                    //     {
+                    //         int fdx = Kokkos::atomic_fetch_add(&face_idx(), 1);
+                    //         fids_view(fdx) = fgid;
 
-                            // Loop over edges that make up this face and add to the
-                            // halo, following the same conditions above
-                            for (int e = 0; e < 3; e++)
-                            {
-                                int egid = f_eid(flid, e);
-                                int elid = egid - vef_gid_start_d(rank, 1);
-                                // The edge will always be on the same level as the face
-                                if ((elid > -1) && (e_rank(elid) == rank))
-                                {
-                                    bool eval = Kokkos::atomic_compare_exchange(&eb(elid), false, true);
-                                    if (!eval)
-                                    {
-                                        int edx = Kokkos::atomic_fetch_add(&edge_idx(), 1);
-                                        eids_view(edx) = egid;
-                                        // if (rank == 1) printf("R%d: for VGID %d, adding EGID %d\n", rank, vgid, egid);
+                    //         // Loop over edges that make up this face and add to the
+                    //         // halo, following the same conditions above
+                    //         for (int e = 0; e < 3; e++)
+                    //         {
+                    //             int egid = f_eid(flid, e);
+                    //             int elid = egid - vef_gid_start_d(rank, 1);
+                    //             // The edge will always be on the same level as the face
+                    //             if ((elid > -1) && (e_rank(elid) == rank))
+                    //             {
+                    //                 bool eval = Kokkos::atomic_compare_exchange(&eb(elid), false, true);
+                    //                 if (!eval)
+                    //                 {
+                    //                     int edx = Kokkos::atomic_fetch_add(&edge_idx(), 1);
+                    //                     eids_view(edx) = egid;
+                    //                     // if (rank == 1) printf("R%d: for VGID %d, adding EGID %d\n", rank, vgid, egid);
 
-                                        // Add the vertices connected by this edge
-                                        for (int v = 0; v < 2; v++)
-                                        {
-                                            int edge_vgid = e_vid(elid, v);
-                                            // if (rank == 1) printf("R%d: egid %d, checking neighbor_vgid %d: %d\n", rank, egid, v, neighbor_vgid);
-                                            int edge_vlid = edge_vgid - vef_gid_start_d(rank, 0);
-                                            int vertex_owner = Utils::owner_rank(Vertex(), edge_vgid, vef_gid_start_d);
-                                            // printf("R%d: EGID: %d, neighbor_vgid: %d, neighbor_vlid")
-                                            if (vertex_owner == rank)
-                                            {
-                                                // if (rank == 1) printf("R%d: egid %d, neighbor_vgid %d: %d\n", rank, egid, v, neighbor_vgid);
-                                                bool vval = Kokkos::atomic_compare_exchange(&vb(edge_vlid), false, true);
-                                                if (!vval)
-                                                {
-                                                    int vdx = Kokkos::atomic_fetch_add(&vertex_idx(), 1);
-                                                    vids_view(vdx) = edge_vgid;
-                                                    // if (rank == 1) printf("R%d: from edge %d and VGID %d, adding VGID %d\n", rank, egid, vgid, neighbor_vgid);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    //                     // Add the vertices connected by this edge
+                    //                     for (int v = 0; v < 2; v++)
+                    //                     {
+                    //                         int edge_vgid = e_vid(elid, v);
+                    //                         // if (rank == 1) printf("R%d: egid %d, checking neighbor_vgid %d: %d\n", rank, egid, v, neighbor_vgid);
+                    //                         int edge_vlid = edge_vgid - vef_gid_start_d(rank, 0);
+                    //                         int vertex_owner = Utils::owner_rank(Vertex(), edge_vgid, vef_gid_start_d);
+                    //                         // printf("R%d: EGID: %d, neighbor_vgid: %d, neighbor_vlid")
+                    //                         if (vertex_owner == rank)
+                    //                         {
+                    //                             // if (rank == 1) printf("R%d: egid %d, neighbor_vgid %d: %d\n", rank, egid, v, neighbor_vgid);
+                    //                             bool vval = Kokkos::atomic_compare_exchange(&vb(edge_vlid), false, true);
+                    //                             if (!vval)
+                    //                             {
+                    //                                 int vdx = Kokkos::atomic_fetch_add(&vertex_idx(), 1);
+                    //                                 vids_view(vdx) = edge_vgid;
+                    //                                 // if (rank == 1) printf("R%d: from edge %d and VGID %d, adding VGID %d\n", rank, egid, vgid, neighbor_vgid);
+                    //                             }
+                    //                         }
+                    //                     }
+                    //                 }
+                    //             }
+                    //         }
+                    //     }
+                    // }
 
                 }
             }
@@ -763,6 +781,7 @@ class Halo
                             // if (vgid == 12) printf("R%d: vgid: %d, exvgid: %d\n", rank, vgid, exvgid);
                             if (fxvgid == vgid)
                             {
+                                if (rank == 1) printf("R%d: seed vgid (remote): %d, f l/g: %d, %d\n", rank, vgid, flid, fgid);
                                 // Add this face, its edges, and its vertices to the halo
                                 // following the same procedure as above
                                 bool fval = Kokkos::atomic_compare_exchange(&fb(flid), false, true);
@@ -875,17 +894,17 @@ class Halo
          * Add IDs to offset views starting at offsets
          * _vdx and _edx
          */
-        if (_vdx+num_verts > _vertex_send_ids.extent(0))
+        if (_vdx+num_verts > (int)_vertex_send_ids.extent(0))
         {
             throw std::runtime_error(
                 "NuMesh::Halo::gather_local_neighbors: _vertex_send_ids not large enough to hold new vertices" );
         }
-        if (_edx+num_edges > _edge_send_ids.extent(0))
+        if (_edx+num_edges > (int)_edge_send_ids.extent(0))
         {
             throw std::runtime_error(
                 "NuMesh::Halo::gather_local_neighbors: _edge_send_ids not large enough to hold new edges" );
         }
-        if (_fdx+num_faces > _face_send_ids.extent(0))
+        if (_fdx+num_faces > (int)_face_send_ids.extent(0))
         {
             throw std::runtime_error(
                 "NuMesh::Halo::gather_local_neighbors: _face_send_ids not large enough to hold new faces" );
