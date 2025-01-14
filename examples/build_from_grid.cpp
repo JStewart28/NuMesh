@@ -74,41 +74,17 @@ int main( int argc, char* argv[] )
     int halo_width = 2;
     auto local_grid = Cabana::Grid::createLocalGrid( global_grid, halo_width );
 
-    auto numesh = NuMesh::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
+    auto mesh = NuMesh::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
 
     auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
-    numesh->initializeFromArray(*array);
-    int size = 2;
-    Kokkos::View<int*, memory_space> fids("fids", size);
-    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, size),
-        KOKKOS_LAMBDA(int i) {
-        
-        if (i == 0) fids(i) = 30;
-        if (i == 1) fids(i) = 31;
-        //if (i == 1) fids(i) = 13;
-
-        if (i == 2) fids(i) = 106;          // rank 3
-        
-        // else if (i == 1) fids(i) = 5;       // rank 0
-        
-        else if (i == 3) fids(i) = 75;      // rank 2
-
-        else if (i == 4) fids(i) = 51;      // rank 1
-
-    });
-
-    numesh->refine(fids);
-    numesh->printFaces(1, 14);
-    numesh->printEdges(1, 21);
-    numesh->printEdges(1, 110);
-    numesh->printEdges(1, 22);
+    mesh->initializeFromArray(*array);
+    auto vef_gid_start = mesh->vef_gid_start();
 
     // Uniform refinement
     // for (int i = 0; i < 2; i++)
     // {
-    //     int num_local_faces = numesh->count(NuMesh::Own(), NuMesh::Face());
-    //     auto vef_gid_start = numesh->get_vef_gid_start();
+    //     int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
     //     int face_gid_start = vef_gid_start(rank, 2);
     //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
     //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
@@ -117,65 +93,30 @@ int main( int argc, char* argv[] )
     //             fin(i) = face_gid_start + i;
 
     //         });
-    //     numesh->refine(fin);
+    //     mesh->refine(fin);
     // }
 
-    // numesh->printFaces(1, 296);
-    // numesh->printEdges(1, 530);
-    // numesh->printEdges(1, 824);
-    // numesh->printEdges(1, 0);
-    // e(530, 824, 0),
+    // Test haloing
+    auto v2e = NuMesh::Maps::V2E(mesh);
+    auto v2f = NuMesh::Maps::V2F(mesh);
+    auto halo = NuMesh::createHalo(mesh, NuMesh::Edge(), 0, 2, 100);
 
-    // Second refine
-    // size = 1;
-    // Kokkos::resize(fids, 1);
-    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, size),
+    // mesh->printFaces(0, 0);
+
+    // size_t vsize = 1;
+    // Kokkos::View<int*, memory_space> verts("verts", vsize);
+    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, vsize),
     //     KOKKOS_LAMBDA(int i) {
-        
-    //     if (i == 0) fids(i) = 37;
 
-    // });
-    // numesh->refine(fids);
+    //         verts(i) = i;
 
+    //     });
+    
 
-    //numesh->_refine(13);
-    //numesh->_refine(22);
-    // if(rank == 1) numesh->printEdges(2, 0);
-    // numesh->printFaces(0, 30);
-    //numesh->printVertices();
-    //printf("**********\n");
-    //numesh->printFaces(1, 30);
-    //numesh->printFaces(1, 31);
-    // for (int i = 32; i < 44; i++)
+    // for (size_t i = 0; i < halo_verts.extent(0); i++)
     // {
-    //     numesh->printFaces(1, i);
+    //     printf("R%d: vert %d added\n", rank, halo_verts(i));
     // }
-    // numesh->printEdges(1, 45);
-    // numesh->printEdges(1, 105);
-    // numesh->printEdges(1, 144);
-    // numesh->printEdges(1, 145);
-    // numesh->printEdges(1, 46);
-    // numesh->printEdges(1, 86);
-
-    // if (rank == 0) numesh->printFaces(0, 0);
-    // if (rank == 0) numesh->printEdges(3, 0);
-
-    // numesh->printEdges(2, 105);
-
-    // Rank 0 edges, face 30
-    // numesh->printEdges(1, 45);
-    // numesh->printEdges(1, 46);
-    // numesh->printEdges(1, 47);
-
-    // Rank 1 edges
-    // numesh->printEdges(1, 98);
-    // numesh->printEdges(1, 108);
-    // numesh->printEdges(1, 109);
-
-    // Rank 2 edges
-    // numesh->printEdges(1, 119);
-    // numesh->printEdges(1, 158);
-    // numesh->printEdges(1, 159);
 
     } // Scope guard
 

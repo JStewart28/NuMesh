@@ -26,10 +26,10 @@ class Mesh2DTest : public ::testing::Test
 {
     using ExecutionSpace = typename T::ExecutionSpace;
     using MemorySpace = typename T::MemorySpace;
-    using numesh_t = NuMesh::Mesh<ExecutionSpace, MemorySpace>;
-    using vertex_data = typename numesh_t::vertex_data;
-    using edge_data = typename numesh_t::edge_data;
-    using face_data = typename numesh_t::face_data;
+    using mesh_t = NuMesh::Mesh<ExecutionSpace, MemorySpace>;
+    using vertex_data = typename mesh_t::vertex_data;
+    using edge_data = typename mesh_t::edge_data;
+    using face_data = typename mesh_t::face_data;
     using v_array_type = Cabana::AoSoA<vertex_data, Kokkos::HostSpace, 4>;
     using e_array_type = Cabana::AoSoA<edge_data, Kokkos::HostSpace, 4>;
     using f_array_type = Cabana::AoSoA<face_data, Kokkos::HostSpace, 4>;
@@ -38,7 +38,7 @@ class Mesh2DTest : public ::testing::Test
   protected:
     int rank_, comm_size_;
     int periodic_;
-    std::shared_ptr<numesh_t> numesh = NuMesh::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
+    std::shared_ptr<mesh_t> mesh_ = NuMesh::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
     v_array_type vertices;
     e_array_type edges;
     f_array_type faces;
@@ -93,7 +93,7 @@ class Mesh2DTest : public ::testing::Test
 
         auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
         auto array = Cabana::Grid::createArray<double, MemorySpace>("for_initialization", layout);
-        this->numesh->initializeFromArray(*array);
+        this->mesh_->initializeFromArray(*array);
     }
 
     /**
@@ -101,16 +101,16 @@ class Mesh2DTest : public ::testing::Test
      */
     void gatherAndCopyToHost()
     {
-        int rank = rank_;
+        const int rank = rank_;
 
-        auto vertices_ptr = numesh->vertices();
-        auto edges_ptr = numesh->edges();
-        auto faces_ptr = numesh->faces();
+        auto vertices_ptr = mesh_->vertices();
+        auto edges_ptr = mesh_->edges();
+        auto faces_ptr = mesh_->faces();
 
          // Local counts for each rank
-        int local_vef_count[3] = {numesh->count(NuMesh::Own(), NuMesh::Vertex()),
-                                numesh->count(NuMesh::Own(), NuMesh::Edge()),
-                                numesh->count(NuMesh::Own(), NuMesh::Face())};
+        int local_vef_count[3] = {mesh_->count(NuMesh::Own(), NuMesh::Vertex()),
+                                mesh_->count(NuMesh::Own(), NuMesh::Edge()),
+                                mesh_->count(NuMesh::Own(), NuMesh::Face())};
 
         // Get vertices
         Kokkos::View<int*, MemorySpace> element_export_ids("element_export_ids", local_vef_count[0]);
@@ -217,7 +217,7 @@ class Mesh2DTest : public ::testing::Test
         int size = fids.extent(0);
         Kokkos::View<int*, MemorySpace> fids_d("fids_d", size);
         Kokkos::deep_copy(fids_d, fids);
-        numesh->refine(fids_d);
+        mesh_->refine(fids_d);
     }
 
     /**
@@ -263,7 +263,7 @@ class Mesh2DTest : public ::testing::Test
         auto e_gid = Cabana::slice<E_GID>(edges);
         auto f_gid = Cabana::slice<F_GID>(faces);
 
-        auto vef_gid_start = numesh->get_vef_gid_start();
+        auto vef_gid_start = mesh_->vef_gid_start();
 
         for (int i = 0; i < lv; i++)
         {
@@ -342,7 +342,7 @@ class Mesh2DTest : public ::testing::Test
         auto e_vid = Cabana::slice<E_VIDS>(edges);
         auto e_children = Cabana::slice<E_CIDS>(edges);
         auto e_parent = Cabana::slice<E_PID>(edges);
-        // for (int i = 0; i < numesh->count(NuMesh::Own(), NuMesh::Edge()); i++)
+        // for (int i = 0; i < mesh_->count(NuMesh::Own(), NuMesh::Edge()); i++)
         // {
            
         // }
@@ -445,7 +445,7 @@ class Mesh2DTest : public ::testing::Test
             // Child vertices
             int c0v0, c0v1, c1v0, c1v1;
 
-            ce0 = NuMesh::get_lid(e_gid, e_cid(i, 0), 0, edges.size()); ce1 = NuMesh::get_lid(e_gid, e_cid(i, 1), 0, edges.size());
+            ce0 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 0), 0, edges.size()); ce1 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 1), 0, edges.size());
             pv0 = e_vid(i, 0); pv1 = e_vid(i, 1); pvm = e_vid(i, 2);
 
             // Check child edge 0
@@ -487,9 +487,9 @@ class Mesh2DTest : public ::testing::Test
         for (int i = 0; i < lf+gf; i++)
         {
             int e0, e1, e2;
-            e0 = NuMesh::get_lid(e_gid, f_eid(i, 0), 0, edges.size());
-            e1 = NuMesh::get_lid(e_gid, f_eid(i, 1), 0, edges.size());
-            e2 = NuMesh::get_lid(e_gid, f_eid(i, 2), 0, edges.size());
+            e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), 0, edges.size());
+            e1 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 1), 0, edges.size());
+            e2 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 2), 0, edges.size());
 
             ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e0, e1)) << "FGID " << f_gid(i) << "\n";
             ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e1, e2)) << "FGID " << f_gid(i) << "\n";
