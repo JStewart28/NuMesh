@@ -126,6 +126,22 @@ class Mesh
     }
 
     /**
+     * Sorts the owned domain of the edge and face AoSoAs by
+     * layer of the tree the element lives on, from 
+     * highest (0), to lowest layer
+     */
+    void _sort_by_layer()
+    {
+        auto e_layer = Cabana::slice<E_LAYER>(_edges);
+        auto f_layer = Cabana::slice<F_LAYER>(_faces);
+
+        auto sort_edges = Cabana::sortByKey( e_layer );
+        Cabana::permute( sort_edges, _edges );
+        auto sort_faces = Cabana::sortByKey( f_layer );
+        Cabana::permute( sort_faces, _faces );
+    }
+
+    /**
      * Populates vector of neighbor ranks. Derives neighbor
      * ranks from boundary edges.
      * 
@@ -386,6 +402,7 @@ class Mesh
     void _finializeInit()
     {
         _createFaces();
+        _sort_by_layer();
         _populate_boundary_elements();
     }
 
@@ -1520,6 +1537,7 @@ class Mesh
     void refine(View& fgids)
     {
         _refineFaces(fgids);
+        _sort_by_layer();
         _populate_boundary_elements();
     }
     
