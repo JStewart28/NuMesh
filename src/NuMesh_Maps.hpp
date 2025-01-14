@@ -37,7 +37,7 @@ class V2E
         , _comm ( mesh->comm() )
         , _map_version ( mesh->version() )
     {
-        static_assert( isnumesh_mesh<Mesh>::value, "NuMesh::V2E: NuMesh Mesh required" );
+        static_assert( is_numesh_mesh<Mesh>::value, "NuMesh::V2E: NuMesh Mesh required" );
 
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
@@ -162,7 +162,7 @@ class V2F
         , _comm ( mesh->comm() )
         , _map_version ( mesh->version() )
     {
-        static_assert( isnumesh_mesh<Mesh>::value, "NuMesh::V2F: NuMesh Mesh required" );
+        static_assert( is_numesh_mesh<Mesh>::value, "NuMesh::V2F: NuMesh Mesh required" );
 
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );

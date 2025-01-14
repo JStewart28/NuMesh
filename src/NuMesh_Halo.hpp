@@ -43,7 +43,7 @@ class Halo
         , _halo_version ( mesh->version() )
         , _v2f ( Maps::V2F<Mesh>(_mesh) )
     {
-        static_assert( isnumesh_mesh<Mesh>::value, "NuMesh::Halo: NuMesh Mesh required" );
+        static_assert( is_numesh_mesh<Mesh>::value, "NuMesh::Halo: NuMesh Mesh required" );
 
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );

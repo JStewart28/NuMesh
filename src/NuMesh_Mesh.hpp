@@ -1679,9 +1679,9 @@ class Mesh
 
 // Static type checkers
 template <typename T>
-struct isnumesh_mesh : std::false_type {};
+struct is_numesh_mesh : std::false_type {};
 template <typename ExecutionSpace, typename MemSpace>
-struct isnumesh_mesh<NuMesh::Mesh<ExecutionSpace, MemSpace>> : std::true_type {};
+struct is_numesh_mesh<NuMesh::Mesh<ExecutionSpace, MemSpace>> : std::true_type {};
 
 /**
  *  Returns a mesh with no vertices, edges, or faces.
