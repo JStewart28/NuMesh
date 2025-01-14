@@ -271,9 +271,12 @@ class ArrayLayout
     void update()
     {
         _version = _mesh->version();
-        auto counts = _mesh->get_owned_and_ghost_counts();
-        _owned_vertices = counts[0]; _owned_edges = counts[1]; _owned_faces = counts[2];
-        _ghost_vertices = counts[3]; _ghost_edges= counts[4]; _ghost_faces = counts[5];
+        _owned_vertices = _mesh->count(Own(), Vertex());
+        _owned_edges = _mesh->count(Own(), Edge());
+        _owned_faces = _mesh->count(Own(), Face());
+        _ghost_vertices = _mesh->count(Ghost(), Vertex());
+        _ghost_edges= _mesh->count(Ghost(), Edge());
+        _ghost_faces = _mesh->count(Ghost(), Face());
     }
 
 
