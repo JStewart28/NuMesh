@@ -25,8 +25,9 @@
 
 // Constants for tuple/slice indices
 #if AOSOA_SLICE_INDICES
-    #define V_GID 0
-    #define V_OWNER 1
+    #define V_XYZ 0
+    #define V_GID 1
+    #define V_OWNER 2
     #define E_VIDS 0
     #define E_CIDS 1
     #define E_PID 2
@@ -71,7 +72,8 @@ class Mesh
     using halo_type = Cabana::Grid::Halo<MemorySpace>;
 
     // Note: Larger types should be listed first
-    using vertex_data = Cabana::MemberTypes<int,       // Vertex global ID                                 
+    using vertex_data = Cabana::MemberTypes<int[3],    // XYZ coordinates of vertex
+                                            int,       // Vertex global ID                                 
                                             int,       // Owning rank
                                             >;
     using edge_data = Cabana::MemberTypes<  int[3],    // Vertex global IDs of edge: (endpoint, endpoint, midpoint)
@@ -121,6 +123,22 @@ class Mesh
     {
         //MPIX_Info_free(&_xinfo);
         //MPIX_Comm_free(&_xcomm);
+    }
+
+    /**
+     * Sorts the owned domain of the edge and face AoSoAs by
+     * layer of the tree the element lives on, from 
+     * highest (0), to lowest layer
+     */
+    void _sort_by_layer()
+    {
+        auto e_layer = Cabana::slice<E_LAYER>(_edges);
+        auto f_layer = Cabana::slice<F_LAYER>(_faces);
+
+        auto sort_edges = Cabana::sortByKey( e_layer );
+        Cabana::permute( sort_edges, _edges );
+        auto sort_faces = Cabana::sortByKey( f_layer );
+        Cabana::permute( sort_faces, _faces );
     }
 
     /**
@@ -384,6 +402,7 @@ class Mesh
     void _finializeInit()
     {
         _createFaces();
+        _sort_by_layer();
         _populate_boundary_elements();
     }
 
@@ -1275,6 +1294,7 @@ class Mesh
         // Initialize the vertices, edges, and faces
         auto v_gid = Cabana::slice<V_GID>(_vertices);
         auto v_owner = Cabana::slice<V_OWNER>(_vertices);
+        auto v_xyz = Cabana::slice<V_XYZ>(_vertices);
 
         auto e_vid = Cabana::slice<E_VIDS>(_edges); // VIDs from south to north, west to east vertices
         auto e_gid = Cabana::slice<E_GID>(_edges);
@@ -1308,6 +1328,7 @@ class Mesh
             e_layer(i) = 0;
         });
 
+        auto z = array.view();
         Kokkos::parallel_for("populate_ve", Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>({{istart, jstart}}, {{iend, jend}}),
             KOKKOS_LAMBDA(int i, int j) {
 
@@ -1317,9 +1338,9 @@ class Mesh
             //printf("i/j/vid: %d, %d, %d\n", i, j, v_lid);
             v_gid(v_lid) = v_gid_;
             v_owner(v_lid) = rank;
-            // for (int dim = 0; dim < 3; dim++) {
-            //     v_xyz(v_lid, dim) = z(i, j, dim);
-            // }
+            for (int dim = 0; dim < 3; dim++) {
+                v_xyz(v_lid, dim) = z(i, j, dim);
+            }
 
             /* Initialize edges
              * Edges between vertices for their:
@@ -1516,6 +1537,7 @@ class Mesh
     void refine(View& fgids)
     {
         _refineFaces(fgids);
+        _sort_by_layer();
         _populate_boundary_elements();
     }
     
@@ -1675,9 +1697,9 @@ class Mesh
 
 // Static type checkers
 template <typename T>
-struct isnumesh_mesh : std::false_type {};
+struct is_numesh_mesh : std::false_type {};
 template <typename ExecutionSpace, typename MemSpace>
-struct isnumesh_mesh<NuMesh::Mesh<ExecutionSpace, MemSpace>> : std::true_type {};
+struct is_numesh_mesh<NuMesh::Mesh<ExecutionSpace, MemSpace>> : std::true_type {};
 
 /**
  *  Returns a mesh with no vertices, edges, or faces.
