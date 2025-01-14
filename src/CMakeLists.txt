@@ -1,10 +1,11 @@
 set(HEADERS
  NuMesh_Array.hpp
- NuMesh_Communicator.hpp
  NuMesh_Core.hpp
- NuMesh_Grid2DInitializer.hpp
+ NuMesh_Halo.hpp
+ NuMesh_Maps.hpp
  NuMesh_Mesh.hpp
  NuMesh_Types.hpp
+ NuMesh_Utils.hpp
   )
 
 #set(SOURCES
