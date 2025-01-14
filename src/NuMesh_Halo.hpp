@@ -80,6 +80,49 @@ class Halo
     }
 
     /**
+     * Make a sparse matrix and square it
+     */
+    void make_sparse()
+    {
+        /**
+         * A = hypre_ParCSRMatrixCreate(...)
+         * row_starts and col_starts: these will be the same. Arrays of size 2 where
+         *      0 = the global row/col I start
+         *      1 = the global row/col I end, non-inclusive (Add number of row/col I own to index 0)
+         * num_cols_offd: number of non-zero columns in the rows I own.
+         *      Number of distinct vertices that I am connected to that I do not own.
+         * num_nonzeros_diag: The number of non-zeroes in the part of the matrix that own (the fully local bit)
+         *      Number of edges fully local between two vertices I own
+         * num_nonzeroes_offd: total number of non-zero values in the rows but not the columns I own.
+         *      Number of edges that go to any other node on any other process
+         * returns a matrix of type hypre_ParCSRMatrix *A.
+         * 
+         * https://github.com/hypre-space/hypre/blob/master/src/parcsr_ls/par_laplace_27pt.c
+         * 
+         * Hypre uses structs to store all the parts of the matrix
+         * Line 1667: you make your own CSR 
+         * Use HYPRE_MEMORY_DEVICE
+         * col_map_offd = size = num_cols_offd; this holds, for each non-zero offd column the global ID of the column, 
+         *      ordered from lowest to highest.
+         * 
+         * Use HYPRE_MEMORY_HOST even if you want it on the GPU, 
+         * at the end call hypre_ParCSRMatrixMigrate with HYPRE_MEMORY_DEVICE as second arg.
+         * 
+         * How to print out matrix:
+         *      hypre_ParCRSMatrixPrint(). Might have to call upper-case version
+         * 
+         * TO get these functions, migh tneed to just go to the files Amanda sent and include those includes.
+         * 
+         * To multiply matrix:
+         *      See Amanada notes
+         * 
+         * How to extract info from matrix:
+         *      Call the set diags/values functions in reverse.
+         */
+        
+    }
+
+    /**
      * Find the vertices, edges, and/or faces that must be exchanged for the halo 
      * 
      * Step 1:

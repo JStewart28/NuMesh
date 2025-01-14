@@ -1709,6 +1709,14 @@ auto createEmptyMesh( MPI_Comm comm )
 {
     return std::make_shared<Mesh<ExecutionSpace, MemorySpace>>(comm);
 }
+/**
+ *  Returns a mesh initialized from a Cabana::Array
+ */
+template <class ExecutionSpace, class MemorySpace>
+auto createEmptyMesh( MPI_Comm comm )
+{
+    return std::make_shared<Mesh<ExecutionSpace, MemorySpace>>(comm);
+}
 
 } // end namespace NuMesh
 
