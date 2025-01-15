@@ -122,8 +122,8 @@ class Halo
     }
 
     /**
-     * Helper function. Given sorted AoSoA slices of GID and send_to_ranks,
-     * if any GID+send_to_rank appears more than once, set its
+     * Helper function. Given sorted AoSoA slices of ID and send_to_ranks,
+     * if any ID+send_to_rank appears more than once, set its
      * send_to_rank to -1 so Cabana ignores it.
      * 
      * Returns the number of duplicates
