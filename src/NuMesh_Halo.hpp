@@ -70,7 +70,7 @@ class Halo
         Kokkos::deep_copy(_face_send_offsets, -1);
         Kokkos::deep_copy(_face_send_ids, -1);
 
-        build();
+        build_depth_one();
     };
 
     ~Halo()
@@ -142,7 +142,7 @@ class Halo
      *      3b) Create view of seed VGIDs using the import and export data.
      *      3c) Build the halo data by calling collect_entities with the seed data.
      */
-    void build()
+    void build_depth_one()
     {
         // (global ID, from_rank, to_rank) tuples
         using distributor_data_aosoa_t = Cabana::AoSoA<Cabana::MemberTypes<int, int, int>, memory_space, 4>;
