@@ -122,6 +122,41 @@ class Halo
     }
 
     /**
+     * Helper function. Given sorted AoSoA slices of GID and send_to_ranks,
+     * if any GID+send_to_rank appears more than once, set its
+     * send_to_rank to -1 so Cabana ignores it.
+     * 
+     * Returns the number of duplicates
+     */
+    template <class SliceType>
+    int _set_duplicates_neg1(SliceType& gids, SliceType& to_ranks)
+    {
+        if ( gids.size() != to_ranks.size() )
+            throw std::runtime_error( "NuMesh::Halo::_set_duplicates_neg1: gid and to_ranks sizes do not match!" );
+
+        int_d counter("counter");
+        Kokkos::deep_copy(counter, 0);
+        Kokkos::parallel_for("set duplicates to -1", Kokkos::RangePolicy<execution_space>(1, distributor_total_num_export),
+            KOKKOS_LAMBDA(int i) {
+
+            int current, prev, current_to, prev_to;
+            current = gids(i);
+            prev = gids(i-1);
+            current_to = to_ranks(i);
+            prev_to = to_ranks(i-1);
+            if ((current == prev) && (current_to == prev_to))
+            {
+                to_ranks(i) = -1;
+                Kokkos::atomic_increment(&counter());
+            }
+        });
+        int num_dups;
+        Kokkos::deep_copy(num_dups, counter);
+
+        return num_dups;
+    }
+
+    /**
      * Find the vertices, edges, and/or faces that must be exchanged for the halo 
      * 
      * Step 1:
@@ -191,8 +226,8 @@ class Halo
         // Halo data
         // (global ID, to_rank) tuples
         using halo_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int>, memory_space, 4>;
-        halo_aosoa vert_halo_export("vert_halo_export", num_boundary_faces + 10); // Slight buffer for faces that must be sent to >1 processes
-        halo_aosoa edge_halo_export("edge_halo_export", num_boundary_edges + 10); 
+        halo_aosoa vert_halo_export("vert_halo_export", num_boundary_faces*2 + 10); // Slight buffer for faces that must be sent to >1 processes
+        halo_aosoa edge_halo_export("edge_halo_export", num_boundary_edges*2 + 10); 
         halo_aosoa face_halo_export("face_halo_export", num_boundary_faces + 10);
         auto vert_halo_export_gids = Cabana::slice<0>(vert_halo_export);
         auto vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
@@ -203,15 +238,6 @@ class Halo
         int_d vh_idx("vh_idx"); Kokkos::deep_copy(vh_idx, 0);
         int_d eh_idx("eh_idx"); Kokkos::deep_copy(eh_idx, 0);
         int_d fh_idx("fh_idx"); Kokkos::deep_copy(fh_idx, 0);
-
-
-        // Store true if added to the halo to avoid uniqueness searches
-        // Kokkos::View<bool*, memory_space> v_in_halo("v_in_halo", vertex_count);
-        // Kokkos::View<bool*, memory_space> e_in_halo("e_in_halo", edge_count);
-        // Kokkos::View<bool*, memory_space> e_in_halo("f_in_halo", face_count);
-        // Kokkos::deep_copy(v_in_halo, false);
-        // Kokkos::deep_copy(e_in_halo, false);
-        // Kokkos::deep_copy(f_in_halo, false);
 
         // Iterate over boundary faces
         Kokkos::parallel_for("boundary face iteration", Kokkos::RangePolicy<execution_space>(0, num_boundary_faces),
@@ -230,8 +256,6 @@ class Halo
                     distributor_export_gids(i) = vgid;
                     distributor_export_from_ranks(i) = rank;
                     distributor_export_to_ranks(i) = vert_owner;
-                    
-                    // Add everything on the face MINUS this vert to the halo data
 
                     // Add this face to the halo to send to the given vertex owner
                     int fdx = Kokkos::atomic_fetch_add(&fh_idx(), 1);
@@ -239,19 +263,55 @@ class Halo
                     face_halo_export_ranks(fdx) = vert_owner;
                     
                     // Add edges
-                    
+                    for (int j = 0; j < 3; j++)
+                    {
+                        int egid = f_eid(flid, j);
+                        int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
+                        edge_halo_export_gids(edx) = egid;
+                        edge_halo_export_ranks(edx) = vert_owner;
+                    }
+
+                    // Add all owned verts
+                    for (int k = 0; k < 3; k++)
+                    {
+                        if (k == i) continue;
+                        int vgid = f_vid(flid, k);
+                        int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
+                        vert_halo_export_gids(edx) = vgid;
+                        vert_halo_export_ranks(edx) = vert_owner;
+                    }
 
                     // Can't break loop in case a face has two unowned vertices
                 }
             }
-
         });
 
-        // Store true if added to the distributor to avoid uniqueness searches
-        // Kokkos::View<bool*, memory_space> v_in_distributor("v_in_distributor", vertex_count);
-        // Kokkos::View<bool*, memory_space> e_in_distributor("e_in_distributor", edge_count);
-        // Kokkos::deep_copy(v_in_distributor, false);
-        // Kokkos::deep_copy(e_in_distributor, false);
+        // Resize data to correct sizes, except verts because we will get more from the distributor
+        int distributor_size, vhalo_size, ehalo_size, fhalo_size;
+        Kokkos::deep_copy(distributor_size, de_idx);
+        Kokkos::deep_copy(ehalo_size, eh_idx);
+        Kokkos::deep_copy(fhalo_size, fh_idx);
+        distributor_export.resize(distributor_size);
+        edge_halo_export.resize(ehalo_size);
+        face_halo_export.resize(fhalo_size);
+
+
+        // Set duplicate edge/face + send_to_rank pairs to be ignored (sent to rank -1)
+        // 1. Sort the distributor data by increasing VGID to filter duplicates
+        auto sort_export_gids = Cabana::sortByKey( distributor_export_gids );
+        Cabana::permute( sort_export_gids, distributor_export );
+        auto sort_halo_edges = Cabana::sortByKey( edge_halo_export_gids );
+        Cabana::permute( sort_halo_edges, edge_halo_export );
+        auto sort_halo_faces = Cabana::sortByKey( face_halo_export_gids );
+        Cabana::permute( sort_halo_faces, face_halo_export );
+        
+
+        // 2. Set duplicate tuples to -1
+        int distributor_dups = _set_duplicates_neg1(distributor_export_gids, distributor_export_ranks);
+        int edge_dups = _set_duplicates_neg1(edge_halo_export_gids, edge_halo_export_ranks);
+        int face_dups = _set_duplicates_neg1(face_halo_export_gids, face_halo_export_ranks);
+
+
 
         /***********
          * Step 1
