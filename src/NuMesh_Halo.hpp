@@ -41,7 +41,6 @@ class Halo
         , _depth ( depth )
         , _comm ( mesh->comm() )
         , _halo_version ( mesh->version() )
-        , _v2f ( Maps::V2F<Mesh>(_mesh) )
     {
         static_assert( is_numesh_mesh<Mesh>::value, "NuMesh::Halo: NuMesh Mesh required" );
 
@@ -70,7 +69,7 @@ class Halo
         Kokkos::deep_copy(_face_send_offsets, -1);
         Kokkos::deep_copy(_face_send_ids, -1);
 
-        build_depth_one();
+        gather_depth_one();
     };
 
     ~Halo()
@@ -126,39 +125,29 @@ class Halo
      * Find the vertices, edges, and/or faces that must be exchanged for the halo 
      * 
      * Step 1:
-     *  Iterate over boundary edges to populate distributor_export.
-     *      - If a boundary edge has a vertex we do not own, add
-     *        (VGID, my_rank, vert_owner_rank) tuple to distributor_export
+     *  Use distributor to request missing vertex data for owned faces which
+     *      contain an unowned vertex. At the same time, build the halo data
+     *      Approach:
+     *          - Iterate over boundary faces:
+     *              1. Add to distributor_export: Any vertex GIDs we do not own
+     *              2. Add to halo_export_ids: All vef data on faces that contain an unowned vertex
+     *              3. Add to halo_export_ranks: The owner rank of the unowned vertex
      * 
      * Step 2:
-     *  Distribute the distributor_export data into distributor_import
+     *  - Distribute the distributor_export data into distributor_import
+     *  - Add imported vertex GIDs to halo_export_ids and halo_export_ranks.
      * 
-     * Step 3:
-     *  Build the halo data, which consists of the _vertex_send_offsets,
-     *  _edge_send_offsets, and _face_send_offsets and IDS views.
-     *      For each neighbor rank:
-     *      3a) Add VGIDS from distributor_import data because gather_local_neighbors
-     *          does not add seeded VGIDs to the halo data.
-     *      3b) Create view of seed VGIDs using the import and export data.
-     *      3c) Build the halo data by calling collect_entities with the seed data.
      */
-    void build_depth_one()
+    void gather_depth_one()
     {
-        // (global ID, from_rank, to_rank) tuples
-        using distributor_data_aosoa_t = Cabana::AoSoA<Cabana::MemberTypes<int, int, int>, memory_space, 4>;
-
-        const int rank = _rank;
+        const int level = _level, rank = _rank, comm_size = _comm_size;
 
         auto vertices = _mesh->vertices();
         auto edges = _mesh->edges();
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto e_vids = Cabana::slice<E_VIDS>(edges);
-
-        auto boundary_edges = _mesh->boundary_edges();
-
-        distributor_data_aosoa_t distributor_export("distributor_export", boundary_edges.extent(0));
-        int_d counter("counter");
-        Kokkos::deep_copy(counter, 0);
+        auto faces = _mesh->faces();
+        auto boundary_faces = _mesh->boundary_faces();
+        size_t num_boundary_faces = boundary_faces.extent(0);
+        size_t num_boundary_edges = _mesh->boundary_edges().extent(0);
 
         // Get vef_gid_start and copy to device
         auto vef_gid_start = _mesh->vef_gid_start();
@@ -167,9 +156,96 @@ class Halo
         Kokkos::deep_copy(hv_tmp, vef_gid_start);
         Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
 
-        int edge_count = _mesh->count(Own(), Edge());
+        // Vertex slices
+        auto v_gid = Cabana::slice<V_GID>(vertices);
+
+        // Edge slices
+        auto e_gid = Cabana::slice<E_GID>(edges);
+        auto e_vid = Cabana::slice<E_VIDS>(edges);
+        auto e_rank = Cabana::slice<E_OWNER>(edges);
+        auto e_cid = Cabana::slice<E_CIDS>(edges);
+        auto e_pid = Cabana::slice<E_PID>(edges);
+        auto e_layer = Cabana::slice<E_LAYER>(edges);
+
+        // Face slices
+        auto f_gid = Cabana::slice<F_GID>(faces);
+        auto f_eid = Cabana::slice<F_EIDS>(faces);
+        auto f_vid = Cabana::slice<F_VIDS>(faces);
+        auto f_rank = Cabana::slice<F_OWNER>(faces);
+        auto f_layer = Cabana::slice<F_LAYER>(faces);
+
         int vertex_count = _mesh->count(Own(), Vertex());
+        int edge_count = _mesh->count(Own(), Edge());
         int face_count = _mesh->count(Own(), Face());
+
+        // Distributor data
+        // (global ID, from_rank, to_rank) tuples
+        Cabana::AoSoA<Cabana::MemberTypes<int, int, int>, memory_space, 4>
+            distributor_export("distributor_export", num_boundary_faces);
+        auto distributor_export_gids = Cabana::slice<0>(distributor_export);
+        auto distributor_export_from_ranks = Cabana::slice<1>(distributor_export);
+        auto distributor_export_to_ranks = Cabana::slice<2>(distributor_export);
+        int_d de_idx("de_idx");
+        Kokkos::deep_copy(de_idx, 0);
+
+        // Halo data
+        // (global ID, to_rank) tuples
+        using halo_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int>, memory_space, 4>;
+        halo_aosoa vert_halo_export("vert_halo_export", num_boundary_faces + 10); // Slight buffer for faces that must be sent to >1 processes
+        halo_aosoa edge_halo_export("edge_halo_export", num_boundary_edges + 10); 
+        halo_aosoa face_halo_export("face_halo_export", num_boundary_faces + 10);
+        auto vert_halo_export_gids = Cabana::slice<0>(vert_halo_export);
+        auto vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
+        auto edge_halo_export_gids = Cabana::slice<0>(edge_halo_export);
+        auto edge_halo_export_ranks = Cabana::slice<1>(edge_halo_export);
+        auto face_halo_export_gids = Cabana::slice<0>(face_halo_export);
+        auto face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
+        int_d vh_idx("vh_idx"); Kokkos::deep_copy(vh_idx, 0);
+        int_d eh_idx("eh_idx"); Kokkos::deep_copy(eh_idx, 0);
+        int_d fh_idx("fh_idx"); Kokkos::deep_copy(fh_idx, 0);
+
+
+        // Store true if added to the halo to avoid uniqueness searches
+        // Kokkos::View<bool*, memory_space> v_in_halo("v_in_halo", vertex_count);
+        // Kokkos::View<bool*, memory_space> e_in_halo("e_in_halo", edge_count);
+        // Kokkos::View<bool*, memory_space> e_in_halo("f_in_halo", face_count);
+        // Kokkos::deep_copy(v_in_halo, false);
+        // Kokkos::deep_copy(e_in_halo, false);
+        // Kokkos::deep_copy(f_in_halo, false);
+
+        // Iterate over boundary faces
+        Kokkos::parallel_for("boundary face iteration", Kokkos::RangePolicy<execution_space>(0, num_boundary_faces),
+            KOKKOS_LAMBDA(int face_idx) {
+        
+            int fgid = boundary_faces(face_idx);
+            int flid = fgid - vef_gid_start_d(rank, 2);
+            for (int i = 0; i < 3; i++)
+            {
+                int vgid = f_vid(flid, i);
+                int vert_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
+                if (vert_owner != rank)
+                {
+                    // Add this vert to the distributor
+                    int vdx = Kokkos::atomic_fetch_add(&de_idx(), 1);
+                    distributor_export_gids(i) = vgid;
+                    distributor_export_from_ranks(i) = rank;
+                    distributor_export_to_ranks(i) = vert_owner;
+                    
+                    // Add everything on the face MINUS this vert to the halo data
+
+                    // Add this face to the halo to send to the given vertex owner
+                    int fdx = Kokkos::atomic_fetch_add(&fh_idx(), 1);
+                    face_halo_export_gids(fdx) = fgid;
+                    face_halo_export_ranks(fdx) = vert_owner;
+                    
+                    // Add edges
+                    
+
+                    // Can't break loop in case a face has two unowned vertices
+                }
+            }
+
+        });
 
         // Store true if added to the distributor to avoid uniqueness searches
         // Kokkos::View<bool*, memory_space> v_in_distributor("v_in_distributor", vertex_count);
@@ -180,183 +256,183 @@ class Halo
         /***********
          * Step 1
          **********/
-        {
-        auto distributor_export_gids = Cabana::slice<0>(distributor_export);
-        auto distributor_export_from_ranks = Cabana::slice<1>(distributor_export);
-        auto distributor_export_to_ranks = Cabana::slice<2>(distributor_export);
+        // {
+        // auto distributor_export_gids = Cabana::slice<0>(distributor_export);
+        // auto distributor_export_from_ranks = Cabana::slice<1>(distributor_export);
+        // auto distributor_export_to_ranks = Cabana::slice<2>(distributor_export);
         
-        Kokkos::parallel_for("fill distributor data", Kokkos::RangePolicy<execution_space>(0, boundary_edges.extent(0)),
-            KOKKOS_LAMBDA(int edge_idx) {
+        // Kokkos::parallel_for("fill distributor data", Kokkos::RangePolicy<execution_space>(0, boundary_edges.extent(0)),
+        //     KOKKOS_LAMBDA(int edge_idx) {
             
-            int egid = boundary_edges(edge_idx);
-            int elid = Utils::get_lid(e_gid, egid, 0, edge_count);
-            // if (rank == 3) printf("R%d: elg: %d, %d\n", rank, elid, egid);
+        //     int egid = boundary_edges(edge_idx);
+        //     int elid = Utils::get_lid(e_gid, egid, 0, edge_count);
+        //     // if (rank == 3) printf("R%d: elg: %d, %d\n", rank, elid, egid);
 
-            for (int v = 0; v < 2; v++)
-            {
-                int vgid = e_vids(elid, v);
-                int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
-                // if (rank == 3) printf("R%d: elg: %d, %d, vg: %d, vowner: %d, neighbor rank: %d\n", rank, elid, egid,
-                //     vgid, vertex_owner, neighbor_rank);
-                if (vertex_owner != rank)
-                {
-                    int idx = Kokkos::atomic_fetch_add(&counter(), 1);
-                    distributor_export_to_ranks(idx) = vertex_owner;
-                    distributor_export_gids(idx) = vgid;
-                    distributor_export_from_ranks(idx) = rank;
-                }
-            }
-        });
-        }
+        //     for (int v = 0; v < 2; v++)
+        //     {
+        //         int vgid = e_vids(elid, v);
+        //         int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
+        //         // if (rank == 3) printf("R%d: elg: %d, %d, vg: %d, vowner: %d, neighbor rank: %d\n", rank, elid, egid,
+        //         //     vgid, vertex_owner, neighbor_rank);
+        //         if (vertex_owner != rank)
+        //         {
+        //             int idx = Kokkos::atomic_fetch_add(&counter(), 1);
+        //             distributor_export_to_ranks(idx) = vertex_owner;
+        //             distributor_export_gids(idx) = vgid;
+        //             distributor_export_from_ranks(idx) = rank;
+        //         }
+        //     }
+        // });
+        // }
 
-        // Resize distributor data to correct sizes
-        int distributor_total_num_export;
-        Kokkos::deep_copy(distributor_total_num_export, counter);
-        distributor_export.resize(distributor_total_num_export);
+        // // Resize distributor data to correct sizes
+        // int distributor_total_num_export;
+        // Kokkos::deep_copy(distributor_total_num_export, counter);
+        // distributor_export.resize(distributor_total_num_export);
 
-        // Sort the distributor data by increasing VGID to filter duplicates
-        auto distributor_export_gids = Cabana::slice<0>(distributor_export);
-        auto distributor_export_from_ranks = Cabana::slice<1>(distributor_export);
-        auto distributor_export_to_ranks = Cabana::slice<2>(distributor_export);
-        // Sort by GID
-        auto sort_export_gids = Cabana::sortByKey( distributor_export_gids );
-        Cabana::permute( sort_export_gids, distributor_export );
+        // // Sort the distributor data by increasing VGID to filter duplicates
+        // auto distributor_export_gids = Cabana::slice<0>(distributor_export);
+        // auto distributor_export_from_ranks = Cabana::slice<1>(distributor_export);
+        // auto distributor_export_to_ranks = Cabana::slice<2>(distributor_export);
+        // // Sort by GID
+        // auto sort_export_gids = Cabana::sortByKey( distributor_export_gids );
+        // Cabana::permute( sort_export_gids, distributor_export );
         
 
-        // Iterate over the distributor data to remove repeated vertices
-        // i.e. set their to_rank to -1 so the distributor ignores them
-        // Also count repeats for sizing vertex seeds appropiately
-        Kokkos::deep_copy(counter, 0);
-        Kokkos::parallel_for("set duplicates to -1", Kokkos::RangePolicy<execution_space>(1, distributor_total_num_export),
-            KOKKOS_LAMBDA(int i) {
-
-            int current, prev;
-            current = distributor_export_gids(i);
-            prev = distributor_export_gids(i-1);
-            if (current == prev)
-            {
-                distributor_export_to_ranks(i) = -1;
-                Kokkos::atomic_increment(&counter());
-            }
-        });
-        int num_dups;
-        Kokkos::deep_copy(num_dups, counter);
-
-        /***********
-         * Step 2
-         **********/
-        auto distributor = Cabana::Distributor<memory_space>(_comm, distributor_export_to_ranks);
-        const int distributor_total_num_import = distributor.totalNumImport();
-        distributor_data_aosoa_t distributor_import("distributor_import", distributor_total_num_import);
-        Cabana::migrate(distributor, distributor_export, distributor_import);
-        auto distributor_import_gids = Cabana::slice<0>(distributor_import);
-        auto distributor_import_from_ranks = Cabana::slice<1>(distributor_import);
-        auto distributor_import_to_ranks = Cabana::slice<2>(distributor_import);
-
-        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_export),
+        // // Iterate over the distributor data to remove repeated vertices
+        // // i.e. set their to_rank to -1 so the distributor ignores them
+        // // Also count repeats for sizing vertex seeds appropiately
+        // Kokkos::deep_copy(counter, 0);
+        // Kokkos::parallel_for("set duplicates to -1", Kokkos::RangePolicy<execution_space>(1, distributor_total_num_export),
         //     KOKKOS_LAMBDA(int i) {
 
-        //     if (rank == 1) printf("R%d: to: R%d, data: (%d, %d)\n", rank,
-        //         distributor_export_to_ranks(i), distributor_export_gids(i), distributor_export_from_ranks(i));
-
+        //     int current, prev;
+        //     current = distributor_export_gids(i);
+        //     prev = distributor_export_gids(i-1);
+        //     if (current == prev)
+        //     {
+        //         distributor_export_to_ranks(i) = -1;
+        //         Kokkos::atomic_increment(&counter());
+        //     }
         // });
+        // int num_dups;
+        // Kokkos::deep_copy(num_dups, counter);
+
+        // /***********
+        //  * Step 2
+        //  **********/
+        // auto distributor = Cabana::Distributor<memory_space>(_comm, distributor_export_to_ranks);
+        // const int distributor_total_num_import = distributor.totalNumImport();
+        // distributor_data_aosoa_t distributor_import("distributor_import", distributor_total_num_import);
+        // Cabana::migrate(distributor, distributor_export, distributor_import);
+        // auto distributor_import_gids = Cabana::slice<0>(distributor_import);
+        // auto distributor_import_from_ranks = Cabana::slice<1>(distributor_import);
+        // auto distributor_import_to_ranks = Cabana::slice<2>(distributor_import);
+
+        // // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_export),
+        // //     KOKKOS_LAMBDA(int i) {
+
+        // //     if (rank == 1) printf("R%d: to: R%d, data: (%d, %d)\n", rank,
+        // //         distributor_export_to_ranks(i), distributor_export_gids(i), distributor_export_from_ranks(i));
+
+        // // });
         
-        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
-        //     KOKKOS_LAMBDA(int i) {
+        // // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+        // //     KOKKOS_LAMBDA(int i) {
 
-        //     if (rank == 1) printf("R%d: from: R%d, data: (%d, %d)\n", rank,
-        //         distributor_import_from_ranks(i), distributor_import_gids(i), distributor_import_from_ranks(i));
+        // //     if (rank == 1) printf("R%d: from: R%d, data: (%d, %d)\n", rank,
+        // //         distributor_import_from_ranks(i), distributor_import_gids(i), distributor_import_from_ranks(i));
 
-        // });
-        // printf("*****\n");
+        // // });
+        // // printf("*****\n");
 
-        /***********
-         * Step 3
-         **********/
+        // /***********
+        //  * Step 3
+        //  **********/
     
-        // Reset index counters
-        _vdx = 0; _edx = 0; _fdx = 0;
+        // // Reset index counters
+        // _vdx = 0; _edx = 0; _fdx = 0;
 
-        auto neighbor_ranks = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), _mesh->neighbors());
+        // auto neighbor_ranks = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), _mesh->neighbors());
 
-         // View for ID halo data
-        auto vertex_send_ids = _vertex_send_ids;
+        //  // View for ID halo data
+        // auto vertex_send_ids = _vertex_send_ids;
 
-        // We must add data one rank at a time to keep the data structures packed
-        for (size_t i = 0; i < neighbor_ranks.extent(0); i++)
-        {
-            const int neighbor_rank = neighbor_ranks(i);
-            // if (rank == 1) printf("R%d: neighbor_rank: %d\n", rank, neighbor_rank);
+        // // We must add data one rank at a time to keep the data structures packed
+        // for (size_t i = 0; i < neighbor_ranks.extent(0); i++)
+        // {
+        //     const int neighbor_rank = neighbor_ranks(i);
+        //     // if (rank == 1) printf("R%d: neighbor_rank: %d\n", rank, neighbor_rank);
 
-            // Store true if added to the halo to avoid uniqueness searches
-            Kokkos::View<bool*, memory_space> vb("vb", vertex_count);
-            Kokkos::View<bool*, memory_space> eb("eb", edge_count);
-            Kokkos::View<bool*, memory_space> fb("fb", face_count);
-            Kokkos::deep_copy(vb, false);
-            Kokkos::deep_copy(eb, false);
-            Kokkos::deep_copy(fb, false);
+        //     // Store true if added to the halo to avoid uniqueness searches
+        //     Kokkos::View<bool*, memory_space> vb("vb", vertex_count);
+        //     Kokkos::View<bool*, memory_space> eb("eb", edge_count);
+        //     Kokkos::View<bool*, memory_space> fb("fb", face_count);
+        //     Kokkos::deep_copy(vb, false);
+        //     Kokkos::deep_copy(eb, false);
+        //     Kokkos::deep_copy(fb, false);
 
-            // Set the offsets where the data for this rank will start in the indices views
-            auto v_subview = Kokkos::subview(_vertex_send_offsets, neighbor_rank);
-            Kokkos::deep_copy(v_subview, _vdx);
-            auto e_subview = Kokkos::subview(_edge_send_offsets, neighbor_rank);
-            Kokkos::deep_copy(e_subview, _edx);
-            auto f_subview = Kokkos::subview(_face_send_offsets, neighbor_rank);
-            Kokkos::deep_copy(f_subview, _fdx);
+        //     // Set the offsets where the data for this rank will start in the indices views
+        //     auto v_subview = Kokkos::subview(_vertex_send_offsets, neighbor_rank);
+        //     Kokkos::deep_copy(v_subview, _vdx);
+        //     auto e_subview = Kokkos::subview(_edge_send_offsets, neighbor_rank);
+        //     Kokkos::deep_copy(e_subview, _edx);
+        //     auto f_subview = Kokkos::subview(_face_send_offsets, neighbor_rank);
+        //     Kokkos::deep_copy(f_subview, _fdx);
 
-            int_d vdx_d("vdx_d");
-            //int_d edx_d("edx_d");
-            // int_d fdx_d("fdx_d");
-            Kokkos::deep_copy(vdx_d, _vdx);
-            //Kokkos::deep_copy(edx_d, _edx);
-            // Kokkos::deep_copy(fdx_d, _fdx);
+        //     int_d vdx_d("vdx_d");
+        //     //int_d edx_d("edx_d");
+        //     // int_d fdx_d("fdx_d");
+        //     Kokkos::deep_copy(vdx_d, _vdx);
+        //     //Kokkos::deep_copy(edx_d, _edx);
+        //     // Kokkos::deep_copy(fdx_d, _fdx);
 
-            // Add imported VGIDs to seeds and to IDs halo data
-            integer_view vgid_seeds("vgid_seeds", distributor_total_num_import + distributor_total_num_export - num_dups);
-            Kokkos::deep_copy(vgid_seeds, -1);
-            int_d vgid_seeds_idx("vgid_seeds_idx");
-            Kokkos::deep_copy(vgid_seeds_idx, 0);
-            Kokkos::parallel_for("add import VGIDS", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
-                KOKKOS_LAMBDA(int j) {
+        //     // Add imported VGIDs to seeds and to IDs halo data
+        //     integer_view vgid_seeds("vgid_seeds", distributor_total_num_import + distributor_total_num_export - num_dups);
+        //     Kokkos::deep_copy(vgid_seeds, -1);
+        //     int_d vgid_seeds_idx("vgid_seeds_idx");
+        //     Kokkos::deep_copy(vgid_seeds_idx, 0);
+        //     Kokkos::parallel_for("add import VGIDS", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+        //         KOKKOS_LAMBDA(int j) {
 
-                int from_rank = distributor_import_from_ranks(j);
-                if (from_rank != neighbor_rank) return;
+        //         int from_rank = distributor_import_from_ranks(j);
+        //         if (from_rank != neighbor_rank) return;
 
-                int vgid = distributor_import_gids(j);
-                int vdx = Kokkos::atomic_fetch_add(&vdx_d(), 1);
-                int svdx = Kokkos::atomic_fetch_add(&vgid_seeds_idx(), 1);
-                // if (rank == 1) printf("R%d: adding import VGID %d at %d\n", rank, vgid, vdx);
-                vgid_seeds(svdx) = vgid;
-                vertex_send_ids(vdx) = vgid;
+        //         int vgid = distributor_import_gids(j);
+        //         int vdx = Kokkos::atomic_fetch_add(&vdx_d(), 1);
+        //         int svdx = Kokkos::atomic_fetch_add(&vgid_seeds_idx(), 1);
+        //         // if (rank == 1) printf("R%d: adding import VGID %d at %d\n", rank, vgid, vdx);
+        //         vgid_seeds(svdx) = vgid;
+        //         vertex_send_ids(vdx) = vgid;
 
-                // Set these vgids as added to the halo
-                // Don't need atomics because the vlid will be unique for the kernel
-                int vlid = vgid - vef_gid_start_d(rank, 0);
-                vb(vlid) = true;
-                // if (rank == 1) printf("R%d: setting vb(%d) = %d\n", rank, vlid, vb(vlid));
+        //         // Set these vgids as added to the halo
+        //         // Don't need atomics because the vlid will be unique for the kernel
+        //         int vlid = vgid - vef_gid_start_d(rank, 0);
+        //         vb(vlid) = true;
+        //         // if (rank == 1) printf("R%d: setting vb(%d) = %d\n", rank, vlid, vb(vlid));
 
-            });
+        //     });
 
-            // Update offset counter
-            Kokkos::deep_copy(_vdx, vdx_d);
+        //     // Update offset counter
+        //     Kokkos::deep_copy(_vdx, vdx_d);
 
-            // Add exported VGIDs to seeds
-            Kokkos::parallel_for("add export VGIDS", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_export),
-                KOKKOS_LAMBDA(int j) {
+        //     // Add exported VGIDs to seeds
+        //     Kokkos::parallel_for("add export VGIDS", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_export),
+        //         KOKKOS_LAMBDA(int j) {
 
-                int to_rank = distributor_export_to_ranks(j);
-                if (to_rank != neighbor_rank) return;
+        //         int to_rank = distributor_export_to_ranks(j);
+        //         if (to_rank != neighbor_rank) return;
 
-                int vgid = distributor_export_gids(j);
-                int svdx = Kokkos::atomic_fetch_add(&vgid_seeds_idx(), 1);
-                vgid_seeds(svdx) = vgid;
+        //         int vgid = distributor_export_gids(j);
+        //         int svdx = Kokkos::atomic_fetch_add(&vgid_seeds_idx(), 1);
+        //         vgid_seeds(svdx) = vgid;
 
-            });
+        //     });
 
-            // Shrink seed view to appropriate num_vert_seeds
-            int vgid_seeds_size;
-            Kokkos::deep_copy(vgid_seeds_size, vgid_seeds_idx);
-            Kokkos::resize(vgid_seeds, vgid_seeds_size);
+        //     // Shrink seed view to appropriate num_vert_seeds
+        //     int vgid_seeds_size;
+        //     Kokkos::deep_copy(vgid_seeds_size, vgid_seeds_idx);
+        //     Kokkos::resize(vgid_seeds, vgid_seeds_size);
 
             // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vgid_seeds_size),
             // KOKKOS_LAMBDA(int i) {
@@ -379,7 +455,7 @@ class Halo
             // });
 
             // Build halo data for this rank
-            collect_entities(vgid_seeds, vb, eb, fb);
+            // collect_entities(vgid_seeds, vb, eb, fb);
 
             // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vgid_seeds.extent(0)),
             //     KOKKOS_LAMBDA(int i) {
@@ -388,7 +464,7 @@ class Halo
 
             // });
             // if (i == 1) break;
-        }
+        
 
         // auto vertex_send_offsets = _vertex_send_offsets;
         // // auto vertex_send_ids = _vertex_send_ids;
@@ -682,8 +758,8 @@ class Halo
         Kokkos::deep_copy(hv_tmp, vef_gid_start);
         Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
 
-        auto vertex_face_offsets = _v2f.offsets();
-        auto vertex_face_indices = _v2f.indices();
+        // auto vertex_face_offsets = _v2f.offsets();
+        // auto vertex_face_indices = _v2f.indices();
 
         // Vertex slices
         auto v_gid = Cabana::slice<V_GID>(vertices);
@@ -990,12 +1066,6 @@ class Halo
     int _halo_version;
 
     int _rank, _comm_size;
-
-    /**
-     * Vertex-to-face map
-     */
-    Maps::V2F<Mesh> _v2f;
-
     
     /**
      * Vertex, Edge, and Face global IDs included in this halo
