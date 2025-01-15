@@ -129,19 +129,19 @@ class Halo
      * Returns the number of duplicates
      */
     template <class SliceType>
-    int _set_duplicates_neg1(SliceType& gids, SliceType& to_ranks)
+    int _set_duplicates_neg1(SliceType& ids, SliceType& to_ranks)
     {
-        if ( gids.size() != to_ranks.size() )
+        if ( ids.size() != to_ranks.size() )
             throw std::runtime_error( "NuMesh::Halo::_set_duplicates_neg1: gid and to_ranks sizes do not match!" );
 
         int_d counter("counter");
         Kokkos::deep_copy(counter, 0);
-        Kokkos::parallel_for("set duplicates to -1", Kokkos::RangePolicy<execution_space>(1, distributor_total_num_export),
+        Kokkos::parallel_for("set duplicates to -1", Kokkos::RangePolicy<execution_space>(1, ids.size()),
             KOKKOS_LAMBDA(int i) {
 
             int current, prev, current_to, prev_to;
-            current = gids(i);
-            prev = gids(i-1);
+            current = ids(i);
+            prev = ids(i-1);
             current_to = to_ranks(i);
             prev_to = to_ranks(i-1);
             if ((current == prev) && (current_to == prev_to))
