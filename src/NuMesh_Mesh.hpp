@@ -135,10 +135,10 @@ class Mesh
         auto e_layer = Cabana::slice<E_LAYER>(_edges);
         auto f_layer = Cabana::slice<F_LAYER>(_faces);
 
-        auto sort_edges = Cabana::sortByKey( e_layer );
-        Cabana::permute( sort_edges, _edges );
-        auto sort_faces = Cabana::sortByKey( f_layer );
-        Cabana::permute( sort_faces, _faces );
+        // auto sort_edges = Cabana::sortByKey( e_layer );
+        // Cabana::permute( sort_edges, _edges );
+        // auto sort_faces = Cabana::sortByKey( f_layer );
+        // Cabana::permute( sort_faces, _faces );
     }
 
     /**
