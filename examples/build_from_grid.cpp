@@ -99,7 +99,7 @@ int main( int argc, char* argv[] )
     // Test haloing
     auto v2e = NuMesh::Maps::V2E(mesh);
     auto v2f = NuMesh::Maps::V2F(mesh);
-    auto halo = NuMesh::createHalo(mesh, NuMesh::Edge(), 0, 2, 100);
+    auto halo = NuMesh::createHalo(mesh, 0, 1);
 
     // mesh->printFaces(0, 0);
 
