@@ -53,22 +53,6 @@ class Halo
                                       // but a split edge adds two edges and one vertex
         _num_faces = _num_vertices;   // Each face contains three edges
 
-        int num_edges = _mesh->count(Own(), Edge());        
-
-        _vertex_send_offsets = integer_view("_vertex_send_offsets", _comm_size);
-        _vertex_send_ids = integer_view("_vertex_send_ids", _num_vertices);
-        _edge_send_offsets = integer_view("_edge_send_offsets", _comm_size);
-        _edge_send_ids =integer_view("_edge_send_ids", _num_edges);
-        _face_send_offsets = integer_view("_face_send_offsets", _comm_size);
-        _face_send_ids = integer_view("_face_send_ids", _num_faces);
-
-        Kokkos::deep_copy(_vertex_send_offsets, -1);
-        Kokkos::deep_copy(_vertex_send_ids, -1);
-        Kokkos::deep_copy(_edge_send_offsets, -1);
-        Kokkos::deep_copy(_edge_send_ids, -1);
-        Kokkos::deep_copy(_face_send_offsets, -1);
-        Kokkos::deep_copy(_face_send_ids, -1);
-
         gather_depth_one();
     };
 
@@ -198,7 +182,7 @@ class Halo
      */
     void gather_depth_one()
     {
-        const int level = _level, rank = _rank, comm_size = _comm_size;
+        const int level = _level, rank = _rank;
 
         auto vertices = _mesh->vertices();
         auto edges = _mesh->edges();
@@ -254,17 +238,15 @@ class Halo
         int_d eh_idx("eh_idx"); Kokkos::deep_copy(eh_idx, 0);
         int_d fh_idx("fh_idx"); Kokkos::deep_copy(fh_idx, 0);
 
-        { // Scope guard slices because they will become outdated upon resizing AoSoAs
-
         // Slices
         auto distributor_export_gids = Cabana::slice<0>(distributor_export);
         auto distributor_export_to_ranks = Cabana::slice<1>(distributor_export);
         auto distributor_export_from_ranks = Cabana::slice<2>(distributor_export);
-        auto vert_halo_export_gids = Cabana::slice<0>(vert_halo_export);
+        auto vert_halo_export_lids = Cabana::slice<0>(vert_halo_export);
         auto vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
-        auto edge_halo_export_gids = Cabana::slice<0>(edge_halo_export);
+        auto edge_halo_export_lids = Cabana::slice<0>(edge_halo_export);
         auto edge_halo_export_ranks = Cabana::slice<1>(edge_halo_export);
-        auto face_halo_export_gids = Cabana::slice<0>(face_halo_export);
+        auto face_halo_export_lids = Cabana::slice<0>(face_halo_export);
         auto face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
 
         // _mesh->printFaces(1, 46);
@@ -293,7 +275,7 @@ class Halo
 
                     // Add this face to the halo to send to the given vertex owner
                     int fdx = Kokkos::atomic_fetch_add(&fh_idx(), 1);
-                    face_halo_export_gids(fdx) = fgid;
+                    face_halo_export_lids(fdx) = flid;
                     face_halo_export_ranks(fdx) = vert_owner;
                     
                     // Add owned edges
@@ -303,7 +285,8 @@ class Halo
                         int edge_owner = Utils::owner_rank(Edge(), egid, vef_gid_start_d);
                         if (edge_owner != rank) continue; // Only add edges we own
                         int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
-                        edge_halo_export_gids(edx) = egid;
+                        int elid = egid - vef_gid_start_d(rank, 1);
+                        edge_halo_export_lids(edx) = elid;
                         edge_halo_export_ranks(edx) = vert_owner;
                     }
 
@@ -314,7 +297,8 @@ class Halo
                         int vowner = Utils::owner_rank(Vertex(), vgid1, vef_gid_start_d);
                         if (vowner != rank) continue; // Can't export verts we don't own
                         int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
-                        vert_halo_export_gids(vdx) = vgid1;
+                        int vlid1 = vgid1 - vef_gid_start_d(rank, 0);
+                        vert_halo_export_lids(vdx) = vlid1;
                         vert_halo_export_ranks(vdx) = vert_owner;
                         // if (rank == 1) printf("R%d: sending vgid %d to %d\n", rank, vgid1, vert_owner);
                     }
@@ -323,9 +307,7 @@ class Halo
                 }
             }
         });
-        
-        } // end scope guard
-        
+                
         // Resize data to correct sizes, except verts because we will get more from the distributor
         int distributor_size, ehalo_size, fhalo_size;
         Kokkos::deep_copy(distributor_size, de_idx);
@@ -337,16 +319,16 @@ class Halo
         edge_halo_export.resize(ehalo_size);
         face_halo_export.resize(fhalo_size);
 
-        // Create new slices after resizing
-        auto distributor_export_gids = Cabana::slice<0>(distributor_export);
-        auto distributor_export_to_ranks = Cabana::slice<1>(distributor_export);
-        auto distributor_export_from_ranks = Cabana::slice<2>(distributor_export);
-        auto vert_halo_export_gids = Cabana::slice<0>(vert_halo_export);
-        auto vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
-        auto edge_halo_export_gids = Cabana::slice<0>(edge_halo_export);
-        auto edge_halo_export_ranks = Cabana::slice<1>(edge_halo_export);
-        auto face_halo_export_gids = Cabana::slice<0>(face_halo_export);
-        auto face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
+        // Update slices after resizing
+        distributor_export_gids = Cabana::slice<0>(distributor_export);
+        distributor_export_to_ranks = Cabana::slice<1>(distributor_export);
+        distributor_export_from_ranks = Cabana::slice<2>(distributor_export);
+        vert_halo_export_lids = Cabana::slice<0>(vert_halo_export);
+        vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
+        edge_halo_export_lids = Cabana::slice<0>(edge_halo_export);
+        edge_halo_export_ranks = Cabana::slice<1>(edge_halo_export);
+        face_halo_export_lids = Cabana::slice<0>(face_halo_export);
+        face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
 
 
         // Set duplicate edge/face + send_to_rank pairs to be ignored (sent to rank -1)
@@ -395,11 +377,12 @@ class Halo
             KOKKOS_LAMBDA(int i) {
             
             int vgid = distributor_import_gids(i);
+            int vlid = vgid - vef_gid_start_d(rank, 0);
             int from_rank = distributor_import_from_ranks(i);
 
             // Add to vert halo
             int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
-            vert_halo_export_gids(vdx) = vgid;
+            vert_halo_export_lids(vdx) = vlid;
             vert_halo_export_ranks(vdx) = from_rank;
             // if (vgid == 16 && from_rank == 3) printf("R%d: adding vgid %d to R%d to halo at vdx %d\n", rank, vgid, from_rank, vdx);
             
@@ -419,6 +402,25 @@ class Halo
         // });
 
         _set_duplicates_neg1(vert_halo_export);
+
+        // Set halo version
+        _halo_version = _mesh->version();
+
+        // Create halos
+        Cabana::Halo<memory_space> vhalo( _comm, vertex_count, vert_halo_export_lids, vert_halo_export_ranks);
+        Cabana::Halo<memory_space> ehalo( _comm, edge_count, edge_halo_export_lids, edge_halo_export_ranks);
+        Cabana::Halo<memory_space> fhalo( _comm, face_count, face_halo_export_lids, face_halo_export_ranks);
+
+        // Resize and gather
+        vertices.resize(vhalo.numLocal() + vhalo.numGhost());
+        edges.resize(ehalo.numLocal() + ehalo.numGhost());
+        faces.resize(fhalo.numLocal() + fhalo.numGhost());
+        Cabana::gather(vhalo, vertices);
+        Cabana::gather(ehalo, edges);
+        Cabana::gather(fhalo, faces);
+
+        // Update ghost counts in mesh
+        
 
         // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_halo_export.size()),
         //     KOKKOS_LAMBDA(int i) {
@@ -714,8 +716,7 @@ class Halo
         // });
 
 
-        // Update halo version
-        _halo_version = _mesh->version();
+        
 
     }
 
@@ -1264,28 +1265,6 @@ class Halo
     int _halo_version;
 
     int _rank, _comm_size;
-    
-    /**
-     * Vertex, Edge, and Face global IDs included in this halo
-     * 
-     * offsets and IDs views: for each rank, specifies the 'offset' 
-     *  into 'ids' where the vertex/edge/face GID data resides.
-     * IDs are global IDs.
-     *          
-     */
-    integer_view _vertex_send_offsets;
-    integer_view _vertex_send_ids;
-    integer_view _edge_send_offsets;
-    integer_view _edge_send_ids;
-    integer_view _face_send_offsets;
-    integer_view _face_send_ids;
-
-    /**
-     * Current indexes into *send_ids views. These are stored
-     * so that we don't have to find where we left off when calling
-     * the gather_local_neighbors iteratively to "depth" elements
-     */
-    int _vdx, _edx, _fdx;
 
     // Number of vertices, edges, and faces in the halo
     int _num_vertices, _num_edges, _num_faces; 
