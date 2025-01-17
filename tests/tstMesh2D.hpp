@@ -97,6 +97,24 @@ class Mesh2DTest : public ::testing::Test
     }
 
     /**
+     * Copy vertex, edge, and face AoSoAs to host memory
+     */
+    void copytoHost()
+    {
+        auto vertices_ptr = mesh_->vertices();
+        auto edges_ptr = mesh_->edges();
+        auto faces_ptr = mesh_->faces();
+
+        vertices.resize(vertices_ptr.size());
+        edges.resize(edges_ptr.size());
+        faces.resize(faces_ptr.size());
+
+        Cabana::deep_copy(faces, faces_ptr);
+        Cabana::deep_copy(edges, edges_ptr);
+        Cabana::deep_copy(vertices, vertices_ptr);
+    }
+
+    /**
      * Gather the entire mesh to rank 0 and copy to host memory
      */
     void gatherAndCopyToHost()
