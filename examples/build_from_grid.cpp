@@ -100,6 +100,7 @@ int main( int argc, char* argv[] )
     auto v2e = NuMesh::Maps::V2E(mesh);
     auto v2f = NuMesh::Maps::V2F(mesh);
     auto halo = NuMesh::createHalo(mesh, 0, 1);
+    halo.gather();
 
     // mesh->printFaces(0, 0);
 

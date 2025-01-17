@@ -16,7 +16,7 @@ TYPED_TEST_SUITE(HaloTest, DeviceTypes);
 /**
  * Tests that the v2e map is built correctly without any refinement
  */
-TYPED_TEST(HaloTest, test_v2e_no_refinement)
+TYPED_TEST(HaloTest, test_halo_depth_1)
 {
     int mesh_size = this->comm_size_ * 2;
     if (this->comm_size_ == 1)

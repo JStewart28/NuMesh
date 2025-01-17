@@ -50,6 +50,8 @@ class HaloTest : public Mesh2DTest<T>
     void test_halo_depth_1()
     {
         auto halo = NuMesh::createHalo(this->mesh_, 0, 1);
+        halo.gather();
+        
         this->copytoHost();
 
         auto vertices = this->vertices;
