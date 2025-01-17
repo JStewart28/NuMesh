@@ -1541,9 +1541,9 @@ class Mesh
         _populate_boundary_elements();
     }
     
-    v_array_type vertices() {return _vertices;}
-    e_array_type edges() {return _edges;}
-    f_array_type faces() {return _faces;}
+    v_array_type& vertices() {return _vertices;}
+    e_array_type& edges() {return _edges;}
+    f_array_type& faces() {return _faces;}
 
     int count(Own, Vertex) {return _owned_vertices;}
     int count(Own, Edge) {return _owned_edges;}
