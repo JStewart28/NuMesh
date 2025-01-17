@@ -15,14 +15,13 @@ if (ENABLE_TESTS)
                        OUTPUT_DIR ${TEST_OUTPUT_DIRECTORY})
     blt_add_test(NAME MapTests
                  COMMAND tstMaps)
-    
-                 
-    # blt_add_executable( NAME     tstBoundaryCondition
-    #              SOURCES tstBoundaryCondition.cpp
-    #              HEADERS tstBoundaryCondition.hpp TestingBase.hpp
-    #              DEPENDS_ON beatnik gtest
-    #              OUTPUT_DIR ${TEST_OUTPUT_DIRECTORY})
-    # blt_add_test(NAME BoundaryConditionTests
-    #              COMMAND tstBoundaryCondition)
+
+    blt_add_executable(NAME tstHalo
+                       SOURCES tstHalo.cpp 
+                       HEADERS tstHalo.hpp
+                       DEPENDS_ON numesh gtest
+                       OUTPUT_DIR ${TEST_OUTPUT_DIRECTORY})
+    blt_add_test(NAME HaloTests
+                 COMMAND tstHalo)
 
 endif()
