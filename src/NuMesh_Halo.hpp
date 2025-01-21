@@ -330,6 +330,7 @@ class Halo
         
         // printf("R%d: sizes: %d, %d; actual: %d, %d\n", rank, vert_distributor_size, edge_distributor_size,
         //     vert_distributor_export.size(), edge_distributor_export.size());
+        
         vert_distributor_export.resize(vert_distributor_size);
         edge_distributor_export.resize(edge_distributor_size);
 
@@ -380,7 +381,7 @@ class Halo
         const int edge_distributor_total_num_import = edge_distributor.totalNumImport();
         distributor_aosoa edge_distributor_import("edge_distributor_import", edge_distributor_total_num_import);
         Cabana::migrate(edge_distributor, edge_distributor_export, edge_distributor_import);
- 
+        
         // Distributor import slices
         auto vert_distributor_import_gids = Cabana::slice<0>(vert_distributor_import);
         auto vert_distributor_import_to_ranks = Cabana::slice<1>(vert_distributor_import);
@@ -412,7 +413,7 @@ class Halo
             // if (vgid == 16 && from_rank == 3) printf("R%d: adding vgid %d to R%d to halo at vdx %d\n", rank, vgid, from_rank, vdx);
             
         });
-
+        
         Kokkos::parallel_for("add imported distributor edge data",
             Kokkos::RangePolicy<execution_space>(0, edge_distributor_total_num_import),
             KOKKOS_LAMBDA(int i) {
@@ -439,35 +440,80 @@ class Halo
         edge_halo_export.resize(ehalo_size);
         face_halo_export.resize(fhalo_size);
 
-        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_halo_export.size()),
+        // printf("R%d: vef halo sizes: %d, %d, %d\n", rank, vhalo_size, ehalo_size, fhalo_size);
+
+        Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_halo_export.size()),
+            KOKKOS_LAMBDA(int i) {
+
+            // if (rank == 1) printf("R%d: to: R%d, vert lid: %d\n", rank,
+            //     vert_halo_export_ranks(i), vert_halo_export_lids(i));
+            // int export_lid = vert_halo_export_lids(i);
+            // if (export_lid >= vertex_count) printf("R%d: max %d verts, has vlid %d\n", rank, vertex_count, export_lid);
+
+        });
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, edge_halo_export.size()),
         //     KOKKOS_LAMBDA(int i) {
 
-        //     if (rank == 1) printf("R%d: to: R%d, vert lid: %d\n", rank,
-        //         vert_halo_export_ranks(i), vert_halo_export_lids(i));
+        //     printf("R%d: to: R%d, edge lid: %d\n", rank,
+        //         edge_halo_export_ranks(i), edge_halo_export_lids(i));
 
         // });
+        
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, face_halo_export.size()),
+        //     KOKKOS_LAMBDA(int i) {
 
+        //     if (rank == 1) printf("R%d: to: R%d, face lid: %d\n", rank,
+        //         face_halo_export_ranks(i), face_halo_export_lids(i));
+
+        // });
+        
         _set_duplicates_neg1(vert_halo_export);
         _set_duplicates_neg1(edge_halo_export);
         _set_duplicates_neg1(face_halo_export);
-        
+
         // Set halo version
         _halo_version = _mesh->version();
 
         // Create halos
-        
-        Cabana::Halo<memory_space> vhalo( _comm, vertex_count, vert_halo_export_lids, vert_halo_export_ranks);
-        Cabana::Halo<memory_space> ehalo( _comm, edge_count, edge_halo_export_lids, edge_halo_export_ranks);
-        Cabana::Halo<memory_space> fhalo( _comm, face_count, face_halo_export_lids, face_halo_export_ranks);
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_halo_export.size()),
+        //     KOKKOS_LAMBDA(int i) {
 
+        //     printf("R%d: to: R%d, vert lid: %d\n", rank,
+        //         vert_halo_export_ranks(i), vert_halo_export_lids(i));
+        //     // int export_lid = vert_halo_export_lids(i);
+        //     // if (export_lid >= vertex_count) printf("R%d: max %d verts, has vlid %d\n", rank, vertex_count, export_lid);
+
+        // });
+        printf("R%d: vert count: %d, export size: %d\n", rank, vertex_count, vert_halo_export.size());
+        // halo_aosoa vert_halo_export_test("vert_halo_export", 10);
+        // auto vert_halo_export_lids_test = Cabana::slice<0>(vert_halo_export_test);
+        // auto vert_halo_export_ranks_test = Cabana::slice<1>(vert_halo_export_test);
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_halo_export_test.size()),
+        //     KOKKOS_LAMBDA(int i) {
+
+            
+        //     vert_halo_export_ranks_test(i) = 1;
+        //     vert_halo_export_lids_test(i) = 1;
+        //     // int export_lid = vert_halo_export_lids(i);
+        //     // if (export_lid >= vertex_count) printf("R%d: max %d verts, has vlid %d\n", rank, vertex_count, export_lid);
+
+        // });
+        // Cabana::Halo<memory_space> vthalo( _comm, vertex_count, vert_halo_export_lids_test, vert_halo_export_ranks_test);
+        Cabana::Halo<memory_space> vhalo( _comm, vertex_count, vert_halo_export_lids, vert_halo_export_ranks);
+        return;
+        Cabana::Halo<memory_space> ehalo( _comm, edge_count, edge_halo_export_lids, edge_halo_export_ranks);
+        return;
+        Cabana::Halo<memory_space> fhalo( _comm, face_count, face_halo_export_lids, face_halo_export_ranks);
+        return;
         // Resize and gather
         vertices.resize(vhalo.numLocal() + vhalo.numGhost());
         edges.resize(ehalo.numLocal() + ehalo.numGhost());
         faces.resize(fhalo.numLocal() + fhalo.numGhost());
+        
         Cabana::gather(vhalo, vertices);
         Cabana::gather(ehalo, edges);
         Cabana::gather(fhalo, faces);
-
+        
         if (rank == 1)
         {
             // _mesh->printEdges(3, 0);

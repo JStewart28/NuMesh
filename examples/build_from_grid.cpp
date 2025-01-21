@@ -96,9 +96,24 @@ int main( int argc, char* argv[] )
     //     mesh->refine(fin);
     // }
 
+    // auto halo = NuMesh::createHalo(mesh, 0, 1);
+    // halo.gather();
+    // printf("R%d: finished no refinement gather\n", rank);
+
+    // Single refinement
+    int sizerefine = 1;
+    Kokkos::View<int*, memory_space> fin("fin", sizerefine);
+    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, sizerefine),
+        KOKKOS_LAMBDA(int i) {
+
+            fin(i) = 10;
+
+        });
+    mesh->refine(fin);
+
     // Test haloing
-    auto v2e = NuMesh::Maps::V2E(mesh);
-    auto v2f = NuMesh::Maps::V2F(mesh);
+    // auto v2e = NuMesh::Maps::V2E(mesh);
+    // auto v2f = NuMesh::Maps::V2F(mesh);
     auto halo = NuMesh::createHalo(mesh, 0, 1);
     halo.gather();
 
