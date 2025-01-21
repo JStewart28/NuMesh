@@ -425,7 +425,7 @@ class Halo
             int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
             edge_halo_export_lids(edx) = elid;
             edge_halo_export_ranks(edx) = from_rank;
-            if (rank == 2) printf("R%d: adding egid %d to halo to rank %d: el/gid: %d, %d\n", rank, egid, from_rank, elid, e_gid(elid));
+            // if (rank == 2) printf("R%d: adding egid %d to halo to rank %d: el/gid: %d, %d\n", rank, egid, from_rank, elid, e_gid(elid));
             // if (vgid == 16 && from_rank == 3) printf("R%d: adding vgid %d to R%d to halo at vdx %d\n", rank, vgid, from_rank, vdx);
             
         });
@@ -513,7 +513,7 @@ class Halo
                 int felid = NuMesh::Utils::get_lid(e_gid, fegid, 0, edges.size());
                 if (fgid == 102)
                 {
-                    printf("R%d: checking fgid %d has edge %d: elid: %d\n", rank, fgid, fegid, felid);
+                    // printf("R%d: checking fgid %d has edge %d: elid: %d\n", rank, fgid, fegid, felid);
                 }
                 if (felid == -1)
                     printf("R%d: FGID %d egid %d not found\n", rank, fgid, fegid);

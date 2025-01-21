@@ -59,7 +59,7 @@ class HaloTest : public Mesh2DTest<T>
         auto faces = this->faces;
 
         int total_verts = vertices.size();
-        // int total_edges = edges.size();
+        int total_edges = edges.size();
         int total_faces = faces.size();
 
         // Slices we need
@@ -91,7 +91,8 @@ class HaloTest : public Mesh2DTest<T>
             for (int e = 0; e < 3; e++)
             {
                 int fegid = f_eids(flid, e);
-                int felid = NuMesh::Utils::get_lid(e_gid, fegid, 0, total_faces);
+                int felid = NuMesh::Utils::get_lid(e_gid, fegid, 0, total_edges);
+                // printf("R%d: checking fgid %d: egid/lid %d, %d\n", this->rank_, fgid, fegid, felid);
                 ASSERT_NE(felid, -1) << "Rank " << this->rank_ << ": FGID " << fgid << " egid " << fegid << " not found";
             }
         }
