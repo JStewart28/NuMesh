@@ -296,11 +296,12 @@ class Halo
                             // if (rank == 0) printf("R%d: edge_dist(%d): %d\n", rank, dedx, egid);
                             continue; 
                         }
+                        // Otherwise we own the edge and need to add it to the halo
                         int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
                         int elid = egid - vef_gid_start_d(rank, 1);
                         edge_halo_export_lids(edx) = elid;
                         edge_halo_export_ranks(edx) = vert_owner;
-                        // if (fgid == 38) printf("R%d: adding edge %d from face %d\n", rank, egid, fgid);
+                        if (rank == 2) printf("R%d: adding edge %d from face %d to rank %d\n", rank, egid, fgid, vert_owner);
                     }
 
                     // Add owned verts
@@ -487,7 +488,8 @@ class Halo
             for (int v = 0; v < 2; v++)
             {
                 int evgid = e_vids(elid, v);
-                int evlid = NuMesh::Utils::get_lid(v_gid, evgid, 0, vertices.size());
+                // if (rank == 3) printf("R%d: have edge gid %d\n", rank, evgid);
+                int evlid = NuMesh::Utils::get_lid(v_gid, evgid, 0, edges.size());
                 if (evlid == -1)
                     printf("R%d: EGID %d vgid %d not found\n", rank, egid, evgid);
             }
@@ -501,7 +503,7 @@ class Halo
             if (rank == 3)
             {
                 // fgid 102, edge 98 
-                printf("R%d: fgid %d, edges %d, %d, %d\n", rank, fgid, f_eids(flid, 0), f_eids(flid, 1), f_eids(flid, 2));
+                // printf("R%d: fgid %d, edges %d, %d, %d\n", rank, fgid, f_eids(flid, 0), f_eids(flid, 1), f_eids(flid, 2));
             }
             for (int e = 0; e < 3; e++)
             {
