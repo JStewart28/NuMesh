@@ -293,7 +293,8 @@ class Halo
                             edge_distributor_export_gids(dedx) = egid;
                             edge_distributor_export_from_ranks(dedx) = rank;
                             edge_distributor_export_to_ranks(dedx) = edge_owner;
-                            // if (rank == 0) printf("R%d: edge_dist(%d): %d\n", rank, dedx, egid);
+                            // fgid 102, edge 98 
+                            // if (rank == 3) printf("R%d: from face %d: edge_dist(%d): %d to rank %d\n", rank, fgid, dedx, egid, edge_owner);
                             continue; 
                         }
                         // Otherwise we own the edge and need to add it to the halo
@@ -301,7 +302,7 @@ class Halo
                         int elid = egid - vef_gid_start_d(rank, 1);
                         edge_halo_export_lids(edx) = elid;
                         edge_halo_export_ranks(edx) = vert_owner;
-                        if (rank == 2) printf("R%d: adding edge %d from face %d to rank %d\n", rank, egid, fgid, vert_owner);
+                        // if (rank == 2) printf("R%d: adding edge %d from face %d to rank %d\n", rank, egid, fgid, vert_owner);
                     }
 
                     // Add owned verts
@@ -424,6 +425,7 @@ class Halo
             int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
             edge_halo_export_lids(edx) = elid;
             edge_halo_export_ranks(edx) = from_rank;
+            if (rank == 2) printf("R%d: adding egid %d to halo to rank %d: el/gid: %d, %d\n", rank, egid, from_rank, elid, e_gid(elid));
             // if (vgid == 16 && from_rank == 3) printf("R%d: adding vgid %d to R%d to halo at vdx %d\n", rank, vgid, from_rank, vdx);
             
         });
@@ -509,7 +511,10 @@ class Halo
             {
                 int fegid = f_eids(flid, e);
                 int felid = NuMesh::Utils::get_lid(e_gid, fegid, 0, edges.size());
-                
+                if (fgid == 102)
+                {
+                    printf("R%d: checking fgid %d has edge %d: elid: %d\n", rank, fgid, fegid, felid);
+                }
                 if (felid == -1)
                     printf("R%d: FGID %d egid %d not found\n", rank, fgid, fegid);
             }
