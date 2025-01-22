@@ -500,11 +500,9 @@ class Halo
         // });
         // Cabana::Halo<memory_space> vthalo( _comm, vertex_count, vert_halo_export_lids_test, vert_halo_export_ranks_test);
         Cabana::Halo<memory_space> vhalo( _comm, vertex_count, vert_halo_export_lids, vert_halo_export_ranks);
-        return;
         Cabana::Halo<memory_space> ehalo( _comm, edge_count, edge_halo_export_lids, edge_halo_export_ranks);
-        return;
         Cabana::Halo<memory_space> fhalo( _comm, face_count, face_halo_export_lids, face_halo_export_ranks);
-        return;
+
         // Resize and gather
         vertices.resize(vhalo.numLocal() + vhalo.numGhost());
         edges.resize(ehalo.numLocal() + ehalo.numGhost());
@@ -514,60 +512,13 @@ class Halo
         Cabana::gather(ehalo, edges);
         Cabana::gather(fhalo, faces);
         
-        if (rank == 1)
-        {
-            // _mesh->printEdges(3, 0);
-            // printf("R%d: total verts: %d, m%d\n", rank, vertices.size(), _mesh->vertices().size());
-            // printf("R%d: total edges: %d, m%d\n", rank, edges.size(), _mesh->edges().size());
-            // printf("R%d: total faces: %d, m%d\n", rank, faces.size(), _mesh->faces().size());
-        }
-
-        v_gid = Cabana::slice<V_GID>(vertices);
-        e_gid = Cabana::slice<E_GID>(edges);
-        auto e_vids = Cabana::slice<E_VIDS>(edges);
-        f_gid = Cabana::slice<F_GID>(faces);
-        auto f_vids = Cabana::slice<F_VIDS>(faces);
-        auto f_eids = Cabana::slice<F_EIDS>(faces);
-
-        int owned_edges = _mesh->count(NuMesh::Own(), NuMesh::Edge());
-        for (int elid = 0; elid < owned_edges; elid++)
-        {
-            int egid = e_gid(elid);
-            for (int v = 0; v < 2; v++)
-            {
-                int evgid = e_vids(elid, v);
-                // if (rank == 3) printf("R%d: have edge gid %d\n", rank, evgid);
-                int evlid = NuMesh::Utils::get_lid(v_gid, evgid, 0, edges.size());
-                if (evlid == -1)
-                    printf("R%d: EGID %d vgid %d not found\n", rank, egid, evgid);
-            }
-        }
-
-        // Check that we have all edges on faces we own
-        int owned_faces = _mesh->count(NuMesh::Own(), NuMesh::Face());
-        for (int flid = 0; flid < owned_faces; flid++)
-        {
-            int fgid = f_gid(flid);
-            if (rank == 3)
-            {
-                // fgid 102, edge 98 
-                // printf("R%d: fgid %d, edges %d, %d, %d\n", rank, fgid, f_eids(flid, 0), f_eids(flid, 1), f_eids(flid, 2));
-            }
-            for (int e = 0; e < 3; e++)
-            {
-                int fegid = f_eids(flid, e);
-                int felid = NuMesh::Utils::get_lid(e_gid, fegid, 0, edges.size());
-                if (fgid == 102)
-                {
-                    // printf("R%d: checking fgid %d has edge %d: elid: %d\n", rank, fgid, fegid, felid);
-                }
-                if (felid == -1)
-                    printf("R%d: FGID %d egid %d not found\n", rank, fgid, fegid);
-            }
-        }
-
         // Update ghost counts in mesh
-        
+        _mesh->set(Own(), Vertex(), vhalo.numLocal());
+        _mesh->set(Own(), Edge(), ehalo.numLocal());
+        _mesh->set(Own(), Face(), fhalo.numLocal());
+        _mesh->set(Ghost(), Vertex(), vhalo.numGhost());
+        _mesh->set(Ghost(), Edge(), ehalo.numGhost());
+        _mesh->set(Ghost(), Face(), fhalo.numGhost());
 
         
     }

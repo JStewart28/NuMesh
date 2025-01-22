@@ -880,7 +880,8 @@ class Mesh
         //     printEdges(3, 0);
         // }
 
-        // Update lambda capture variables
+        // Update class and lambda capture variables
+        _owned_edges = edge_halo.numLocal(); _ghost_edges = edge_halo.numGhost();
         owned_edges = _owned_edges; ghost_edges = _ghost_edges;
         int num_edges = owned_edges + ghost_edges;
         // Populate the three new, internal edges for each face
@@ -1551,6 +1552,12 @@ class Mesh
     int count(Ghost, Vertex) {return _ghost_vertices;}
     int count(Ghost, Edge) {return _ghost_edges;}
     int count(Ghost, Face) {return _ghost_faces;}
+    void set(Own, Vertex, int x) { _owned_vertices = x; }
+    void set(Own, Edge, int x) { _owned_edges = x; }
+    void set(Own, Face, int x) { _owned_faces = x; }
+    void set(Ghost, Vertex, int x) { _ghost_vertices = x; }
+    void set(Ghost, Edge, int x) { _ghost_edges = x; }
+    void set(Ghost, Face, int x) { _ghost_faces = x; }
 
     MPI_Comm comm() {return _comm;}
     int version() {return _version;}
