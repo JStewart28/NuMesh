@@ -495,10 +495,11 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             int f_lid = fgids(i) - _vef_gid_start_d(rank, 2);
+
             if ((f_lid >= 0) && (f_lid < owned_faces)) // Make sure we own the face
             {
                 // If a face has already been refined (i.e. has children), don't refine it again
-                if (f_cid_slice0(f_lid, 0) == -1) return;
+                if (f_cid_slice0(f_lid, 0) != -1) return;
 
                 int index = Kokkos::atomic_fetch_add(&face_counter(), 1);
                 local_face_lids(index) = f_lid;
@@ -1008,6 +1009,8 @@ class Mesh
 
                 // Parent
                 f_pid(new_face_lid) = parent_face_gid;
+
+                // printf("R%d: Adding fgid %d from parent face %d\n", rank, new_face_gid, parent_face_gid);
             }
 
             /*****************************
@@ -1039,11 +1042,12 @@ class Mesh
             el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
             f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
             f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2);
-            // if (f_gid(new_face_lid) == 296)
-            // {
-            //     printf("Face 0: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            // }
+            if (f_gid(new_face_lid) == 258)
+            {
+                printf("Face 0: FGID: %d, edge lid %d verts: %d, %d\n", f_gid(new_face_lid), el2, vg2, vg0);
+                printf("Face 0: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
+                    vg0, vg1, vg2, f_eid(new_face_lid, 0), f_eid(new_face_lid, 1), f_eid(new_face_lid, 2));
+            }
 
             /******************************
              * Face 1 verts:
@@ -1064,11 +1068,11 @@ class Mesh
             el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
             f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2; 
             f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            // if (f_gid(new_face_lid) == 296)
-            // {
-            //     printf("Face 1: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            // }
+            if (f_gid(new_face_lid) == 258)
+            {
+                printf("Face 1: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
+                    vg0, vg1, vg2, f_eid(new_face_lid, 0), f_eid(new_face_lid, 1), f_eid(new_face_lid, 2));
+            }
 
             /******************************
              * Face 2 verts:
@@ -1090,11 +1094,11 @@ class Mesh
             el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
             f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
             f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            // if (f_gid(new_face_lid) == 296)
-            // {
-            //     printf("Face 2: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            // }
+            if (f_gid(new_face_lid) == 258)
+            {
+                printf("Face 2: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
+                    vg0, vg1, vg2, f_eid(new_face_lid, 0), f_eid(new_face_lid, 1), f_eid(new_face_lid, 2));
+            }
 
 
             /******************************
@@ -1119,11 +1123,11 @@ class Mesh
             el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
             f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
             f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            // if (f_gid(new_face_lid) == 296)
-            // {
-            //     printf("Face 3: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            // }
+            if (f_gid(new_face_lid) == 258)
+            {
+                printf("Face 3: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
+                    vg0, vg1, vg2, f_eid(new_face_lid, 0), f_eid(new_face_lid, 1), f_eid(new_face_lid, 2));
+            }
         });
         // if (rank == 0) printFaces(0, 0);
         // printFaces(1, 345);
@@ -1132,9 +1136,10 @@ class Mesh
         // {
         //     printf("***************AFTER***************\n");
         //     printEdges(3, 0);
-        //     // 162, 163
+        //     // find verts 30, 103
         //     // verts 25, -1; -1, 26
         // }
+        // printf("R%d: end of refine: num faces: %d\n", rank, _faces.size());
 
     }
   

@@ -82,41 +82,48 @@ int main( int argc, char* argv[] )
     auto vef_gid_start = mesh->vef_gid_start();
 
     // Uniform refinement
-    // for (int i = 0; i < 2; i++)
-    // {
-    //     int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
-    //     int face_gid_start = vef_gid_start(rank, 2);
-    //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
-    //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
-    //         KOKKOS_LAMBDA(int i) {
+    printf("R%d: refine 0: num faces: %d\n", rank, mesh->faces().size());
+    for (int i = 0; i < 2; i++)
+    {
+        int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
+        int face_gid_start = vef_gid_start(rank, 2);
+        Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
+            KOKKOS_LAMBDA(int i) {
 
-    //             fin(i) = face_gid_start + i;
+                fin(i) = face_gid_start + i;
 
-    //         });
-    //     mesh->refine(fin);
-    // }
+            });
+        mesh->refine(fin);
+        printf("R%d: refine %d: num faces: %d\n", rank, i+1, mesh->faces().size());
+    }
+    mesh->printEdges(0, 983);
+    
+    // mesh->printFaces(1, 258);
+    // mesh->printEdges(1, 677);
+    // mesh->printEdges(1, 983);
+    // mesh->printEdges(1, 0);
 
     // auto halo = NuMesh::createHalo(mesh, 0, 1);
     // halo.gather();
     // printf("R%d: finished no refinement gather\n", rank);
 
     // Single refinement
-    int sizerefine = 1;
-    Kokkos::View<int*, memory_space> fin("fin", sizerefine);
-    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, sizerefine),
-        KOKKOS_LAMBDA(int i) {
+    // int sizerefine = 1;
+    // Kokkos::View<int*, memory_space> fin("fin", sizerefine);
+    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, sizerefine),
+    //     KOKKOS_LAMBDA(int i) {
 
-            fin(i) = 10;
+    //         fin(i) = 94;
 
-        });
-    mesh->refine(fin);
-    // mesh->_updateGlobalIDs();
+    //     });
+    // mesh->refine(fin);
 
     // Test haloing
     // auto v2e = NuMesh::Maps::V2E(mesh);
     // auto v2f = NuMesh::Maps::V2F(mesh);
-    auto halo = NuMesh::createHalo(mesh, 0, 1);
-    halo.gather();
+    // auto halo = NuMesh::createHalo(mesh, 0, 1);
+    // halo.gather();
 
     // printf("R%d: finished gather 1\n", rank);
 
