@@ -110,12 +110,17 @@ int main( int argc, char* argv[] )
 
         });
     mesh->refine(fin);
+    // mesh->_updateGlobalIDs();
 
     // Test haloing
     // auto v2e = NuMesh::Maps::V2E(mesh);
     // auto v2f = NuMesh::Maps::V2F(mesh);
     auto halo = NuMesh::createHalo(mesh, 0, 1);
     halo.gather();
+
+    // printf("R%d: finished gather 1\n", rank);
+
+    // halo.gather();
 
     // mesh->printFaces(0, 0);
 

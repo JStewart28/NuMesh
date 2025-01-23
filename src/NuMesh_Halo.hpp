@@ -9,6 +9,8 @@
 #include <NuMesh_Mesh.hpp>
 #include <NuMesh_Maps.hpp>
 
+#include "_hypre_parcsr_ls.h"
+
 #include <mpi.h>
 
 namespace NuMesh
@@ -98,6 +100,40 @@ class Halo
          * How to extract info from matrix:
          *      Call the set diags/values functions in reverse.
          */
+
+        hypre_ParCSRMatrix *A;
+        hypre_CSRMatrix *diag;
+        hypre_CSRMatrix *offd;
+
+        HYPRE_Int    *diag_i;
+        HYPRE_Int    *diag_j;
+        HYPRE_Real *diag_data;
+
+        HYPRE_Int    *offd_i;
+        HYPRE_Int    *offd_j = NULL;
+        HYPRE_BigInt *big_offd_j = NULL;
+        HYPRE_Real *offd_data = NULL;
+
+        HYPRE_BigInt global_part[2];
+        HYPRE_BigInt ix, iy, iz;
+        HYPRE_Int cnt, o_cnt;
+        HYPRE_Int local_num_rows;
+        HYPRE_BigInt *col_map_offd;
+        HYPRE_Int row_index;
+        HYPRE_Int i;
+
+        HYPRE_Int nx_local, ny_local, nz_local;
+        HYPRE_Int num_cols_offd;
+        HYPRE_BigInt grid_size;
+
+        // diag_i = hypre_CTAlloc(HYPRE_Int,  local_num_rows + 1, HYPRE_MEMORY_HOST);
+        // offd_i = hypre_CTAlloc(HYPRE_Int,  local_num_rows + 1, HYPRE_MEMORY_HOST);
+
+
+        // A = hypre_ParCSRMatrixCreate(comm, grid_size, grid_size,
+        //                         global_part, global_part, num_cols_offd,
+        //                         diag_i[local_num_rows],
+        //                         offd_i[local_num_rows]);
         
     }
 
@@ -440,6 +476,14 @@ class Halo
         edge_halo_export.resize(ehalo_size);
         face_halo_export.resize(fhalo_size);
 
+        // Update slices
+        vert_halo_export_lids = Cabana::slice<0>(vert_halo_export);
+        vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
+        edge_halo_export_lids = Cabana::slice<0>(edge_halo_export);
+        edge_halo_export_ranks = Cabana::slice<1>(edge_halo_export);
+        face_halo_export_lids = Cabana::slice<0>(face_halo_export);
+        face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
+
         // printf("R%d: vef halo sizes: %d, %d, %d\n", rank, vhalo_size, ehalo_size, fhalo_size);
 
         Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_halo_export.size()),
@@ -498,7 +542,7 @@ class Halo
         //     // if (export_lid >= vertex_count) printf("R%d: max %d verts, has vlid %d\n", rank, vertex_count, export_lid);
 
         // });
-        // Cabana::Halo<memory_space> vthalo( _comm, vertex_count, vert_halo_export_lids_test, vert_halo_export_ranks_test);
+
         Cabana::Halo<memory_space> vhalo( _comm, vertex_count, vert_halo_export_lids, vert_halo_export_ranks);
         Cabana::Halo<memory_space> ehalo( _comm, edge_count, edge_halo_export_lids, edge_halo_export_ranks);
         Cabana::Halo<memory_space> fhalo( _comm, face_count, face_halo_export_lids, face_halo_export_ranks);
