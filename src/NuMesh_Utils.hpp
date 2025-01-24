@@ -227,6 +227,59 @@ int find_edge(Slice_t& edge_vert_slice, int start, int end, int v0, int v1)
     return -1;
 }
 
+/**
+ * Given:
+ *  - Three parent edge local IDs on a face
+ *  - Two middle of the three vertex global IDs of the parent edges
+ * Find the two parent edges that contain these middle
+ *  vertices and return the vertex these two parent edges share
+ */
+template <class Slice_t>
+KOKKOS_INLINE_FUNCTION
+int vertex_from_parent_edges(Slice_t e_vids, int elid0, int elid1, int elid2, int mid0, int mid1)
+{
+    // Access the vertex IDs of the three parent edges
+    auto edge0_vertices = edge_vertex_ids(elid0);  // Vertex IDs for edge elid0
+    auto edge1_vertices = edge_vertex_ids(elid1);  // Vertex IDs for edge elid1
+    auto edge2_vertices = edge_vertex_ids(elid2);  // Vertex IDs for edge elid2
+
+    // Find the two parent edges that contain mid0 and mid1
+    int shared_vertex = -1;
+    for (int i = 0; i < 3; ++i) {  // Loop through vertices of edge0
+        if ((edge0_vertices[i] == mid0 || edge0_vertices[i] == mid1) &&
+            (edge1_vertices[i] == mid0 || edge1_vertices[i] == mid1)) {
+            shared_vertex = edge0_vertices[i];
+            break;
+        }
+    }
+    if (shared_vertex == -1) {
+        for (int i = 0; i < 3; ++i) {  // Check between edge0 and edge2
+            if ((edge0_vertices[i] == mid0 || edge0_vertices[i] == mid1) &&
+                (edge2_vertices[i] == mid0 || edge2_vertices[i] == mid1)) {
+                shared_vertex = edge0_vertices[i];
+                break;
+            }
+        }
+    }
+
+    return shared_vertex;
+}
+
+/**
+ * Given a parent edge local ID and a vertex global ID
+ * that is an endpoint of the edge
+ * 
+ * Return the global ID of the child edge that connects
+ *  to this endpoint
+ */
+// template <class Slice_t>
+// KOKKOS_INLINE_FUNCTION
+// int child_from_parent(Slice_t e_vids, Slict_t e_cids, int plid, int vgid)
+// {
+//     // Check the first child
+//     int child_
+// }
+
 } // end namespace Utils
 } // end namespce NuMesh
 
