@@ -239,29 +239,42 @@ KOKKOS_INLINE_FUNCTION
 int vertex_from_parent_edges(Slice_t e_vids, int elid0, int elid1, int elid2, int mid0, int mid1)
 {
     // Access the vertex IDs of the three parent edges
-    auto edge0_vertices = edge_vertex_ids(elid0);  // Vertex IDs for edge elid0
-    auto edge1_vertices = edge_vertex_ids(elid1);  // Vertex IDs for edge elid1
-    auto edge2_vertices = edge_vertex_ids(elid2);  // Vertex IDs for edge elid2
+    int edge_endpoints[3][2] = {
+        {e_vids(elid0, 0), e_vids(elid0, 1)},  // Endpoint vertex IDs for edge elid0
+        {e_vids(elid1, 0), e_vids(elid1, 1)},  // Endpoint vertex IDs for edge elid1
+        {e_vids(elid2, 0), e_vids(elid2, 1)},  // Endpoint vertex IDs for edge elid2
+    };
+    int edge_midpoints[3] = {e_vids(elid0, 2), e_vids(elid1, 2), e_vids(elid2, 2)}; // Midpoint vertex IDs
 
     // Find the two parent edges that contain mid0 and mid1
-    int shared_vertex = -1;
-    for (int i = 0; i < 3; ++i) {  // Loop through vertices of edge0
-        if ((edge0_vertices[i] == mid0 || edge0_vertices[i] == mid1) &&
-            (edge1_vertices[i] == mid0 || edge1_vertices[i] == mid1)) {
-            shared_vertex = edge0_vertices[i];
-            break;
+    int p_contained[2] = {-1, -1}; // Store the indices of the edges containing midpoints
+    int x = 0;
+    for (int i = 0; i < 3; i++)
+    {
+        if (mid0 == edge_midpoints[i] || mid1 == edge_midpoints[i]) {
+            p_contained[x++] = i;
+            assert(x < 3); // Ensure no more than two edges match
         }
     }
-    if (shared_vertex == -1) {
-        for (int i = 0; i < 3; ++i) {  // Check between edge0 and edge2
-            if ((edge0_vertices[i] == mid0 || edge0_vertices[i] == mid1) &&
-                (edge2_vertices[i] == mid0 || edge2_vertices[i] == mid1)) {
-                shared_vertex = edge0_vertices[i];
+
+    // Find the vertex these two edges have in common
+    int shared_vertex = -1;
+    int edge0 = p_contained[0];
+    int edge1 = p_contained[1];
+    for (int i = 0; i < 2; i++) // Loop over vertices in edge0
+    {
+        for (int j = 0; j < 2; j++) // Loop over vertices in edge1
+        {
+            if (edge_endpoints[edge0][i] == edge_endpoints[edge1][j]) {
+                shared_vertex = edge_endpoints[edge0][i];
                 break;
             }
         }
+        if (shared_vertex != -1)
+            break;
     }
 
+    // Return the shared vertex
     return shared_vertex;
 }
 
