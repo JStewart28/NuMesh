@@ -30,8 +30,8 @@ TYPED_TEST(Mesh2DTest, test0_refinement)
     fin(0) = 30; 
     fin(1) = 31;
 
-    // this->performRefinement(fin);
-    // this->verifyRefinement();
+    this->performRefinement(fin);
+    this->verifyRefinement();
 }
 
 /**
@@ -57,8 +57,8 @@ TYPED_TEST(Mesh2DTest, test1_refinement)
         fin(i) = face_gid_start + i;
     }
 
-    // this->performRefinement(fin);
-    // this->verifyRefinement();
+    this->performRefinement(fin);
+    this->verifyRefinement();
 }
 
 /**

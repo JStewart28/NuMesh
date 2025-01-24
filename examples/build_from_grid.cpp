@@ -97,7 +97,32 @@ int main( int argc, char* argv[] )
         mesh->refine(fin);
         printf("R%d: refine %d: num faces: %d\n", rank, i+1, mesh->faces().size());
     }
-    mesh->printEdges(0, 983);
+    mesh->printFaces(1, 258);
+    mesh->printFaces(1, 259);
+    mesh->printFaces(1, 260);
+    mesh->printFaces(1, 261);
+    // mesh->printFaces(1, 52);
+    // mesh->printFaces(1, 0);
+
+    // // Face 0
+    // mesh->printEdges(1, 0);
+    // mesh->printEdges(1, 5);
+    // mesh->printEdges(1, 1);
+
+    // // Face 52
+    // mesh->printEdges(1, 226);
+    // mesh->printEdges(1, 86);
+    // mesh->printEdges(1, 78);
+
+    // // Face 258
+    // mesh->printEdges(1, 677);
+    // mesh->printEdges(1, 983);
+    
+    /**
+     * Face 258 has issue. Parent face is 52
+     * Parent face of 52 is 0.
+     */
+    
     
     // mesh->printFaces(1, 258);
     // mesh->printEdges(1, 677);
