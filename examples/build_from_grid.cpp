@@ -83,24 +83,24 @@ int main( int argc, char* argv[] )
 
     // Uniform refinement
     printf("R%d: refine 0: num faces: %d\n", rank, mesh->faces().size());
-    for (int i = 0; i < 2; i++)
-    {
-        int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
-        int face_gid_start = vef_gid_start(rank, 2);
-        Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
-        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
-            KOKKOS_LAMBDA(int i) {
+    // for (int i = 0; i < 2; i++)
+    // {
+    //     int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
+    //     int face_gid_start = vef_gid_start(rank, 2);
+    //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+    //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
+    //         KOKKOS_LAMBDA(int i) {
 
-                fin(i) = face_gid_start + i;
+    //             fin(i) = face_gid_start + i;
 
-            });
-        mesh->refine(fin);
-        printf("R%d: refine %d: num faces: %d\n", rank, i+1, mesh->faces().size());
-    }
-    mesh->printFaces(1, 258);
-    mesh->printFaces(1, 259);
-    mesh->printFaces(1, 260);
-    mesh->printFaces(1, 261);
+    //         });
+    //     mesh->refine(fin);
+    //     printf("R%d: refine %d: num faces: %d\n", rank, i+1, mesh->faces().size());
+    // }
+    // mesh->printFaces(1, 258);
+    // mesh->printFaces(1, 259);
+    // mesh->printFaces(1, 260);
+    // mesh->printFaces(1, 261);
     // mesh->printFaces(1, 52);
     // mesh->printFaces(1, 0);
 
@@ -134,16 +134,17 @@ int main( int argc, char* argv[] )
     // printf("R%d: finished no refinement gather\n", rank);
 
     // Single refinement
-    // int sizerefine = 1;
-    // Kokkos::View<int*, memory_space> fin("fin", sizerefine);
-    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, sizerefine),
-    //     KOKKOS_LAMBDA(int i) {
+    mesh->printFaces(1, 0);
+    int sizerefine = 1;
+    Kokkos::View<int*, memory_space> fin("fin", sizerefine);
+    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, sizerefine),
+        KOKKOS_LAMBDA(int i) {
 
-    //         fin(i) = 94;
+            fin(i) = 0;
 
-    //     });
-    // mesh->refine(fin);
-
+        });
+    mesh->refine(fin);
+    mesh->printFaces(1, 0);
     // Test haloing
     // auto v2e = NuMesh::Maps::V2E(mesh);
     // auto v2f = NuMesh::Maps::V2F(mesh);

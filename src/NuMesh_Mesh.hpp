@@ -1025,10 +1025,13 @@ class Mesh
             assert(parent_el1 != -1);
             parent_el2 = Utils::get_lid(e_gid, parent_eg2, 0, num_edges);
             assert(parent_el2 != -1);
-            vg_mid0 = e_vid(parent_el0, 0); vg_mid1 = e_vid(parent_el1, 1); vg_mid2 = e_vid(parent_el2, 2);
-
+            vg_mid0 = e_vid(parent_el0, 2); vg_mid1 = e_vid(parent_el1, 2); vg_mid2 = e_vid(parent_el2, 2);
+            // printf("R%d: vgmid 0/1/2: %d, %d, %d\n", rank, vg_mid0, vg_mid1, vg_mid2);
+            // printf("R%d: parent eg 0/1/2: %d, %d, %d\n", rank, parent_eg0, parent_eg1, parent_eg2);
+            
             // Get the local and global IDs of the new edges that connect the new vertices
             int new_eg0, new_eg1, new_eg2, new_el0, new_el1, new_el2;
+            // printf("R%d: vgmid0: %d, vg_mid1: %d\n", rank, vg_mid0, vg_mid1);
             new_el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid0, vg_mid1);
             assert(new_el0 != -1);
             new_el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid1, vg_mid2);
@@ -1036,6 +1039,7 @@ class Mesh
             new_el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid0, vg_mid2);
             assert(new_el2 != -1);
             new_eg0 = e_gid(new_el0); new_eg1 = e_gid(new_el1); new_eg2 = e_gid(new_el2);
+            // printf("R%d: new eg 0/1/2: %d, %d, %d\n", rank, new_eg0, new_eg1, new_eg2);
 
             /******************************************************
              * Face 0: The face created from all new vertices and
@@ -1059,127 +1063,50 @@ class Mesh
             new_face_lid = f_new_lid_start + offset + 1;
             vg_outer = Utils::vertex_from_parent_edges(e_vid, parent_el0, parent_el1, parent_el2,
                                                        vg_mid0, vg_mid1);
+            // printf("R%d: mid0: %d, mid1: %d, outer: %d\n", rank, vg_mid0, vg_mid1, vg_outer);
             // Get the edge LIDs that connect to vg_outer
             el_outer0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid0, vg_outer);
+            // printf("R%d: vgmid0: %d, vg_outer: %d\n", rank, vg_mid0, vg_outer);
             assert(el_outer0 != -1);
             el_outer1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid1, vg_outer);
             assert(el_outer1 != -1);
             // Assign values
             f_vid(new_face_lid, 0) = vg_mid0; f_vid(new_face_lid, 1) = vg_mid1; f_vid(new_face_lid, 2) = vg_outer;
-            f_eid(new_face_lid, 0) = e_gid(new_eg0); f_eid(new_face_lid, 1) = e_gid(el_outer0); f_eid(new_face_lid, 2) = e_gid(el_outer1);
+            f_eid(new_face_lid, 0) = new_eg0; f_eid(new_face_lid, 1) = e_gid(el_outer0); f_eid(new_face_lid, 2) = e_gid(el_outer1);
+
+            /******************************************************
+             * Face 2: The face that shares inner edge 1
+             *  (verts vg_mid1 and vg_mid2) of Face 0
+             *****************************************************/
+            new_face_lid = f_new_lid_start + offset + 2;
+            vg_outer = Utils::vertex_from_parent_edges(e_vid, parent_el0, parent_el1, parent_el2,
+                                                       vg_mid1, vg_mid2);
+            // Get the edge LIDs that connect to vg_outer
+            el_outer0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid1, vg_outer);
+            assert(el_outer0 != -1);
+            el_outer1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid2, vg_outer);
+            assert(el_outer1 != -1);
+            // Assign values
+            f_vid(new_face_lid, 0) = vg_mid1; f_vid(new_face_lid, 1) = vg_mid2; f_vid(new_face_lid, 2) = vg_outer;
+            f_eid(new_face_lid, 0) = new_eg1; f_eid(new_face_lid, 1) = e_gid(el_outer0); f_eid(new_face_lid, 2) = e_gid(el_outer1);
            
-            // Vertex global IDs and edge local IDs
-            // int vg0, vg1, vg2, el0, el1, el2;
-            
+            /******************************************************
+             * Face 3: The face that shares inner edge 2
+             *  (verts vg_mid0 and vg_mid2) of Face 0
+             *****************************************************/
+            new_face_lid = f_new_lid_start + offset + 3;
+            vg_outer = Utils::vertex_from_parent_edges(e_vid, parent_el0, parent_el1, parent_el2,
+                                                       vg_mid0, vg_mid2);
+            // Get the edge LIDs that connect to vg_outer
+            el_outer0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid0, vg_outer);
+            assert(el_outer0 != -1);
+            el_outer1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid2, vg_outer);
+            assert(el_outer1 != -1);
+            // Assign values
+            f_vid(new_face_lid, 0) = vg_mid0; f_vid(new_face_lid, 1) = vg_mid2; f_vid(new_face_lid, 2) = vg_outer;
+            f_eid(new_face_lid, 0) = new_eg2; f_eid(new_face_lid, 1) = e_gid(el_outer0); f_eid(new_face_lid, 2) = e_gid(el_outer1);
 
-            // /******************************
-            //  * Face 0 verts:
-            //  *  V0: Parent face e0, v0
-            //  *  V1: Parent face e0, middle vert
-            //  *  V2: Parent face e2, middle vert
-            //  *****************************/
-            // new_face_lid = f_new_lid_start + offset;
-            // el0 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
-            // assert(el0 != -1);
-            // vg0 = e_vid(el0, 0);
-            // vg1 = e_vid(el0, 2);
-            // el2 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
-            // assert(el2 != -1);
-            // vg2 = e_vid(el2, 2);
-            // el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            // el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            // el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
-            // f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
-            // f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2);
-            // if (f_gid(new_face_lid) == 258)
-            // {
-            //     printf("Face 0: FGID: %d, edge lid %d verts: %d, %d\n", f_gid(new_face_lid), el2, vg2, vg0);
-            //     printf("Face 0: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(new_face_lid, 0), f_eid(new_face_lid, 1), f_eid(new_face_lid, 2));
-            // }
-
-            // /******************************
-            //  * Face 1 verts:
-            //  *  V0: Parent face e0, middle vert
-            //  *  V1: Parent face e1, middle vert
-            //  *  V2: Parent face e0, v1
-            //  *****************************/
-            // new_face_lid = f_new_lid_start + offset + 1;
-            // el0 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
-            // assert(el0 != -1);
-            // vg0 = e_vid(el0, 2);
-            // el1 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
-            // assert(el1 != -1);
-            // vg1 = e_vid(el1, 2);
-            // vg2 = e_vid(el0, 1);
-            // el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            // el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            // el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
-            // f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2; 
-            // f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            // if (f_gid(new_face_lid) == 258)
-            // {
-            //     printf("Face 1: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(new_face_lid, 0), f_eid(new_face_lid, 1), f_eid(new_face_lid, 2));
-            // }
-
-            // /******************************
-            //  * Face 2 verts:
-            //  *  V0: Parent face e2, middle vert
-            //  *  V1: Parent face e1, middle vert
-            //  *  V2: Parent face e2, v1
-            //  *****************************/
-            // new_face_lid = f_new_lid_start + offset + 2;
-            // el2 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
-            // assert(el2 != -1);
-            // vg0 = e_vid(el2, 2);
-            // el1 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
-            // assert(el1 != -1);
-            // vg1 = e_vid(el1, 2);
-            // vg2 = e_vid(el2, 1);
-            // // printf("Verts: %d, %d, %d\n", vg0, vg1, vg2);
-            // el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            // el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            // el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
-            // f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
-            // f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            // if (f_gid(new_face_lid) == 258)
-            // {
-            //     printf("Face 2: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(new_face_lid, 0), f_eid(new_face_lid, 1), f_eid(new_face_lid, 2));
-            // }
-
-
-            // /******************************
-            //  * Face 3 verts:
-            //  *  V0: Parent face e0, middle vert
-            //  *  V1: Parent face e1, middle vert
-            //  *  V2: Parent face e2, middle vert
-            //  *****************************/
-            // new_face_lid = f_new_lid_start + offset + 3;
-            // el0 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
-            // assert(el0 != -1);
-            // vg0 = e_vid(el0, 2);
-            // el1 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
-            // assert(el1 != -1);
-            // vg1 = e_vid(el1, 2);
-            // el2 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
-            // assert(el2 != -1);
-            // vg2 = e_vid(el2, 2);
-            // // printf("Verts: %d, %d, %d\n", vg0, vg1, vg2);
-            // el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            // el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            // el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
-            // f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
-            // f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            // if (f_gid(new_face_lid) == 258)
-            // {
-            //     printf("Face 3: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(new_face_lid, 0), f_eid(new_face_lid, 1), f_eid(new_face_lid, 2));
-            // }
         });
-        // if (rank == 0) printFaces(0, 0);
-        // printFaces(1, 345);
 
         // if (rank == 0)
         // {
@@ -1656,7 +1583,7 @@ class Mesh
             if ((elid >= 0) && (elid < owned_edges))
             {
             int i = elid;
-            printf("i%d, %d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
+            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
                 e_children(i, 0), e_children(i, 1),
@@ -1672,7 +1599,7 @@ class Mesh
         Kokkos::parallel_for("print edges", Kokkos::RangePolicy<execution_space>(start, end),
             KOKKOS_LAMBDA(int i) {
             
-            printf("i%d, %d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
+            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
                 e_children(i, 0), e_children(i, 1),

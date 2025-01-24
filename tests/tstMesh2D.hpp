@@ -509,10 +509,6 @@ class Mesh2DTest : public ::testing::Test
             egid0 = f_eid(i, 0);
             egid1 = f_eid(i, 1);
             egid2 = f_eid(i, 2);
-            if (f_gid(i) == 258)
-            {
-                printf("FGID %d: edges %d, %d, %d\n", f_gid(i), egid0, egid1, egid2);
-            }
 
             e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), 0, edges.size());
             e1 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 1), 0, edges.size());
