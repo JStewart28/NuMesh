@@ -107,14 +107,14 @@ class HaloTest : public Mesh2DTest<T>
             
             // Each vert should be connected to at least six faces
             int connected_faces = next_offset - offset;
-            if (vgid == 16)
-            {
-                while (offset < next_offset)
-                {
-                    printf("R%d: vgid %d face %d: %d\n", rank, vgid, (next_offset-offset), f_gid(indices(offset)));
-                    offset++;
-                }
-            }
+            // if (vgid == 16)
+            // {
+            //     while (offset < next_offset)
+            //     {
+            //         printf("R%d: vgid %d face %d: %d\n", rank, vgid, (next_offset-offset), f_gid(indices(offset)));
+            //         offset++;
+            //     }
+            // }
             ASSERT_GE(connected_faces, 6) << "VGID " << vgid << " is connected to " << connected_faces << " faces\n";
             return;
             while (offset < next_offset)

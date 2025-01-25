@@ -215,7 +215,7 @@ class Halo
      */
     void _gather_depth_one()
     {
-        const int level = _level, rank = _rank;
+        const int level = _level, rank = _rank, tree_depth = _mesh->depth();
 
         auto& vertices = _mesh->vertices();
         auto& edges = _mesh->edges();
@@ -223,6 +223,7 @@ class Halo
         auto boundary_faces = _mesh->boundary_faces();
         size_t num_boundary_faces = boundary_faces.extent(0);
         size_t num_boundary_edges = _mesh->boundary_edges().extent(0);
+        printf("R%d: num boundary faces: %d\n", rank, num_boundary_faces);
 
         // Get vef_gid_start and copy to device
         auto vef_gid_start = _mesh->vef_gid_start();
@@ -258,15 +259,21 @@ class Halo
         // Distributor data
         // (global ID, to_rank, from_rank) tuples
         using distributor_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int, int>, memory_space, 4>;
-        distributor_aosoa vert_distributor_export("vert_distributor_export", num_boundary_faces*2);
-        distributor_aosoa edge_distributor_export("edge_distributor_export", num_boundary_faces*2);
+        int vert_distributor_size = num_boundary_faces*tree_depth*3;
+        int edge_distributor_size = num_boundary_faces*tree_depth*3;
+        printf("R%d: vert/edge dist sizes: %d, %d\n", rank, vert_distributor_size, edge_distributor_size);
+        distributor_aosoa vert_distributor_export("vert_distributor_export", vert_distributor_size);
+        distributor_aosoa edge_distributor_export("edge_distributor_export", edge_distributor_size);
 
         // Halo data
         // (global ID, to_rank) tuples
         using halo_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int>, memory_space, 4>;
-        halo_aosoa vert_halo_export("vert_halo_export", num_boundary_faces*5 + 10); // Slight buffer for faces that must be sent to >1 processes
-        halo_aosoa edge_halo_export("edge_halo_export", num_boundary_edges*6 + 10); // and for refinements along boundaries
-        halo_aosoa face_halo_export("face_halo_export", num_boundary_faces*3 + 10);
+        int vhalo_size = num_boundary_faces*tree_depth*8 + 10;
+        int ehalo_size = num_boundary_edges*tree_depth*8 + 10;
+        int fhalo_size = num_boundary_faces*tree_depth*8 + 10;
+        halo_aosoa vert_halo_export("vert_halo_export", vhalo_size); // Slight buffer for faces that must be sent to >1 processes
+        halo_aosoa edge_halo_export("edge_halo_export", ehalo_size); // and for refinements along boundaries
+        halo_aosoa face_halo_export("face_halo_export", fhalo_size);
 
         // Counters
         int_d vd_idx("vd_idx"); Kokkos::deep_copy(vd_idx, 0); // Vert distributor
@@ -319,7 +326,7 @@ class Halo
                 // if (rank == 2) printf("R%d: f/b: %d, %d\n", rank, front, back);
                 
                 int flid = fgid - vef_gid_start_d(rank, 2);
-                int fpid = f_pid(flid);
+                // int fpid = f_pid(flid);
 
                 // Process the face
                 for (int i = 0; i < 3; i++)
@@ -331,6 +338,7 @@ class Halo
                     {
                         // Add this vert to the distributor
                         int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
+                        assert(dvdx < vert_distributor_size);
                         vert_distributor_export_gids(dvdx) = vgid;
                         vert_distributor_export_from_ranks(dvdx) = rank;
                         vert_distributor_export_to_ranks(dvdx) = vert_owner;
@@ -338,6 +346,7 @@ class Halo
 
                         // Add this face to the halo to send to the given vertex owner
                         int fdx = Kokkos::atomic_fetch_add(&fh_idx(), 1);
+                        assert(fdx < fhalo_size);
                         face_halo_export_lids(fdx) = flid;
                         face_halo_export_ranks(fdx) = vert_owner;
                         // if (fgid == 121 || fgid == 94) printf("R%d: Adding fgid %d to R%d from vert %d\n", rank, fgid, vert_owner, vgid);
@@ -352,6 +361,7 @@ class Halo
                             {
                                 // We reference this edge but do not own it; add to distributor
                                 int dedx = Kokkos::atomic_fetch_add(&ed_idx(), 1);
+                                assert(dedx < edge_distributor_size);
                                 edge_distributor_export_gids(dedx) = egid;
                                 edge_distributor_export_from_ranks(dedx) = rank;
                                 edge_distributor_export_to_ranks(dedx) = edge_owner;
@@ -361,6 +371,7 @@ class Halo
                             }
                             // Otherwise we own the edge and need to add it to the halo
                             int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
+                            assert(edx < ehalo_size);
                             int elid = egid - vef_gid_start_d(rank, 1);
                             edge_halo_export_lids(edx) = elid;
                             edge_halo_export_ranks(edx) = vert_owner;
@@ -374,6 +385,7 @@ class Halo
                             int vowner = Utils::owner_rank(Vertex(), vgid1, vef_gid_start_d);
                             if (vowner != rank) continue; // Can't export verts we don't own
                             int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
+                            assert(vdx < vhalo_size);
                             int vlid1 = vgid1 - vef_gid_start_d(rank, 0);
                             vert_halo_export_lids(vdx) = vlid1;
                             vert_halo_export_ranks(vdx) = vert_owner;
@@ -397,78 +409,9 @@ class Halo
                     }
                 }
             }
-
-            // int fgid = boundary_faces(face_idx);
-            // // if (rank == 1) printf("R%d: boundary face gid: %d\n", rank, fgid);
-            // int flid = fgid - vef_gid_start_d(rank, 2);
-            // int face_level = f_layer(flid);
-            // if (face_level != level) return; // Only consider elements at our level and their children
-
-            // for (int i = 0; i < 3; i++)
-            // {
-            //     int vgid = f_vid(flid, i);
-            //     int vert_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
-            //     // if (fgid == 121) printf("R%d, fgid %d, i%d: vert %d, owner: %d\n", rank, fgid, i, vgid, vert_owner);
-            //     if (vert_owner != rank)
-            //     {
-            //         // Add this vert to the distributor
-            //         int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
-            //         vert_distributor_export_gids(dvdx) = vgid;
-            //         vert_distributor_export_from_ranks(dvdx) = rank;
-            //         vert_distributor_export_to_ranks(dvdx) = vert_owner;
-            //         // if (fgid == 121) printf("R%d: from fgid %d adding to dist vgid %d: (to R%d)\n", rank, fgid, vgid, vert_owner);
-
-            //         // Add this face to the halo to send to the given vertex owner
-            //         int fdx = Kokkos::atomic_fetch_add(&fh_idx(), 1);
-            //         face_halo_export_lids(fdx) = flid;
-            //         face_halo_export_ranks(fdx) = vert_owner;
-            //         // if (fgid == 121 || fgid == 94) printf("R%d: Adding fgid %d to R%d from vert %d\n", rank, fgid, vert_owner, vgid);
-                    
-            //         // Add owned edges
-            //         for (int j = 0; j < 3; j++)
-            //         {
-            //             int egid = f_eid(flid, j);
-            //             int edge_owner = Utils::owner_rank(Edge(), egid, vef_gid_start_d);
-            //             // if (fgid == 38) printf("R%d: edge %d from face %d, owner R%d\n", rank, egid, fgid, edge_owner);
-            //             if (edge_owner != rank)
-            //             {
-            //                 // We reference this edge but do not own it; add to distributor
-            //                 int dedx = Kokkos::atomic_fetch_add(&ed_idx(), 1);
-            //                 edge_distributor_export_gids(dedx) = egid;
-            //                 edge_distributor_export_from_ranks(dedx) = rank;
-            //                 edge_distributor_export_to_ranks(dedx) = edge_owner;
-            //                 // fgid 102, edge 98 
-            //                 // if (rank == 3) printf("R%d: from face %d: edge_dist(%d): %d to rank %d\n", rank, fgid, dedx, egid, edge_owner);
-            //                 continue; 
-            //             }
-            //             // Otherwise we own the edge and need to add it to the halo
-            //             int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
-            //             int elid = egid - vef_gid_start_d(rank, 1);
-            //             edge_halo_export_lids(edx) = elid;
-            //             edge_halo_export_ranks(edx) = vert_owner;
-            //             // if (rank == 2) printf("R%d: adding edge %d from face %d to rank %d\n", rank, egid, fgid, vert_owner);
-            //         }
-
-            //         // Add owned verts
-            //         for (int k = 0; k < 3; k++)
-            //         {
-            //             int vgid1 = f_vid(flid, k);
-            //             int vowner = Utils::owner_rank(Vertex(), vgid1, vef_gid_start_d);
-            //             if (vowner != rank) continue; // Can't export verts we don't own
-            //             int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
-            //             int vlid1 = vgid1 - vef_gid_start_d(rank, 0);
-            //             vert_halo_export_lids(vdx) = vlid1;
-            //             vert_halo_export_ranks(vdx) = vert_owner;
-            //             // if (rank == 1) printf("R%d: sending vgid %d to %d\n", rank, vgid1, vert_owner);
-            //         }
-
-            //         // Can't break loop in case a face has two unowned vertices
-            //     }
-            // }
         });
                 
         // Resize distributor data to correct sizes
-        int vert_distributor_size, edge_distributor_size;
         Kokkos::deep_copy(vert_distributor_size, vd_idx);
         Kokkos::deep_copy(edge_distributor_size, ed_idx);
         
@@ -547,6 +490,7 @@ class Halo
 
             // Add to vert halo
             int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
+            assert(vdx < vhalo_size);
             vert_halo_export_lids(vdx) = vlid;
             vert_halo_export_ranks(vdx) = from_rank;
             // if (vgid == 16 && from_rank == 3) printf("R%d: adding vgid %d to R%d to halo at vdx %d\n", rank, vgid, from_rank, vdx);
@@ -563,6 +507,7 @@ class Halo
 
             // Add to vert halo
             int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
+            assert(edx < ehalo_size);
             edge_halo_export_lids(edx) = elid;
             edge_halo_export_ranks(edx) = from_rank;
             // if (edx > 85) printf("R%d: edx: %d\n", rank, edx);
@@ -572,7 +517,6 @@ class Halo
         });
 
         // Finalize halo sizes and set duplicates to -1
-        int vhalo_size, ehalo_size, fhalo_size;
         Kokkos::deep_copy(vhalo_size, vh_idx);
         Kokkos::deep_copy(ehalo_size, eh_idx);
         Kokkos::deep_copy(fhalo_size, fh_idx);

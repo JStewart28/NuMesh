@@ -112,6 +112,8 @@ class Mesh
 
         _version = 0;
 
+        _max_depth = 0;
+
         _vef_gid_start = Kokkos::View<int*[3], Kokkos::HostSpace>("_vef_gid_start", _comm_size);
         Kokkos::deep_copy(_vef_gid_start, -1);
 
@@ -1504,6 +1506,10 @@ class Mesh
             }
         });
         Kokkos::fence();
+
+        // All initialized faces are on the same level
+        _max_depth = 0;
+
         _finializeInit();
     }
         
@@ -1519,14 +1525,20 @@ class Mesh
     void refine(View& fgids)
     {
         _refineFaces(fgids);
+
+        // Increase max tree depth by 1
+        _max_depth++;
+
         _sort_by_layer();
         _populate_boundary_elements();
+        
     }
     
     v_array_type& vertices() {return _vertices;}
     e_array_type& edges() {return _edges;}
     f_array_type& faces() {return _faces;}
 
+    int depth() {return _max_depth;}
     int count(Own, Vertex) {return _owned_vertices;}
     int count(Own, Edge) {return _owned_edges;}
     int count(Own, Face) {return _owned_faces;}
@@ -1680,6 +1692,9 @@ class Mesh
 
     // Version number to keep mesh in sync with other objects. Updates on mesh refinement
     int _version;
+
+    // Max depth of tree
+    int _max_depth;
 };
 //---------------------------------------------------------------------------//
 
