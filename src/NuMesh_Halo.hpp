@@ -29,7 +29,7 @@ class Halo
     using memory_space = typename Mesh::memory_space;
     using execution_space = typename Mesh::execution_space;
     using integer_view = Kokkos::View<int*, memory_space>;
-    using int_d = Kokkos::View<int, memory_space>;
+    using int_d = Kokkos::View<size_t, memory_space>;
 
     /**
      * guess parameter: guess to how many vertices will be in the halo
@@ -217,13 +217,23 @@ class Halo
     {
         const int level = _level, rank = _rank, tree_depth = _mesh->depth();
 
+        // Define the hash map type
+        using PairType = std::pair<int, int>;
+        using KeyType = uint64_t;  // Hashable key
+        using MapType = Kokkos::UnorderedMap<KeyType, int, memory_space>;
+
+        // Hash function to combine two integers into a single key
+        auto hashFunction = KOKKOS_LAMBDA(int first, int second) -> KeyType {
+            return (static_cast<KeyType>(first) << 32) | (static_cast<KeyType>(second) & 0xFFFFFFFF);
+        };
+
         auto& vertices = _mesh->vertices();
         auto& edges = _mesh->edges();
         auto& faces = _mesh->faces();
         auto boundary_faces = _mesh->boundary_faces();
         size_t num_boundary_faces = boundary_faces.extent(0);
-        size_t num_boundary_edges = _mesh->boundary_edges().extent(0);
-        printf("R%d: num boundary faces: %d\n", rank, num_boundary_faces);
+        // size_t num_boundary_edges = _mesh->boundary_edges().extent(0);
+        // printf("R%d: num boundary faces: %d\n", rank, num_boundary_faces);
 
         // Get vef_gid_start and copy to device
         auto vef_gid_start = _mesh->vef_gid_start();
@@ -259,21 +269,28 @@ class Halo
         // Distributor data
         // (global ID, to_rank, from_rank) tuples
         using distributor_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int, int>, memory_space, 4>;
-        int vert_distributor_size = num_boundary_faces*tree_depth*3;
-        int edge_distributor_size = num_boundary_faces*tree_depth*3;
-        printf("R%d: vert/edge dist sizes: %d, %d\n", rank, vert_distributor_size, edge_distributor_size);
+        size_t vert_distributor_size = num_boundary_faces*(tree_depth+1)*4;
+        size_t edge_distributor_size = num_boundary_faces*(tree_depth+1)*4;
+        // printf("R%d: vert/edge dist sizes: %d, %d\n", rank, vert_distributor_size, edge_distributor_size);
         distributor_aosoa vert_distributor_export("vert_distributor_export", vert_distributor_size);
         distributor_aosoa edge_distributor_export("edge_distributor_export", edge_distributor_size);
 
         // Halo data
         // (global ID, to_rank) tuples
         using halo_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int>, memory_space, 4>;
-        int vhalo_size = num_boundary_faces*tree_depth*8 + 10;
-        int ehalo_size = num_boundary_edges*tree_depth*8 + 10;
-        int fhalo_size = num_boundary_faces*tree_depth*8 + 10;
-        halo_aosoa vert_halo_export("vert_halo_export", vhalo_size); // Slight buffer for faces that must be sent to >1 processes
-        halo_aosoa edge_halo_export("edge_halo_export", ehalo_size); // and for refinements along boundaries
+        size_t vhalo_size = num_boundary_faces*(tree_depth+1)*4; // Slight buffer for faces that must be sent to >1 processes
+        size_t ehalo_size = num_boundary_faces*(tree_depth+1)*4; // and for refinements along boundaries
+        size_t fhalo_size = num_boundary_faces*(tree_depth+1)*4;
+        halo_aosoa vert_halo_export("vert_halo_export", vhalo_size); 
+        halo_aosoa edge_halo_export("edge_halo_export", ehalo_size); 
         halo_aosoa face_halo_export("face_halo_export", fhalo_size);
+
+        // Hash tables - used to keep duplicate entries from the distributor and halo data structures
+        MapType vert_distributor_map(vert_distributor_size);
+        MapType edge_distributor_map(edge_distributor_size);
+        MapType vert_halo_map(vhalo_size);
+        MapType edge_halo_map(ehalo_size);
+        MapType face_halo_map(fhalo_size);
 
         // Counters
         int_d vd_idx("vd_idx"); Kokkos::deep_copy(vd_idx, 0); // Vert distributor
@@ -302,9 +319,9 @@ class Halo
             KOKKOS_LAMBDA(int face_idx) {
             
             int fgid_parent = boundary_faces(face_idx);
-            // if (rank == 1) printf("R%d: boundary face gid: %d\n", rank, fgid);
             int flid_parent = fgid_parent - vef_gid_start_d(rank, 2);
             int face_level = f_layer(flid_parent);
+            // if (rank == 0) printf("R%d: boundary face gid: %d, level: %d\n", rank, fgid_parent, face_level);
             if (face_level != level) return; // Only consider elements at our level and their children
 
             // Queue for children (local per thread)
@@ -316,39 +333,54 @@ class Halo
             queue[back] = fgid_parent;
             back = (back + 1) % capacity;
 
-
             // Traverse children iteratively
             while (front != back)
             {
                 // Dequeue
                 int fgid = queue[front];
                 front = (front + 1) % capacity;
-                // if (rank == 2) printf("R%d: f/b: %d, %d\n", rank, front, back);
                 
                 int flid = fgid - vef_gid_start_d(rank, 2);
-                // int fpid = f_pid(flid);
+
+                // if (rank == 0) printf("R%d, fg/lid %d, %d\n", rank, fgid, flid);              
 
                 // Process the face
                 for (int i = 0; i < 3; i++)
                 {
-                    int vgid = f_vid(flid, i);
-                    int vert_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
-                    // if (fgid == 121) printf("R%d, fgid %d, i%d: vert %d, owner: %d\n", rank, fgid, i, vgid, vert_owner);
+                    KeyType hash_key;
+                    const int vgid = f_vid(flid, i);
+                    const int vert_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
+                    // if (rank == 1) printf("R%d: checking (R%d, vgid %d) to distributor\n", rank, vert_owner, vgid);
+                    // if (rank == 0) printf("R%d, fgid %d, i%d: vert %d, owner: %d\n", rank, fgid, i, vgid, vert_owner);
                     if (vert_owner != rank)
                     {
                         // Add this vert to the distributor
-                        int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
-                        assert(dvdx < vert_distributor_size);
-                        vert_distributor_export_gids(dvdx) = vgid;
-                        vert_distributor_export_from_ranks(dvdx) = rank;
-                        vert_distributor_export_to_ranks(dvdx) = vert_owner;
+                        // but first check that it is not already present
+                        hash_key = hashFunction(vgid, vert_owner);
+                        auto result = vert_distributor_map.insert(hash_key, 1);
+                        if (result.success()) {
+                            // If insertion succeeds; tuple not present; add to AoSoA
+                            int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
+                            assert(dvdx < vert_distributor_size);
+                            vert_distributor_export_gids(dvdx) = vgid;
+                            vert_distributor_export_from_ranks(dvdx) = rank;
+                            vert_distributor_export_to_ranks(dvdx) = vert_owner;
+                            // if (rank == 1) printf("R%d: adding (R%d, vgid %d) to distributor\n", rank, vert_owner, vgid);
+                        }
+                       
                         // if (fgid == 121) printf("R%d: from fgid %d adding to dist vgid %d: (to R%d)\n", rank, fgid, vgid, vert_owner);
 
                         // Add this face to the halo to send to the given vertex owner
-                        int fdx = Kokkos::atomic_fetch_add(&fh_idx(), 1);
-                        assert(fdx < fhalo_size);
-                        face_halo_export_lids(fdx) = flid;
-                        face_halo_export_ranks(fdx) = vert_owner;
+                        hash_key = hashFunction(flid, vert_owner);
+                        result = face_halo_map.insert(hash_key, 1);
+                        if (result.success()) {
+                            // If insertion succeeds; tuple not present; add to AoSoA
+                            int fdx = Kokkos::atomic_fetch_add(&fh_idx(), 1);
+                            assert(fdx < fhalo_size);
+                            face_halo_export_lids(fdx) = flid;
+                            face_halo_export_ranks(fdx) = vert_owner;
+                        }
+                        
                         // if (fgid == 121 || fgid == 94) printf("R%d: Adding fgid %d to R%d from vert %d\n", rank, fgid, vert_owner, vgid);
                         
                         // Add owned edges
@@ -359,22 +391,34 @@ class Halo
                             // if (fgid == 38) printf("R%d: edge %d from face %d, owner R%d\n", rank, egid, fgid, edge_owner);
                             if (edge_owner != rank)
                             {
-                                // We reference this edge but do not own it; add to distributor
-                                int dedx = Kokkos::atomic_fetch_add(&ed_idx(), 1);
-                                assert(dedx < edge_distributor_size);
-                                edge_distributor_export_gids(dedx) = egid;
-                                edge_distributor_export_from_ranks(dedx) = rank;
-                                edge_distributor_export_to_ranks(dedx) = edge_owner;
+                                // We reference this edge but do not own it; add to AoSoA
+                                hash_key = hashFunction(egid, edge_owner);
+                                result = edge_distributor_map.insert(hash_key, 1);
+                                if (result.success()) {
+                                    // If insertion succeeds; tuple not present; add to AoSoA
+                                    int dedx = Kokkos::atomic_fetch_add(&ed_idx(), 1);
+                                    assert(dedx < edge_distributor_size);
+                                    edge_distributor_export_gids(dedx) = egid;
+                                    edge_distributor_export_from_ranks(dedx) = rank;
+                                    edge_distributor_export_to_ranks(dedx) = edge_owner;
+                                }
                                 // fgid 102, edge 98 
                                 // if (rank == 3) printf("R%d: from face %d: edge_dist(%d): %d to rank %d\n", rank, fgid, dedx, egid, edge_owner);
                                 continue; 
                             }
+
                             // Otherwise we own the edge and need to add it to the halo
-                            int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
-                            assert(edx < ehalo_size);
-                            int elid = egid - vef_gid_start_d(rank, 1);
-                            edge_halo_export_lids(edx) = elid;
-                            edge_halo_export_ranks(edx) = vert_owner;
+                            hash_key = hashFunction(egid, edge_owner);
+                            result = edge_halo_map.insert(hash_key, 1);
+                            if (result.success()) {
+                                // If insertion succeeds; tuple not present; add to AoSoA
+                                int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
+                                assert(edx < ehalo_size);
+                                int elid = egid - vef_gid_start_d(rank, 1);
+                                edge_halo_export_lids(edx) = elid;
+                                edge_halo_export_ranks(edx) = vert_owner;
+                            }
+                            
                             // if (rank == 2) printf("R%d: adding edge %d from face %d to rank %d\n", rank, egid, fgid, vert_owner);
                         }
 
@@ -384,14 +428,19 @@ class Halo
                             int vgid1 = f_vid(flid, k);
                             int vowner = Utils::owner_rank(Vertex(), vgid1, vef_gid_start_d);
                             if (vowner != rank) continue; // Can't export verts we don't own
-                            int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
-                            assert(vdx < vhalo_size);
-                            int vlid1 = vgid1 - vef_gid_start_d(rank, 0);
-                            vert_halo_export_lids(vdx) = vlid1;
-                            vert_halo_export_ranks(vdx) = vert_owner;
+                            hash_key = hashFunction(vgid1, vert_owner);
+                            result = vert_halo_map.insert(hash_key, 1);
+                            if (result.success()) {
+                                // If insertion succeeds; tuple not present; add to AoSoA
+                                int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
+                                assert(vdx < vhalo_size);
+                                int vlid1 = vgid1 - vef_gid_start_d(rank, 0);
+                                vert_halo_export_lids(vdx) = vlid1;
+                                vert_halo_export_ranks(vdx) = vert_owner;
+                            }
+                            
                             // if (rank == 1) printf("R%d: sending vgid %d to %d\n", rank, vgid1, vert_owner);
                         }
-
                         // Can't break loop in case a face has two unowned vertices
                     }
                 }
@@ -422,8 +471,8 @@ class Halo
         edge_distributor_export.resize(edge_distributor_size);
 
         // Set duplicates to -1 so they are ignored
-        _set_duplicates_neg1(vert_distributor_export);
-        _set_duplicates_neg1(edge_distributor_export);
+        // _set_duplicates_neg1(vert_distributor_export);
+        // _set_duplicates_neg1(edge_distributor_export);
 
         // Update distributor slices after resizing
         vert_distributor_export_gids = Cabana::slice<0>(vert_distributor_export);
@@ -446,11 +495,11 @@ class Halo
         // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_distributor_export.size()),
         //     KOKKOS_LAMBDA(int i) {
 
-        //     if (rank == 1) printf("after R%d: to: R%d, vert gid: %d\n", rank,
+        //     if (rank == 0) printf("vert distributor R%d: to: R%d, vert gid: %d\n", rank,
         //         vert_distributor_export_to_ranks(i), vert_distributor_export_gids(i));
 
         // });
-        
+        return;
         // printf("R%d: dups: %d, %d, %d\n", rank, distributor_dups, edge_dups, face_dups);
         /**
          * Distribute vertex data, then add imported vertex data to the vertex halo
@@ -489,10 +538,15 @@ class Halo
             int from_rank = vert_distributor_import_from_ranks(i);
 
             // Add to vert halo
-            int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
-            assert(vdx < vhalo_size);
-            vert_halo_export_lids(vdx) = vlid;
-            vert_halo_export_ranks(vdx) = from_rank;
+            KeyType hash_key = hashFunction(vgid, from_rank);
+            auto result = vert_halo_map.insert(hash_key, 1);
+            if (result.success()) {
+                // If insertion succeeds; tuple not present; add to AoSoA
+                int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
+                assert(vdx < vhalo_size);
+                vert_halo_export_lids(vdx) = vlid;
+                vert_halo_export_ranks(vdx) = from_rank;
+            }
             // if (vgid == 16 && from_rank == 3) printf("R%d: adding vgid %d to R%d to halo at vdx %d\n", rank, vgid, from_rank, vdx);
             
         });
@@ -505,11 +559,16 @@ class Halo
             int elid = egid - vef_gid_start_d(rank, 1);
             int from_rank = edge_distributor_import_from_ranks(i);
 
-            // Add to vert halo
-            int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
-            assert(edx < ehalo_size);
-            edge_halo_export_lids(edx) = elid;
-            edge_halo_export_ranks(edx) = from_rank;
+            // Add to edge halo
+            KeyType hash_key = hashFunction(egid, from_rank);
+            auto result = edge_halo_map.insert(hash_key, 1);
+            if (result.success()) {
+                // If insertion succeeds; tuple not present; add to AoSoA
+                int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
+                assert(edx < ehalo_size);
+                edge_halo_export_lids(edx) = elid;
+                edge_halo_export_ranks(edx) = from_rank;
+            }
             // if (edx > 85) printf("R%d: edx: %d\n", rank, edx);
             // if (rank == 2) printf("R%d: adding egid %d to halo to rank %d: el/gid: %d, %d\n", rank, egid, from_rank, elid, e_gid(elid));
             // if (vgid == 16 && from_rank == 3) printf("R%d: adding vgid %d to R%d to halo at vdx %d\n", rank, vgid, from_rank, vdx);
@@ -559,9 +618,9 @@ class Halo
 
         // });
 
-        _set_duplicates_neg1(vert_halo_export);
-        _set_duplicates_neg1(edge_halo_export);
-        _set_duplicates_neg1(face_halo_export);
+        // _set_duplicates_neg1(vert_halo_export);
+        // _set_duplicates_neg1(edge_halo_export);
+        // _set_duplicates_neg1(face_halo_export);
 
         // Set halo version
         _halo_version = _mesh->version();
