@@ -233,7 +233,6 @@ class Halo
         auto boundary_faces = _mesh->boundary_faces();
         size_t num_boundary_faces = boundary_faces.extent(0);
         // size_t num_boundary_edges = _mesh->boundary_edges().extent(0);
-        // printf("R%d: num boundary faces: %d\n", rank, num_boundary_faces);
 
         // Get vef_gid_start and copy to device
         auto vef_gid_start = _mesh->vef_gid_start();
@@ -499,8 +498,7 @@ class Halo
         //         vert_distributor_export_to_ranks(i), vert_distributor_export_gids(i));
 
         // });
-        return;
-        // printf("R%d: dups: %d, %d, %d\n", rank, distributor_dups, edge_dups, face_dups);
+
         /**
          * Distribute vertex data, then add imported vertex data to the vertex halo
          */
