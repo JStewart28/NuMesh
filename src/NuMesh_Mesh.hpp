@@ -137,10 +137,10 @@ class Mesh
         auto e_layer = Cabana::slice<E_LAYER>(_edges);
         auto f_layer = Cabana::slice<F_LAYER>(_faces);
 
-        // auto sort_edges = Cabana::sortByKey( e_layer );
-        // Cabana::permute( sort_edges, _edges );
-        // auto sort_faces = Cabana::sortByKey( f_layer );
-        // Cabana::permute( sort_faces, _faces );
+        auto sort_edges = Cabana::sortByKey( e_layer );
+        Cabana::permute( sort_edges, _edges );
+        auto sort_faces = Cabana::sortByKey( f_layer );
+        Cabana::permute( sort_faces, _faces );
     }
 
     /**
@@ -157,6 +157,7 @@ class Mesh
         auto e_gid = Cabana::slice<E_GID>(_edges);
         auto f_vids = Cabana::slice<F_VIDS>(_faces);
         auto f_gid = Cabana::slice<F_GID>(_faces);
+        auto f_level = Cabana::slice<F_LAYER>(_faces);
         const int rank = _rank;
 
         // Copy _vef_gid_start to device
@@ -189,22 +190,25 @@ class Mesh
                 }
             }
         });
-
         // Identify faces
         Kokkos::View<bool*, memory_space> is_b_face("is_b_face", _owned_faces);
         Kokkos::deep_copy(is_b_face, false);
         Kokkos::parallel_for("find", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
             KOKKOS_LAMBDA(int i) {
 
+            // if (rank == 0) printf("R%d: checking fgid %d, level %d\n", rank, f_gid(i), f_level(i));
+
             for (int v = 0; v < 3; v++)
             {
                 int vgid = f_vids(i, v);
                 int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
 
+                if (rank == 0) printf("R%d: i%d: fgid %d, vert %d, owner %d, level %d\n", rank, i, f_gid(i), vgid, vertex_owner, f_level(i));
+
                 if (vertex_owner != rank)
                 {
                     Kokkos::atomic_store(&is_b_face(i), true);
-
+                    if (rank == 0) printf("R%d: i%d: fgid %d is boundary face, vert %d\n", rank, i, f_gid(i), vgid);
                     // Once we know this is a boundary face we don't need to check other vertices
                     break;
                 }
@@ -240,6 +244,7 @@ class Mesh
                 local_count += 1;
             }
         }, num_b_faces);
+        printf("R%d: num b faces: %d\n", rank, num_b_faces);
 
 
         // Populate neighbors
@@ -289,6 +294,8 @@ class Mesh
             }
         });
         Kokkos::sort(boundary_faces);
+
+        // printf("R%d pop neighbors: num b faces: %d\n", rank, boundary_faces.extent(0));
 
         _neighbors = neighbors;
         _boundary_edges = boundary_edges;
@@ -404,8 +411,8 @@ class Mesh
     void _finializeInit()
     {
         _createFaces();
-        _sort_by_layer();
-        _populate_boundary_elements();
+        // _sort_by_layer();
+        // _populate_boundary_elements();
     }
 
         /**
@@ -1529,9 +1536,8 @@ class Mesh
         // Increase max tree depth by 1
         _max_depth++;
 
-        _sort_by_layer();
+        // _sort_by_layer();
         _populate_boundary_elements();
-        
     }
     
     v_array_type& vertices() {return _vertices;}
