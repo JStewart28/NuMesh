@@ -203,12 +203,10 @@ class Mesh
                 int vgid = f_vids(i, v);
                 int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
 
-                if (rank == 0) printf("R%d: i%d: fgid %d, vert %d, owner %d, level %d\n", rank, i, f_gid(i), vgid, vertex_owner, f_level(i));
-
                 if (vertex_owner != rank)
                 {
                     Kokkos::atomic_store(&is_b_face(i), true);
-                    if (rank == 0) printf("R%d: i%d: fgid %d is boundary face, vert %d\n", rank, i, f_gid(i), vgid);
+
                     // Once we know this is a boundary face we don't need to check other vertices
                     break;
                 }
@@ -244,8 +242,6 @@ class Mesh
                 local_count += 1;
             }
         }, num_b_faces);
-        printf("R%d: num b faces: %d\n", rank, num_b_faces);
-
 
         // Populate neighbors
         Kokkos::View<int*, memory_space> neighbors("neighbors", num_neighbors);
@@ -294,8 +290,6 @@ class Mesh
             }
         });
         Kokkos::sort(boundary_faces);
-
-        // printf("R%d pop neighbors: num b faces: %d\n", rank, boundary_faces.extent(0));
 
         _neighbors = neighbors;
         _boundary_edges = boundary_edges;
@@ -1216,6 +1210,7 @@ class Mesh
         auto f_gid = Cabana::slice<F_GID>(_faces);
         auto f_cid = Cabana::slice<F_CID>(_faces);
         auto f_eid = Cabana::slice<F_EIDS>(_faces);
+        auto f_vid = Cabana::slice<F_VIDS>(_faces);
         auto f_pid = Cabana::slice<F_PID>(_faces);
         Kokkos::parallel_for("update face GIDs", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
             KOKKOS_LAMBDA(int i) {
@@ -1233,6 +1228,12 @@ class Mesh
             for (int j = 0; j < 3; j++)
             {
                 Utils::updateGlobalID(Edge(), &f_eid(i, j), vef_gid_start_d, old_vef_start_d);
+            }
+
+            // Vertex association GIDs
+            for (int j = 0; j < 3; j++)
+            {
+                Utils::updateGlobalID(Vertex(), &f_vid(i, j), vef_gid_start_d, old_vef_start_d);
             }
 
             // Parent face
