@@ -98,9 +98,9 @@ int main( int argc, char* argv[] )
     // if (rank == 0) mesh->printFaces(0, 258);
     auto halo = NuMesh::createHalo(mesh, 0, 1);
     halo.gather();
-    // mesh->printFaces(1, 258);
-    // mesh->printFaces(1, 259);
-    // mesh->printFaces(1, 260);
+    // if (rank == 0) mesh->printFaces(0, 259);
+    mesh->printFaces(1, 219);
+    mesh->printFaces(1, 166);
     // mesh->printFaces(1, 261);
     // mesh->printFaces(1, 52);
     // mesh->printFaces(1, 0);

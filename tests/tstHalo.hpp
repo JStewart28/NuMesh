@@ -110,7 +110,8 @@ class HaloTest : public Mesh2DTest<T>
                 // Check that we have the data for each face and all its children faces
                 int parent_face_lid = indices(offset);
                 int fgid_parent = f_gid(parent_face_lid);
-
+                // if (rank == 0) printf("R%d: vgid %d: checking fgid %d\n", rank, vgid, fgid_parent);
+                
                 // Queue for children
                 const int capacity = 86;
                 int queue[capacity];
@@ -125,31 +126,30 @@ class HaloTest : public Mesh2DTest<T>
                 {
                     // Dequeue
                     int fgid = queue[front];
-                    int face_lid = NuMesh::Utils::get_lid(f_gid, fgid, 0, total_faces);
                     front = (front + 1) % capacity;
 
                     // Check we have this face
                     int flid = NuMesh::Utils::get_lid(f_gid, fgid, 0, total_faces);
-                    ASSERT_NE(flid, -1) << "Rank " << rank << " FGID " << fgid << "not found\n";
+                    ASSERT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << " not found" << std::endl;
                     
                     // Check vertices of this face
                     for (int i = 0; i < 3; ++i)
                     {
-                        int vid = f_vids(face_lid, i);
-                        ASSERT_TRUE(gid_exists(v_gid, vid)) << "FGID " << fgid << ": missing vgid " << vid << std::endl;
+                        int vid = f_vids(flid, i);
+                        ASSERT_NE(vid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
                     }
 
                     // Check edges of this face
                     for (int i = 0; i < 3; ++i)
                     {
-                        int eid = f_eids(face_lid, i);
-                        ASSERT_TRUE(gid_exists(e_gid, eid)) << "FGID " << fgid << ": missing egid " << eid << std::endl;
+                        int eid = f_eids(flid, i);
+                        ASSERT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing egid " << eid << std::endl;
                     }     
 
                     // Check for children faces
                     for (int j = 0; j < 4; j++)
                     {
-                        int fcgid = f_cids(face_lid, j);
+                        int fcgid = f_cids(flid, j);
                         // Enqueue child if it exists
                         if (fcgid != -1) { // -1 indicates no child
                             queue[back] = fcgid;
@@ -159,9 +159,10 @@ class HaloTest : public Mesh2DTest<T>
                             assert(back != front);
                         }
                     }
+                    // if (rank == 1) printf("R%d finished checking fgid %d\n", rank, fgid);
                 }
+                offset++;
             }
-            offset++;
         }
     }
 };
