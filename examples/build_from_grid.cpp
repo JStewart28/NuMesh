@@ -82,7 +82,7 @@ int main( int argc, char* argv[] )
     auto vef_gid_start = mesh->vef_gid_start();
 
     // Uniform refinement
-    for (int i = 0; i < 1; i++)
+    for (int i = 0; i < 2; i++)
     {
         int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
         int face_gid_start = vef_gid_start(rank, 2);
@@ -98,9 +98,46 @@ int main( int argc, char* argv[] )
     // if (rank == 0) mesh->printFaces(0, 258);
     auto halo = NuMesh::createHalo(mesh, 0, 1);
     halo.gather();
-    // if (rank == 0) mesh->printFaces(0, 259);
-    mesh->printFaces(1, 219);
-    mesh->printFaces(1, 166);
+    auto v2f = NuMesh::Maps::V2F(mesh);
+    auto offsets_d = v2f.offsets();
+    auto indices_d = v2f.indices();
+    auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
+    auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
+    auto& vertices = mesh->vertices();
+    auto& faces = mesh->faces();
+    auto v_owner = Cabana::slice<V_OWNER>(vertices);
+    auto v_gid = Cabana::slice<V_GID>(vertices);
+    auto f_gid = Cabana::slice<F_GID>(faces);
+    printf("R%d: verts size: %d\n", rank, vertices.size());
+    // Iterate over all owned vertices
+    for (int vlid = 0; vlid < (int) vertices.size(); vlid++)
+    {
+        int vowner = v_owner(vlid);
+        if (vowner != rank) continue;
+        int vgid = v_gid(vlid);
+
+        int offset = offsets(vlid);
+
+        // Handle the last vertex case
+        int next_offset = (vlid + 1 < (int)offsets.extent(0)) ? 
+                        offsets(vlid + 1) : 
+                        (int)indices.extent(0);
+        
+        // Each vert should be connected to at least six faces
+        // NOTE: This only holds with uniform refinement
+        int connected_faces = next_offset - offset;
+        if (connected_faces < 6)
+        {
+            for (int i = offset; i < next_offset; i++)
+            {
+                int parent_face_lid = indices(i);
+                int fgid_parent = f_gid(parent_face_lid);
+                printf("R%d: vgid %d: connected face %d\n", rank, vgid, fgid_parent);
+            }
+        }
+    }
+
+
     // mesh->printFaces(1, 261);
     // mesh->printFaces(1, 52);
     // mesh->printFaces(1, 0);

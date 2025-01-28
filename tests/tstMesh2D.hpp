@@ -504,12 +504,7 @@ class Mesh2DTest : public ::testing::Test
 
         for (int i = 0; i < lf+gf; i++)
         {
-            int egid0, egid1, egid2;
             int e0, e1, e2;
-            egid0 = f_eid(i, 0);
-            egid1 = f_eid(i, 1);
-            egid2 = f_eid(i, 2);
-
             e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), 0, edges.size());
             e1 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 1), 0, edges.size());
             e2 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 2), 0, edges.size());
