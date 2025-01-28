@@ -46,8 +46,12 @@ class HaloTest : public Mesh2DTest<T>
      * checking that for any boundary element that points to
      * unowned vertices, edges, or faces, those elements are ghosted
      * in their respective AoSoA after the gather.
+     * 
+     * @param check_vert_connectivity 1 if should check if
+     *  all vertices are connected to at least 6 faces.
+     *  Only is true with uniform refinement.
      */
-    void test_halo_depth_1()
+    void test_halo_depth_1(int check_vert_connectivity)
     {
         const int rank = this->rank_;
 
@@ -103,14 +107,14 @@ class HaloTest : public Mesh2DTest<T>
             // Each vert should be connected to at least six faces
             // NOTE: This only holds with uniform refinement
             int connected_faces = next_offset - offset;
-            ASSERT_GE(connected_faces, 6) << "VGID " << vgid << " is connected to " << connected_faces << " faces\n";
+            if (check_vert_connectivity)
+                ASSERT_GE(connected_faces, 6) << "VGID " << vgid << " is connected to " << connected_faces << " faces\n";
 
             while (offset < next_offset)
             {
                 // Check that we have the data for each face and all its children faces
                 int parent_face_lid = indices(offset);
                 int fgid_parent = f_gid(parent_face_lid);
-                // if (rank == 0) printf("R%d: vgid %d: checking fgid %d\n", rank, vgid, fgid_parent);
                 
                 // Queue for children
                 const int capacity = 86;
@@ -136,13 +140,15 @@ class HaloTest : public Mesh2DTest<T>
                     for (int i = 0; i < 3; ++i)
                     {
                         int vid = f_vids(flid, i);
-                        ASSERT_NE(vid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
+                        int vlid = NuMesh::Utils::get_lid(v_gid, vid, 0, total_verts);
+                        ASSERT_NE(vlid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
                     }
 
                     // Check edges of this face
                     for (int i = 0; i < 3; ++i)
                     {
                         int eid = f_eids(flid, i);
+                        int elid = NuMesh::Utils::get_lid(e_gid, eid, 0, total_edges);
                         ASSERT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing egid " << eid << std::endl;
                     }     
 

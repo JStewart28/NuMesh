@@ -406,7 +406,7 @@ class Mesh
     {
         _createFaces();
         // _sort_by_layer();
-        // _populate_boundary_elements();
+        _populate_boundary_elements();
     }
 
         /**
