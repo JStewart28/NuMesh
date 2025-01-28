@@ -16,7 +16,7 @@ TYPED_TEST_SUITE(HaloTest, DeviceTypes);
 /**
  * Tests that halo of depth 1 works without any refinement
  */
-TYPED_TEST(HaloTest, test_halo_depth_1)
+TYPED_TEST(HaloTest, test_halo_depth_1_no_refinement)
 {
     int mesh_size = this->comm_size_ * 2;
     if (this->comm_size_ == 1)
@@ -26,7 +26,7 @@ TYPED_TEST(HaloTest, test_halo_depth_1)
     
     this->init(mesh_size, 1);
 
-    this->test_halo_depth_1();
+    this->test_halo_depth_1(0);
 }
 
 /**
@@ -58,7 +58,7 @@ TYPED_TEST(HaloTest, test_halo_depth_1_uniform_refinement)
         this->performRefinement(fin);
     }
 
-    this->test_halo_depth_1();
+    this->test_halo_depth_1(1);
 }
 
 /**
@@ -90,7 +90,7 @@ TYPED_TEST(HaloTest, test_halo_depth_2_uniform_refinement)
         this->performRefinement(fin);
     }
 
-    this->test_halo_depth_1();
+    this->test_halo_depth_1(1);
 }
 
 } // end namespace NuMeshTest

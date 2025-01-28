@@ -46,8 +46,12 @@ class HaloTest : public Mesh2DTest<T>
      * checking that for any boundary element that points to
      * unowned vertices, edges, or faces, those elements are ghosted
      * in their respective AoSoA after the gather.
+     * 
+     * @param check_vert_connectivity 1 if should check if
+     *  all vertices are connected to at least 6 faces.
+     *  Only is true with uniform refinement.
      */
-    void test_halo_depth_1()
+    void test_halo_depth_1(int check_vert_connectivity)
     {
         const int rank = this->rank_;
 
@@ -103,16 +107,8 @@ class HaloTest : public Mesh2DTest<T>
             // Each vert should be connected to at least six faces
             // NOTE: This only holds with uniform refinement
             int connected_faces = next_offset - offset;
-            if (connected_faces < 6)
-            {
-                for (int i = offset; i < next_offset; i++)
-                {
-                    int parent_face_lid = indices(i);
-                    int fgid_parent = f_gid(parent_face_lid);
-                    printf("R%d: vgid %d: connected face %d\n", rank, vgid, fgid_parent);
-                }
-            }
-            ASSERT_GE(connected_faces, 6) << "VGID " << vgid << " is connected to " << connected_faces << " faces\n";
+            if (check_vert_connectivity)
+                ASSERT_GE(connected_faces, 6) << "VGID " << vgid << " is connected to " << connected_faces << " faces\n";
 
             while (offset < next_offset)
             {

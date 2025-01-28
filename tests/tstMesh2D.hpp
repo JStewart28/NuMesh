@@ -101,9 +101,9 @@ class Mesh2DTest : public ::testing::Test
      */
     void copytoHost()
     {
-        auto vertices_ptr = mesh_->vertices();
-        auto edges_ptr = mesh_->edges();
-        auto faces_ptr = mesh_->faces();
+        auto& vertices_ptr = mesh_->vertices();
+        auto& edges_ptr = mesh_->edges();
+        auto& faces_ptr = mesh_->faces();
 
         vertices.resize(vertices_ptr.size());
         edges.resize(edges_ptr.size());

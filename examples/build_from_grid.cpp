@@ -82,7 +82,7 @@ int main( int argc, char* argv[] )
     auto vef_gid_start = mesh->vef_gid_start();
 
     // Uniform refinement
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 1; i++)
     {
         int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
         int face_gid_start = vef_gid_start(rank, 2);
@@ -109,6 +109,7 @@ int main( int argc, char* argv[] )
     auto v_gid = Cabana::slice<V_GID>(vertices);
     auto f_gid = Cabana::slice<F_GID>(faces);
     printf("R%d: verts size: %d\n", rank, vertices.size());
+    printf("R%d: num faces: %d\n", rank, faces.size());
     // Iterate over all owned vertices
     for (int vlid = 0; vlid < (int) vertices.size(); vlid++)
     {
@@ -126,15 +127,15 @@ int main( int argc, char* argv[] )
         // Each vert should be connected to at least six faces
         // NOTE: This only holds with uniform refinement
         int connected_faces = next_offset - offset;
-        if (connected_faces < 6)
-        {
+        // if (connected_faces < 6)
+        // {
             for (int i = offset; i < next_offset; i++)
             {
                 int parent_face_lid = indices(i);
                 int fgid_parent = f_gid(parent_face_lid);
-                printf("R%d: vgid %d: connected face %d\n", rank, vgid, fgid_parent);
+                if (vgid == 16) printf("R%d: vgid %d: connected face %d\n", rank, vgid, fgid_parent);
             }
-        }
+        // }
     }
 
 
