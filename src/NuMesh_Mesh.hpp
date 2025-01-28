@@ -26,8 +26,9 @@
 // Constants for tuple/slice indices
 #if AOSOA_SLICE_INDICES
     #define V_XYZ 0
-    #define V_GID 1
-    #define V_OWNER 2
+    #define V_VORT 1
+    #define V_GID 2
+    #define V_OWNER 3
     #define E_VIDS 0
     #define E_CIDS 1
     #define E_PID 2
@@ -73,6 +74,7 @@ class Mesh
 
     // Note: Larger types should be listed first
     using vertex_data = Cabana::MemberTypes<int[3],    // XYZ coordinates of vertex
+                                            int[2],    // XY vorticity
                                             int,       // Vertex global ID                                 
                                             int,       // Owning rank
                                             >;
