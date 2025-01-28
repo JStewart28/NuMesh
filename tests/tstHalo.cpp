@@ -26,7 +26,7 @@ TYPED_TEST(HaloTest, test_halo_depth_1_no_refinement)
     
     this->init(mesh_size, 1);
 
-    this->test_halo_depth_1(0);
+    this->test_halo_depth_1(1);
 }
 
 /**

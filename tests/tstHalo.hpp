@@ -115,7 +115,6 @@ class HaloTest : public Mesh2DTest<T>
                 // Check that we have the data for each face and all its children faces
                 int parent_face_lid = indices(offset);
                 int fgid_parent = f_gid(parent_face_lid);
-                // if (rank == 0) printf("R%d: vgid %d: checking fgid %d\n", rank, vgid, fgid_parent);
                 
                 // Queue for children
                 const int capacity = 86;
@@ -141,13 +140,15 @@ class HaloTest : public Mesh2DTest<T>
                     for (int i = 0; i < 3; ++i)
                     {
                         int vid = f_vids(flid, i);
-                        ASSERT_NE(vid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
+                        int vlid = NuMesh::Utils::get_lid(v_gid, vid, 0, total_verts);
+                        ASSERT_NE(vlid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
                     }
 
                     // Check edges of this face
                     for (int i = 0; i < 3; ++i)
                     {
                         int eid = f_eids(flid, i);
+                        int elid = NuMesh::Utils::get_lid(e_gid, eid, 0, total_edges);
                         ASSERT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing egid " << eid << std::endl;
                     }     
 
