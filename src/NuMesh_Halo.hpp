@@ -289,6 +289,11 @@ class Halo
         MapType edge_distributor_map(edge_distributor_size);
         MapType vert_halo_map(vhalo_size);
         MapType edge_halo_map(ehalo_size);
+        /**
+         * The face_halo_map is different:
+         * Used track which faces (and the vertex and edge data they hold)
+         * must be sent to which remote processes
+         */
         MapType face_halo_map(fhalo_size);
 
         // Counters
@@ -312,8 +317,14 @@ class Halo
         auto face_halo_export_lids = Cabana::slice<0>(face_halo_export);
         auto face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
 
-        // _mesh->printFaces(1, 46);
-        // Iterate over boundary faces
+        /**
+         * Iterate over boundary faces. For each boundary face, check if any vertices
+         * on it are owned by another process.
+         * If so, hash the (fgid, vert_owner) tuple into face_halo_map 
+         * AND hash all children faces of this face into face_halo_map,
+         *  to the same vert_owner.
+         * ALSO add all vertices and edges of these faces to the halos and distributors
+         */
         Kokkos::parallel_for("boundary face iteration", Kokkos::RangePolicy<execution_space>(0, num_boundary_faces),
             KOKKOS_LAMBDA(int face_idx) {
             
@@ -323,52 +334,53 @@ class Halo
             // if (rank == 0) printf("R%d: boundary face gid: %d, level: %d\n", rank, fgid_parent, face_level);
             if (face_level != level) return; // Only consider elements at our level and their children
 
-            // Queue for children (local per thread)
-            const int capacity = 86;
-            int queue[capacity]; // Adjust size as needed
-            int front = 0, back = 0;
-
-            // Initialize queue with the current face
-            queue[back] = fgid_parent;
-            back = (back + 1) % capacity;
-
-            // Traverse children iteratively
-            while (front != back)
+            // Consider each vertex of this face
+            for (int i = 0; i < 3; i++)
             {
-                // Dequeue
-                int fgid = queue[front];
-                front = (front + 1) % capacity;
-                
-                int flid = fgid - vef_gid_start_d(rank, 2);
+                const int vgid_parent = f_vid(flid_parent, i);
+                int vert_owner = Utils::owner_rank(Vertex(), vgid_parent, vef_gid_start_d);
 
-                // if (rank == 0) printf("R%d, fg/lid %d, %d\n", rank, fgid, flid);              
-
-                // Process the face
-                for (int i = 0; i < 3; i++)
+                // If unowned vertex, add this face and all child faces to
+                // send to vert_owner
+                if (vert_owner != rank)
                 {
-                    KeyType hash_key;
-                    const int vgid = f_vid(flid, i);
-                    const int vert_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
-                    // if (rank == 1) printf("R%d: checking (R%d, vgid %d) to distributor\n", rank, vert_owner, vgid);
-                    // if (rank == 0) printf("R%d, fgid %d, i%d: vert %d, owner: %d\n", rank, fgid, i, vgid, vert_owner);
-                    if (vert_owner != rank)
-                    {
-                        // Add this vert to the distributor
-                        // but first check that it is not already present
-                        hash_key = hashFunction(vgid, vert_owner);
-                        auto result = vert_distributor_map.insert(hash_key, 1);
-                        if (result.success()) {
-                            // If insertion succeeds; tuple not present; add to AoSoA
-                            int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
-                            assert(dvdx < vert_distributor_size);
-                            vert_distributor_export_gids(dvdx) = vgid;
-                            vert_distributor_export_from_ranks(dvdx) = rank;
-                            vert_distributor_export_to_ranks(dvdx) = vert_owner;
-                            // if (rank == 1) printf("R%d: adding (R%d, vgid %d) to distributor\n", rank, vert_owner, vgid);
-                        }
-                       
-                        // if (fgid == 121) printf("R%d: from fgid %d adding to dist vgid %d: (to R%d)\n", rank, fgid, vgid, vert_owner);
+                    // Add this vert to the distributor
+                    // but first check that it is not already present
+                    auto hash_key = hashFunction(vgid_parent, vert_owner);
+                    auto result = vert_distributor_map.insert(hash_key, 1);
+                    if (result.success()) {
+                        // If insertion succeeds; tuple not present; add to AoSoA
+                        int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
+                        assert(dvdx < vert_distributor_size);
+                        vert_distributor_export_gids(dvdx) = vgid_parent;
+                        vert_distributor_export_from_ranks(dvdx) = rank;
+                        vert_distributor_export_to_ranks(dvdx) = vert_owner;
+                        // if (rank == 1) printf("R%d: adding (R%d, vgid %d) to distributor\n", rank, vert_owner, vgid);
+                    }
 
+                    // Queue for children (local per thread), that will all go to the remote rank
+                    const int capacity = 86;
+                    int queue[capacity]; // Adjust size as needed
+                    int front = 0, back = 0;
+
+                    // Initialize queue with the parent face
+                    queue[back] = fgid_parent;
+                    back = (back + 1) % capacity;
+
+                    // Traverse children iteratively
+                    while (front != back)
+                    {
+                        // Dequeue
+                        int fgid = queue[front];
+                        front = (front + 1) % capacity;
+                        
+                        int flid = fgid - vef_gid_start_d(rank, 2);
+                        assert(flid > -1);
+
+                        /************************
+                         * Process the face
+                         ***********************/
+                       
                         // Add this face to the halo to send to the given vertex owner
                         hash_key = hashFunction(flid, vert_owner);
                         result = face_halo_map.insert(hash_key, 1);
@@ -379,9 +391,7 @@ class Halo
                             face_halo_export_lids(fdx) = flid;
                             face_halo_export_ranks(fdx) = vert_owner;
                         }
-                        
-                        // if (fgid == 121 || fgid == 94) printf("R%d: Adding fgid %d to R%d from vert %d\n", rank, fgid, vert_owner, vgid);
-                        
+                                                
                         // Add owned edges
                         for (int j = 0; j < 3; j++)
                         {
@@ -440,20 +450,20 @@ class Halo
                             
                             // if (rank == 1) printf("R%d: sending vgid %d to %d\n", rank, vgid1, vert_owner);
                         }
-                        // Can't break loop in case a face has two unowned vertices
-                    }
-                }
 
-                for (int j = 0; j < 4; j++)
-                {
-                    int fcgid = f_cid(flid, j);
-                    // Enqueue child if it exists
-                    if (fcgid != -1) { // -1 indicates no child
-                        queue[back] = fcgid;
-                        back = (back + 1) % capacity;
+                        // Enqueue child faces to be send to vert_owner rank
+                        for (int j = 0; j < 4; j++)
+                        {
+                            int fcgid = f_cid(flid, j);
+                            // Enqueue child if it exists
+                            if (fcgid != -1) { // -1 indicates no child
+                                queue[back] = fcgid;
+                                back = (back + 1) % capacity;
 
-                        // Handle queue overflow (optional, if queue size is too small)
-                        assert(back != front);
+                                // Handle queue overflow (optional, if queue size is too small)
+                                assert(back != front);
+                            }
+                        }
                     }
                 }
             }
