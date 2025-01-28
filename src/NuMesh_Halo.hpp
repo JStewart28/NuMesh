@@ -331,7 +331,7 @@ class Halo
             int fgid_parent = boundary_faces(face_idx);
             int flid_parent = fgid_parent - vef_gid_start_d(rank, 2);
             int face_level = f_layer(flid_parent);
-            // if (rank == 0) printf("R%d: boundary face gid: %d, level: %d\n", rank, fgid_parent, face_level);
+            // if (rank == 2) printf("R%d: boundary face gid: %d, level: %d\n", rank, fgid_parent, face_level);
             if (face_level != level) return; // Only consider elements at our level and their children
 
             // Consider each vertex of this face
@@ -355,7 +355,7 @@ class Halo
                         vert_distributor_export_gids(dvdx) = vgid_parent;
                         vert_distributor_export_from_ranks(dvdx) = rank;
                         vert_distributor_export_to_ranks(dvdx) = vert_owner;
-                        // if (rank == 1) printf("R%d: adding (R%d, vgid %d) to distributor\n", rank, vert_owner, vgid);
+                        // if (fgid_parent == 376) printf("R%d: adding (R%d, vgid %d) to distributor\n", rank, vert_owner, vgid_parent);
                     }
 
                     // Queue for children (local per thread), that will all go to the remote rank
@@ -380,16 +380,17 @@ class Halo
                         /************************
                          * Process the face
                          ***********************/
-                       
+                        
                         // Add this face to the halo to send to the given vertex owner
-                        hash_key = hashFunction(flid, vert_owner);
-                        result = face_halo_map.insert(hash_key, 1);
+                        hash_key = hashFunction(fgid, vert_owner);
+                        result = face_halo_map.insert(hash_key, vert_owner);
                         if (result.success()) {
                             // If insertion succeeds; tuple not present; add to AoSoA
                             int fdx = Kokkos::atomic_fetch_add(&fh_idx(), 1);
                             assert(fdx < fhalo_size);
                             face_halo_export_lids(fdx) = flid;
                             face_halo_export_ranks(fdx) = vert_owner;
+                            // if (fgid == 376) printf("R%d: adding fgid %d to halo to R%d\n", rank, fgid, vert_owner);
                         }
                                                 
                         // Add owned edges
@@ -462,6 +463,8 @@ class Halo
 
                                 // Handle queue overflow (optional, if queue size is too small)
                                 assert(back != front);
+                                // if (fgid_parent == 326) printf("R%d: from fgid_parent %d, adding child %d\n",
+                                //     rank, fgid_parent, fcgid);
                             }
                         }
                     }
@@ -559,24 +562,77 @@ class Halo
             
         });
 
+        // Add all edges and their vertices, and their children to the halo
         Kokkos::parallel_for("add imported distributor edge data",
             Kokkos::RangePolicy<execution_space>(0, edge_distributor_total_num_import),
             KOKKOS_LAMBDA(int i) {
             
-            int egid = edge_distributor_import_gids(i);
-            int elid = egid - vef_gid_start_d(rank, 1);
+            int egid_parent = edge_distributor_import_gids(i);
             int from_rank = edge_distributor_import_from_ranks(i);
 
-            // Add to edge halo
-            KeyType hash_key = hashFunction(egid, from_rank);
-            auto result = edge_halo_map.insert(hash_key, 1);
-            if (result.success()) {
-                // If insertion succeeds; tuple not present; add to AoSoA
-                int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
-                assert(edx < ehalo_size);
-                edge_halo_export_lids(edx) = elid;
-                edge_halo_export_ranks(edx) = from_rank;
+            // Queue for children (local per thread), that will all go to the remote rank
+            const int capacity = 32;
+            int queue[capacity]; // Adjust size as needed
+            int front = 0, back = 0;
+
+            // Initialize queue with the parent face
+            queue[back] = egid_parent;
+            back = (back + 1) % capacity;
+
+            // Traverse children iteratively
+            while (front != back)
+            {
+                // Dequeue
+                int egid = queue[front];
+                front = (front + 1) % capacity;
+                
+                int elid = egid - vef_gid_start_d(rank, 1);
+                assert(elid > -1);
+                
+                // Add this edge to the halo to send to from_rank
+                KeyType hash_key = hashFunction(egid, from_rank);
+                auto result = edge_halo_map.insert(hash_key, 1);
+                if (result.success()) {
+                    // If insertion succeeds; tuple not present; add to AoSoA
+                    int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
+                    assert(edx < ehalo_size);
+                    edge_halo_export_lids(edx) = elid;
+                    edge_halo_export_ranks(edx) = from_rank;
+                }
+
+                // Add vertices on this edge to the halo to send to from_rank
+                for (int i = 0; i < 3; i++)
+                {
+                    int vgid = e_vid(elid, i);
+                    int vowner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
+                    if (vowner != rank) continue; // Can't export verts we don't own
+                    hash_key = hashFunction(vgid, from_rank);
+                    result = vert_halo_map.insert(hash_key, 1);
+                    if (result.success()) {
+                        // If insertion succeeds; tuple not present; add to AoSoA
+                        int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
+                        assert(vdx < vhalo_size);
+                        int vlid = vgid - vef_gid_start_d(rank, 0);
+                        vert_halo_export_lids(vdx) = vlid;
+                        vert_halo_export_ranks(vdx) = from_rank;
+                    }
+                }
+
+                // Enqueue child edges to be sent to vert_owner rank
+                for (int j = 0; j < 1; j++)
+                {
+                    int ecgid = e_cid(elid, j);
+                    // Enqueue child if it exists
+                    if (ecgid != -1) { // -1 indicates no child
+                        queue[back] = ecgid;
+                        back = (back + 1) % capacity;
+
+                        // Handle queue overflow (optional, if queue size is too small)
+                        assert(back != front);
+                    }
+                }
             }
+
             // if (edx > 85) printf("R%d: edx: %d\n", rank, edx);
             // if (rank == 2) printf("R%d: adding egid %d to halo to rank %d: el/gid: %d, %d\n", rank, egid, from_rank, elid, e_gid(elid));
             // if (vgid == 16 && from_rank == 3) printf("R%d: adding vgid %d to R%d to halo at vdx %d\n", rank, vgid, from_rank, vdx);
