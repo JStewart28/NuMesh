@@ -14,6 +14,9 @@ include(GNUInstallDirs)
 # Update the path that CMAKE will search for Find_XXX.cmake files
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# Enable debugging for all builds
+set(CMAKE_BUILD_TYPE Debug CACHE STRING "Choose the type of build." FORCE)
+
 ##---------------------------------------------------------------------------##
 ## Bring up the BLT tools
 ## We use LLNL BLT to help with building, linking, and testing on various HPC 

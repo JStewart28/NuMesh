@@ -227,6 +227,72 @@ int find_edge(Slice_t& edge_vert_slice, int start, int end, int v0, int v1)
     return -1;
 }
 
+/**
+ * Given:
+ *  - Three parent edge local IDs on a face
+ *  - Two middle of the three vertex global IDs of the parent edges
+ * Find the two parent edges that contain these middle
+ *  vertices and return the vertex these two parent edges share
+ */
+template <class Slice_t>
+KOKKOS_INLINE_FUNCTION
+int vertex_from_parent_edges(Slice_t e_vids, int elid0, int elid1, int elid2, int mid0, int mid1)
+{
+    // Access the vertex IDs of the three parent edges
+    int edge_endpoints[3][2] = {
+        {e_vids(elid0, 0), e_vids(elid0, 1)},  // Endpoint vertex IDs for edge elid0
+        {e_vids(elid1, 0), e_vids(elid1, 1)},  // Endpoint vertex IDs for edge elid1
+        {e_vids(elid2, 0), e_vids(elid2, 1)},  // Endpoint vertex IDs for edge elid2
+    };
+    int edge_midpoints[3] = {e_vids(elid0, 2), e_vids(elid1, 2), e_vids(elid2, 2)}; // Midpoint vertex IDs
+
+    // Find the two parent edges that contain mid0 and mid1
+    int p_contained[2] = {-1, -1}; // Store the indices of the edges containing midpoints
+    int x = 0;
+    for (int i = 0; i < 3; i++)
+    {
+        if (mid0 == edge_midpoints[i] || mid1 == edge_midpoints[i]) {
+            p_contained[x++] = i;
+            assert(x < 3); // Ensure no more than two edges match
+        }
+    }
+
+    // Find the vertex these two edges have in common
+    int shared_vertex = -1;
+    int edge0 = p_contained[0];
+    int edge1 = p_contained[1];
+    for (int i = 0; i < 2; i++) // Loop over vertices in edge0
+    {
+        for (int j = 0; j < 2; j++) // Loop over vertices in edge1
+        {
+            if (edge_endpoints[edge0][i] == edge_endpoints[edge1][j]) {
+                shared_vertex = edge_endpoints[edge0][i];
+                break;
+            }
+        }
+        if (shared_vertex != -1)
+            break;
+    }
+
+    // Return the shared vertex
+    return shared_vertex;
+}
+
+/**
+ * Given a parent edge local ID and a vertex global ID
+ * that is an endpoint of the edge
+ * 
+ * Return the global ID of the child edge that connects
+ *  to this endpoint
+ */
+// template <class Slice_t>
+// KOKKOS_INLINE_FUNCTION
+// int child_from_parent(Slice_t e_vids, Slict_t e_cids, int plid, int vgid)
+// {
+//     // Check the first child
+//     int child_
+// }
+
 } // end namespace Utils
 } // end namespce NuMesh
 

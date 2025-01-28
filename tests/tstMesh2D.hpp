@@ -97,6 +97,24 @@ class Mesh2DTest : public ::testing::Test
     }
 
     /**
+     * Copy vertex, edge, and face AoSoAs to host memory
+     */
+    void copytoHost()
+    {
+        auto vertices_ptr = mesh_->vertices();
+        auto edges_ptr = mesh_->edges();
+        auto faces_ptr = mesh_->faces();
+
+        vertices.resize(vertices_ptr.size());
+        edges.resize(edges_ptr.size());
+        faces.resize(faces_ptr.size());
+
+        Cabana::deep_copy(faces, faces_ptr);
+        Cabana::deep_copy(edges, edges_ptr);
+        Cabana::deep_copy(vertices, vertices_ptr);
+    }
+
+    /**
      * Gather the entire mesh to rank 0 and copy to host memory
      */
     void gatherAndCopyToHost()
@@ -486,11 +504,26 @@ class Mesh2DTest : public ::testing::Test
 
         for (int i = 0; i < lf+gf; i++)
         {
+            int egid0, egid1, egid2;
             int e0, e1, e2;
+            egid0 = f_eid(i, 0);
+            egid1 = f_eid(i, 1);
+            egid2 = f_eid(i, 2);
+
             e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), 0, edges.size());
             e1 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 1), 0, edges.size());
             e2 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 2), 0, edges.size());
-
+            // if (f_gid(i) == 258)
+            // {
+            //     int egid;
+            //     egid = f_eid(i, 0);
+            //     printf("egid: %d, endpoints: %d, %d\n", egid, e_vid(e0, 0), e_vid(e0, 1));
+            //     egid = f_eid(i, 1);
+            //     printf("egid: %d, endpoints: %d, %d\n", egid, e_vid(e1, 0), e_vid(e1, 1));
+            //     egid = f_eid(i, 2);
+            //     printf("egid: %d, endpoints: %d, %d\n", egid, e_vid(e2, 0), e_vid(e2, 1));
+            // }
+            
             ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e0, e1)) << "FGID " << f_gid(i) << "\n";
             ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e1, e2)) << "FGID " << f_gid(i) << "\n";
             ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e2, e0)) << "FGID " << f_gid(i) << "\n";

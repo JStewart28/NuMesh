@@ -62,8 +62,7 @@ TYPED_TEST(Mesh2DTest, test1_refinement)
 }
 
 /**
- * Tests three iterations of uniform refinement,
- * then two iterations of random refinement
+ * Tests two iterations of uniform refinement
  */
 TYPED_TEST(Mesh2DTest, test2_refinement)
 {

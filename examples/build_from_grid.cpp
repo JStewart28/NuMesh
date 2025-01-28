@@ -82,24 +82,84 @@ int main( int argc, char* argv[] )
     auto vef_gid_start = mesh->vef_gid_start();
 
     // Uniform refinement
-    // for (int i = 0; i < 2; i++)
-    // {
-    //     int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
-    //     int face_gid_start = vef_gid_start(rank, 2);
-    //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
-    //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
-    //         KOKKOS_LAMBDA(int i) {
+    for (int i = 0; i < 1; i++)
+    {
+        int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
+        int face_gid_start = vef_gid_start(rank, 2);
+        Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
+            KOKKOS_LAMBDA(int i) {
 
-    //             fin(i) = face_gid_start + i;
+                fin(i) = face_gid_start + i;
 
-    //         });
-    //     mesh->refine(fin);
-    // }
+            });
+        mesh->refine(fin);
+    }
+    // if (rank == 0) mesh->printFaces(0, 258);
+    auto halo = NuMesh::createHalo(mesh, 0, 1);
+    halo.gather();
+    // if (rank == 0) mesh->printFaces(0, 259);
+    mesh->printFaces(1, 219);
+    mesh->printFaces(1, 166);
+    // mesh->printFaces(1, 261);
+    // mesh->printFaces(1, 52);
+    // mesh->printFaces(1, 0);
 
+    // // Face 0
+    // mesh->printEdges(1, 0);
+    // mesh->printEdges(1, 5);
+    // mesh->printEdges(1, 1);
+
+    // // Face 52
+    // mesh->printEdges(1, 226);
+    // mesh->printEdges(1, 86);
+    // mesh->printEdges(1, 78);
+
+    // // Face 258
+    // mesh->printEdges(1, 677);
+    // mesh->printEdges(1, 983);
+    
+    /**
+     * Face 258 has issue. Parent face is 52
+     * Parent face of 52 is 0.
+     */
+    
+    
+    // mesh->printFaces(1, 258);
+    // mesh->printEdges(1, 677);
+    // mesh->printEdges(1, 983);
+    // mesh->printEdges(1, 0);
+
+    // auto halo = NuMesh::createHalo(mesh, 0, 1);
+    // halo.gather();
+    // printf("R%d: finished no refinement gather\n", rank);
+
+    // Single refinement
+    // int sizerefine = 1;
+    // Kokkos::View<int*, memory_space> fin("fin", sizerefine);
+    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, sizerefine),
+    //     KOKKOS_LAMBDA(int i) {
+
+    //         fin(i) = 94;
+
+    //     });
+    // mesh->refine(fin);
+    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, sizerefine),
+    //     KOKKOS_LAMBDA(int i) {
+
+    //         fin(i) = 96;
+
+    //     });
+    // mesh->refine(fin);
+    // mesh->printFaces(1, 94);
     // Test haloing
-    auto v2e = NuMesh::Maps::V2E(mesh);
-    auto v2f = NuMesh::Maps::V2F(mesh);
-    auto halo = NuMesh::createHalo(mesh, NuMesh::Edge(), 0, 2, 100);
+    // auto v2e = NuMesh::Maps::V2E(mesh);
+    // auto v2f = NuMesh::Maps::V2F(mesh);
+    
+
+    // printf("R%d: finished gather 1\n", rank);
+
+    // halo.gather();
 
     // mesh->printFaces(0, 0);
 

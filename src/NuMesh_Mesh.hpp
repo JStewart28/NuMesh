@@ -112,6 +112,8 @@ class Mesh
 
         _version = 0;
 
+        _max_depth = 0;
+
         _vef_gid_start = Kokkos::View<int*[3], Kokkos::HostSpace>("_vef_gid_start", _comm_size);
         Kokkos::deep_copy(_vef_gid_start, -1);
 
@@ -155,6 +157,7 @@ class Mesh
         auto e_gid = Cabana::slice<E_GID>(_edges);
         auto f_vids = Cabana::slice<F_VIDS>(_faces);
         auto f_gid = Cabana::slice<F_GID>(_faces);
+        auto f_level = Cabana::slice<F_LAYER>(_faces);
         const int rank = _rank;
 
         // Copy _vef_gid_start to device
@@ -187,12 +190,13 @@ class Mesh
                 }
             }
         });
-
         // Identify faces
         Kokkos::View<bool*, memory_space> is_b_face("is_b_face", _owned_faces);
         Kokkos::deep_copy(is_b_face, false);
         Kokkos::parallel_for("find", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
             KOKKOS_LAMBDA(int i) {
+
+            // if (rank == 0) printf("R%d: checking fgid %d, level %d\n", rank, f_gid(i), f_level(i));
 
             for (int v = 0; v < 3; v++)
             {
@@ -238,7 +242,6 @@ class Mesh
                 local_count += 1;
             }
         }, num_b_faces);
-
 
         // Populate neighbors
         Kokkos::View<int*, memory_space> neighbors("neighbors", num_neighbors);
@@ -402,8 +405,8 @@ class Mesh
     void _finializeInit()
     {
         _createFaces();
-        _sort_by_layer();
-        _populate_boundary_elements();
+        // _sort_by_layer();
+        // _populate_boundary_elements();
     }
 
         /**
@@ -495,10 +498,11 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             int f_lid = fgids(i) - _vef_gid_start_d(rank, 2);
+
             if ((f_lid >= 0) && (f_lid < owned_faces)) // Make sure we own the face
             {
                 // If a face has already been refined (i.e. has children), don't refine it again
-                if (f_cid_slice0(f_lid, 0) == -1) return;
+                if (f_cid_slice0(f_lid, 0) != -1) return;
 
                 int index = Kokkos::atomic_fetch_add(&face_counter(), 1);
                 local_face_lids(index) = f_lid;
@@ -880,7 +884,8 @@ class Mesh
         //     printEdges(3, 0);
         // }
 
-        // Update lambda capture variables
+        // Update class and lambda capture variables
+        _owned_edges = edge_halo.numLocal(); _ghost_edges = edge_halo.numGhost();
         owned_edges = _owned_edges; ghost_edges = _ghost_edges;
         int num_edges = owned_edges + ghost_edges;
         // Populate the three new, internal edges for each face
@@ -981,8 +986,8 @@ class Mesh
             int parent_face_gid = parent_face_lid + _vef_gid_start_d(rank, 2);
             int layer = f_layer(parent_face_lid) + 1;
             int offset = Kokkos::atomic_fetch_add(&face_counter(), 4);
-            int new_face_lid;
-            int new_face_gid;
+            int new_face_lid, new_face_gid;
+            int num_edges = owned_edges + ghost_edges; // Edge AoSoA size
 
             // Start with values similar to all new faces; can be looped
             for (int j = offset; j < offset+4; j++)
@@ -1007,133 +1012,113 @@ class Mesh
 
                 // Parent
                 f_pid(new_face_lid) = parent_face_gid;
+
+                // printf("R%d: Adding fgid %d from parent face %d\n", rank, new_face_gid, parent_face_gid);
             }
 
-            /*****************************
-             * Edges, in general:
-             *  Edge 0: V0 -> V1
-             *  Edge 1: V1 -> V2
-             *  Edge 2: V2 -> V0
-             ****************************/
-            // Vertex global IDs and edge local IDs
-            int vg0, vg1, vg2, el0, el1, el2;
-            int num_edges = owned_edges + ghost_edges; // Edge AoSoA size
+            // Get the vertex GIDs of the three new vertices created from the parent face edges
+            int parent_eg0, parent_eg1, parent_eg2, parent_el0, parent_el1, parent_el2;
+            int vg_mid0, vg_mid1, vg_mid2;
+            parent_eg0 = f_eid(parent_face_lid, 0);
+            parent_eg1 = f_eid(parent_face_lid, 1);
+            parent_eg2 = f_eid(parent_face_lid, 2);
+            parent_el0 = Utils::get_lid(e_gid, parent_eg0, 0, num_edges);
+            assert(parent_el0 != -1);
+            parent_el1 = Utils::get_lid(e_gid, parent_eg1, 0, num_edges);
+            assert(parent_el1 != -1);
+            parent_el2 = Utils::get_lid(e_gid, parent_eg2, 0, num_edges);
+            assert(parent_el2 != -1);
+            vg_mid0 = e_vid(parent_el0, 2); vg_mid1 = e_vid(parent_el1, 2); vg_mid2 = e_vid(parent_el2, 2);
+            // printf("R%d: vgmid 0/1/2: %d, %d, %d\n", rank, vg_mid0, vg_mid1, vg_mid2);
+            // printf("R%d: parent eg 0/1/2: %d, %d, %d\n", rank, parent_eg0, parent_eg1, parent_eg2);
+            
+            // Get the local and global IDs of the new edges that connect the new vertices
+            int new_eg0, new_eg1, new_eg2, new_el0, new_el1, new_el2;
+            // printf("R%d: vgmid0: %d, vg_mid1: %d\n", rank, vg_mid0, vg_mid1);
+            new_el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid0, vg_mid1);
+            assert(new_el0 != -1);
+            new_el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid1, vg_mid2);
+            assert(new_el1 != -1);
+            new_el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid0, vg_mid2);
+            assert(new_el2 != -1);
+            new_eg0 = e_gid(new_el0); new_eg1 = e_gid(new_el1); new_eg2 = e_gid(new_el2);
+            // printf("R%d: new eg 0/1/2: %d, %d, %d\n", rank, new_eg0, new_eg1, new_eg2);
 
-            /******************************
-             * Face 0 verts:
-             *  V0: Parent face e0, v0
-             *  V1: Parent face e0, middle vert
-             *  V2: Parent face e2, middle vert
-             *****************************/
+            /******************************************************
+             * Face 0: The face created from all new vertices and
+             *  new edges without parents
+             *****************************************************/
             new_face_lid = f_new_lid_start + offset;
-            el0 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
-            assert(el0 != -1);
-            vg0 = e_vid(el0, 0);
-            vg1 = e_vid(el0, 2);
-            el2 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
-            assert(el2 != -1);
-            vg2 = e_vid(el2, 2);
-            el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
-            f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
-            f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2);
-            // if (f_gid(new_face_lid) == 296)
-            // {
-            //     printf("Face 0: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            // }
+            f_vid(new_face_lid, 0) = vg_mid0; f_vid(new_face_lid, 1) = vg_mid1; f_vid(new_face_lid, 2) = vg_mid2;
+            f_eid(new_face_lid, 0) = new_eg0; f_eid(new_face_lid, 1) = new_eg1; f_eid(new_face_lid, 2) = new_eg2; 
 
-            /******************************
-             * Face 1 verts:
-             *  V0: Parent face e0, middle vert
-             *  V1: Parent face e1, middle vert
-             *  V2: Parent face e0, v1
-             *****************************/
+            // The vertex GID on faces 1, 2, and 3 that is not a middle vertex
+            int vg_outer;
+
+            // The edge local IDs on faces 1, 2, and 3 that 
+            // do not connect two middle vertices
+            int el_outer0, el_outer1;
+
+            /******************************************************
+             * Face 1: The face that shares inner edge 0
+             *  (verts vg_mid0 and vg_mid1) of Face 0
+             *****************************************************/
             new_face_lid = f_new_lid_start + offset + 1;
-            el0 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
-            assert(el0 != -1);
-            vg0 = e_vid(el0, 2);
-            el1 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
-            assert(el1 != -1);
-            vg1 = e_vid(el1, 2);
-            vg2 = e_vid(el0, 1);
-            el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
-            f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2; 
-            f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            // if (f_gid(new_face_lid) == 296)
-            // {
-            //     printf("Face 1: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            // }
+            vg_outer = Utils::vertex_from_parent_edges(e_vid, parent_el0, parent_el1, parent_el2,
+                                                       vg_mid0, vg_mid1);
+            // printf("R%d: mid0: %d, mid1: %d, outer: %d\n", rank, vg_mid0, vg_mid1, vg_outer);
+            // Get the edge LIDs that connect to vg_outer
+            el_outer0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid0, vg_outer);
+            // printf("R%d: vgmid0: %d, vg_outer: %d\n", rank, vg_mid0, vg_outer);
+            assert(el_outer0 != -1);
+            el_outer1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid1, vg_outer);
+            assert(el_outer1 != -1);
+            // Assign values
+            f_vid(new_face_lid, 0) = vg_mid0; f_vid(new_face_lid, 1) = vg_mid1; f_vid(new_face_lid, 2) = vg_outer;
+            f_eid(new_face_lid, 0) = new_eg0; f_eid(new_face_lid, 1) = e_gid(el_outer0); f_eid(new_face_lid, 2) = e_gid(el_outer1);
 
-            /******************************
-             * Face 2 verts:
-             *  V0: Parent face e2, middle vert
-             *  V1: Parent face e1, middle vert
-             *  V2: Parent face e2, v1
-             *****************************/
+            /******************************************************
+             * Face 2: The face that shares inner edge 1
+             *  (verts vg_mid1 and vg_mid2) of Face 0
+             *****************************************************/
             new_face_lid = f_new_lid_start + offset + 2;
-            el2 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
-            assert(el2 != -1);
-            vg0 = e_vid(el2, 2);
-            el1 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
-            assert(el1 != -1);
-            vg1 = e_vid(el1, 2);
-            vg2 = e_vid(el2, 1);
-            // printf("Verts: %d, %d, %d\n", vg0, vg1, vg2);
-            el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
-            f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
-            f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            // if (f_gid(new_face_lid) == 296)
-            // {
-            //     printf("Face 2: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            // }
-
-
-            /******************************
-             * Face 3 verts:
-             *  V0: Parent face e0, middle vert
-             *  V1: Parent face e1, middle vert
-             *  V2: Parent face e2, middle vert
-             *****************************/
+            vg_outer = Utils::vertex_from_parent_edges(e_vid, parent_el0, parent_el1, parent_el2,
+                                                       vg_mid1, vg_mid2);
+            // Get the edge LIDs that connect to vg_outer
+            el_outer0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid1, vg_outer);
+            assert(el_outer0 != -1);
+            el_outer1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid2, vg_outer);
+            assert(el_outer1 != -1);
+            // Assign values
+            f_vid(new_face_lid, 0) = vg_mid1; f_vid(new_face_lid, 1) = vg_mid2; f_vid(new_face_lid, 2) = vg_outer;
+            f_eid(new_face_lid, 0) = new_eg1; f_eid(new_face_lid, 1) = e_gid(el_outer0); f_eid(new_face_lid, 2) = e_gid(el_outer1);
+           
+            /******************************************************
+             * Face 3: The face that shares inner edge 2
+             *  (verts vg_mid0 and vg_mid2) of Face 0
+             *****************************************************/
             new_face_lid = f_new_lid_start + offset + 3;
-            el0 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 0), 0, num_edges);
-            assert(el0 != -1);
-            vg0 = e_vid(el0, 2);
-            el1 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 1), 0, num_edges);
-            assert(el1 != -1);
-            vg1 = e_vid(el1, 2);
-            el2 = Utils::get_lid(e_gid, f_eid(parent_face_lid, 2), 0, num_edges);
-            assert(el2 != -1);
-            vg2 = e_vid(el2, 2);
-            // printf("Verts: %d, %d, %d\n", vg0, vg1, vg2);
-            el0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg0, vg1);
-            el1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg1, vg2);
-            el2 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg2, vg0);
-            f_vid(new_face_lid, 0) = vg0; f_vid(new_face_lid, 1) = vg1; f_vid(new_face_lid, 2) = vg2;
-            f_eid(new_face_lid, 0) = e_gid(el0); f_eid(new_face_lid, 1) = e_gid(el1); f_eid(new_face_lid, 2) = e_gid(el2); 
-            // if (f_gid(new_face_lid) == 296)
-            // {
-            //     printf("Face 3: FGID: %d, v(%d, %d, %d), e(%d, %d, %d)\n", f_gid(new_face_lid),
-            //         vg0, vg1, vg2, f_eid(parent_face_lid, 0), f_eid(parent_face_lid, 1), f_eid(parent_face_lid, 2));
-            // }
+            vg_outer = Utils::vertex_from_parent_edges(e_vid, parent_el0, parent_el1, parent_el2,
+                                                       vg_mid0, vg_mid2);
+            // Get the edge LIDs that connect to vg_outer
+            el_outer0 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid0, vg_outer);
+            assert(el_outer0 != -1);
+            el_outer1 = Utils::find_edge(e_vid, e_new_lid_start, num_edges, vg_mid2, vg_outer);
+            assert(el_outer1 != -1);
+            // Assign values
+            f_vid(new_face_lid, 0) = vg_mid0; f_vid(new_face_lid, 1) = vg_mid2; f_vid(new_face_lid, 2) = vg_outer;
+            f_eid(new_face_lid, 0) = new_eg2; f_eid(new_face_lid, 1) = e_gid(el_outer0); f_eid(new_face_lid, 2) = e_gid(el_outer1);
+
         });
-        // if (rank == 0) printFaces(0, 0);
-        // printFaces(1, 345);
 
         // if (rank == 0)
         // {
         //     printf("***************AFTER***************\n");
         //     printEdges(3, 0);
-        //     // 162, 163
+        //     // find verts 30, 103
         //     // verts 25, -1; -1, 26
         // }
+        // printf("R%d: end of refine: num faces: %d\n", rank, _faces.size());
 
     }
   
@@ -1225,6 +1210,7 @@ class Mesh
         auto f_gid = Cabana::slice<F_GID>(_faces);
         auto f_cid = Cabana::slice<F_CID>(_faces);
         auto f_eid = Cabana::slice<F_EIDS>(_faces);
+        auto f_vid = Cabana::slice<F_VIDS>(_faces);
         auto f_pid = Cabana::slice<F_PID>(_faces);
         Kokkos::parallel_for("update face GIDs", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
             KOKKOS_LAMBDA(int i) {
@@ -1242,6 +1228,12 @@ class Mesh
             for (int j = 0; j < 3; j++)
             {
                 Utils::updateGlobalID(Edge(), &f_eid(i, j), vef_gid_start_d, old_vef_start_d);
+            }
+
+            // Vertex association GIDs
+            for (int j = 0; j < 3; j++)
+            {
+                Utils::updateGlobalID(Vertex(), &f_vid(i, j), vef_gid_start_d, old_vef_start_d);
             }
 
             // Parent face
@@ -1522,6 +1514,10 @@ class Mesh
             }
         });
         Kokkos::fence();
+
+        // All initialized faces are on the same level
+        _max_depth = 0;
+
         _finializeInit();
     }
         
@@ -1537,20 +1533,31 @@ class Mesh
     void refine(View& fgids)
     {
         _refineFaces(fgids);
-        _sort_by_layer();
+
+        // Increase max tree depth by 1
+        _max_depth++;
+
+        // _sort_by_layer();
         _populate_boundary_elements();
     }
     
-    v_array_type vertices() {return _vertices;}
-    e_array_type edges() {return _edges;}
-    f_array_type faces() {return _faces;}
+    v_array_type& vertices() {return _vertices;}
+    e_array_type& edges() {return _edges;}
+    f_array_type& faces() {return _faces;}
 
+    int depth() {return _max_depth;}
     int count(Own, Vertex) {return _owned_vertices;}
     int count(Own, Edge) {return _owned_edges;}
     int count(Own, Face) {return _owned_faces;}
     int count(Ghost, Vertex) {return _ghost_vertices;}
     int count(Ghost, Edge) {return _ghost_edges;}
     int count(Ghost, Face) {return _ghost_faces;}
+    void set(Own, Vertex, int x) { _owned_vertices = x; }
+    void set(Own, Edge, int x) { _owned_edges = x; }
+    void set(Own, Face, int x) { _owned_faces = x; }
+    void set(Ghost, Vertex, int x) { _ghost_vertices = x; }
+    void set(Ghost, Edge, int x) { _ghost_edges = x; }
+    void set(Ghost, Face, int x) { _ghost_faces = x; }
 
     MPI_Comm comm() {return _comm;}
     int version() {return _version;}
@@ -1595,7 +1602,7 @@ class Mesh
             if ((elid >= 0) && (elid < owned_edges))
             {
             int i = elid;
-            printf("i%d, %d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
+            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
                 e_children(i, 0), e_children(i, 1),
@@ -1611,7 +1618,7 @@ class Mesh
         Kokkos::parallel_for("print edges", Kokkos::RangePolicy<execution_space>(start, end),
             KOKKOS_LAMBDA(int i) {
             
-            printf("i%d, %d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
+            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
                 e_children(i, 0), e_children(i, 1),
@@ -1692,6 +1699,9 @@ class Mesh
 
     // Version number to keep mesh in sync with other objects. Updates on mesh refinement
     int _version;
+
+    // Max depth of tree
+    int _max_depth;
 };
 //---------------------------------------------------------------------------//
 
