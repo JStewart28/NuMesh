@@ -58,7 +58,7 @@ class ArrayLayout
         update();
     }
 
-    //! Get the local grid over which this layout is defined.
+    //! Get the mesh over which this layout is defined.
     const std::shared_ptr<mesh_type> mesh() const { return _mesh; }
 
     //! Get the number of degrees-of-freedom on each grid entity.
@@ -331,7 +331,7 @@ createArrayLayout( const std::shared_ptr<MeshType>& mesh,
 
 //---------------------------------------------------------------------------//
 /*!
-  \brief Array of field data on the local mesh.
+  \brief A wrapper around a slice of some data in the unstructured mesh
 
   \tparam Scalar Scalar type.
   \tparam EntityType Array entity type (vertex, edge, face).
@@ -386,7 +386,8 @@ class Array
       \brief Create an array with the given layout and view. This view should
       match the array index spaces in size.
       \param layout The layout of the array.
-      \param view The array data.
+      \param view The array data - this is a Cabana::slice, which
+                  is a wrapper around aKokkos::View
     */
     Array( const std::shared_ptr<array_layout>& layout, const view_type& view )
         : _layout( layout )
