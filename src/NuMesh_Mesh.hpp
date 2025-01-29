@@ -73,8 +73,8 @@ class Mesh
     using halo_type = Cabana::Grid::Halo<MemorySpace>;
 
     // Note: Larger types should be listed first
-    using vertex_data = Cabana::MemberTypes<int[3],    // XYZ coordinates of vertex
-                                            int[2],    // XY vorticity
+    using vertex_data = Cabana::MemberTypes<double[3],    // XYZ coordinates of vertex
+                                            double[2],    // XY vorticity
                                             int,       // Vertex global ID                                 
                                             int,       // Owning rank
                                             >;
