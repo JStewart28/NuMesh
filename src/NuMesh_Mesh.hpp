@@ -25,10 +25,8 @@
 
 // Constants for tuple/slice indices
 #if AOSOA_SLICE_INDICES
-    #define V_XYZ 0
-    #define V_VORT 1
-    #define V_GID 2
-    #define V_OWNER 3
+    #define V_GID 0
+    #define V_OWNER 1
     #define E_VIDS 0
     #define E_CIDS 1
     #define E_PID 2
@@ -73,9 +71,7 @@ class Mesh
     using halo_type = Cabana::Grid::Halo<MemorySpace>;
 
     // Note: Larger types should be listed first
-    using vertex_data = Cabana::MemberTypes<int[3],    // XYZ coordinates of vertex
-                                            int[2],    // XY vorticity
-                                            int,       // Vertex global ID                                 
+    using vertex_data = Cabana::MemberTypes<int,       // Vertex global ID                                 
                                             int,       // Owning rank
                                             >;
     using edge_data = Cabana::MemberTypes<  int[3],    // Vertex global IDs of edge: (endpoint, endpoint, midpoint)
@@ -1248,11 +1244,10 @@ class Mesh
      * by turning each (i, j) index into a vertex and creating edges between 
      * all eight neighbor vertices in the grid.
      * 
-     * Initializes XYZ and vorticity values on vertices from values in
-     * position_array and vorticity_array, respectively.
+     * The values in the array are not used
      */
     template <class CabanaArray>
-    void initializeFromArray( CabanaArray& position_array, CabanaArray& vorticity_array )
+    void initializeFromArray( CabanaArray& array )
     {
         static_assert( Cabana::Grid::is_array<CabanaArray>::value, "NuMesh::Mesh::initializeFromArray: Cabana::Grid::Array required" );
         
@@ -1261,7 +1256,7 @@ class Mesh
             std::cerr << "NuMesh::initializeFromArray only supports communicator sizes that are square numbers\n";
         }
 
-        auto local_grid = position_array.layout()->localGrid();
+        auto local_grid = array.layout()->localGrid();
         auto node_space = local_grid->indexSpace( Cabana::Grid::Own(), Cabana::Grid::Node(),
                                                 Cabana::Grid::Local() );
         
@@ -1291,8 +1286,6 @@ class Mesh
         // Initialize the vertices, edges, and faces
         auto v_gid = Cabana::slice<V_GID>(_vertices);
         auto v_owner = Cabana::slice<V_OWNER>(_vertices);
-        auto v_xyz = Cabana::slice<V_XYZ>(_vertices);
-        auto v_vort = Cabana::slice<V_VORT>(_vertices);
 
         auto e_vid = Cabana::slice<E_VIDS>(_edges); // VIDs from south to north, west to east vertices
         auto e_gid = Cabana::slice<E_GID>(_edges);
@@ -1326,8 +1319,7 @@ class Mesh
             e_layer(i) = 0;
         });
 
-        auto z = position_array.view();
-        auto w = vorticity_array.view();
+        auto z = array.view();
         Kokkos::parallel_for("populate_ve", Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>({{istart, jstart}}, {{iend, jend}}),
             KOKKOS_LAMBDA(int i, int j) {
 
@@ -1337,15 +1329,6 @@ class Mesh
             //printf("i/j/vid: %d, %d, %d\n", i, j, v_lid);
             v_gid(v_lid) = v_gid_;
             v_owner(v_lid) = rank;
-
-            // Initialize position
-            for (int dim = 0; dim < 3; dim++) {
-                v_xyz(v_lid, dim) = z(i, j, dim);
-            }
-            // Initialize vorticity
-            for (int dim = 0; dim < 2; dim++) {
-                v_vort(v_lid, dim) = w(i, j, dim);
-            }
 
             /* Initialize edges
              * Edges between vertices for their:

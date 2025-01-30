@@ -78,7 +78,7 @@ int main( int argc, char* argv[] )
 
     auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
-    mesh->initializeFromArray(*array, *array);
+    mesh->initializeFromArray(*array);
     auto vef_gid_start = mesh->vef_gid_start();
 
     // Uniform refinement
