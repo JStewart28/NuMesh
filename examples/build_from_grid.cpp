@@ -81,6 +81,10 @@ int main( int argc, char* argv[] )
     mesh->initializeFromArray(*array);
     auto vef_gid_start = mesh->vef_gid_start();
 
+    auto vertex_triple_layout = NuMesh::Array::createArrayLayout(mesh, 3, NuMesh::Vertex());
+    auto positions = NuMesh::Array::createArray<double, memory_space>("positions", vertex_triple_layout);
+    printf("R%d: before: positions: %d, verts: %d\n", rank, positions->view().extent(0), mesh->vertices().size());
+
     // Uniform refinement
     for (int i = 0; i < 1; i++)
     {
@@ -95,11 +99,13 @@ int main( int argc, char* argv[] )
             });
         mesh->refine(fin);
     }
+    positions->update();
+    printf("R%d: after: positions: %d, verts: %d\n", rank, positions->view().extent(0), mesh->vertices().size());
     // if (rank == 0) mesh->printFaces(0, 258);
-    auto halo = NuMesh::createHalo(mesh, 0, 1);
-    halo.gather();
-    mesh->printFaces(1, 376);
-    mesh->printFaces(1, 326);
+    // auto halo = NuMesh::createHalo(mesh, 0, 1);
+    // halo.gather();
+    // mesh->printFaces(1, 376);
+    // mesh->printFaces(1, 326);
     // auto v2f = NuMesh::Maps::V2F(mesh);
     // auto offsets_d = v2f.offsets();
     // auto indices_d = v2f.indices();

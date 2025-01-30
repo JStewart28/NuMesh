@@ -35,6 +35,8 @@ template <class EntityType, class MeshType>
 class ArrayLayout
 {
   public:
+    using memory_space = typename MeshType::memory_space;
+
     //! Entity type.
     using entity_type = EntityType;
 
@@ -54,10 +56,8 @@ class ArrayLayout
                  const int dofs_per_entity )
         : _mesh( mesh )
         , _dofs_per_entity( dofs_per_entity )
-        // , _vef_gid_start(mesh->vef_gid_start())
-    {
-        update();
-    }
+        , _vef_gid_start(mesh->vef_gid_start())
+    {}
 
     //! Get the mesh over which this layout is defined.
     const std::shared_ptr<mesh_type> mesh() const { return _mesh; }
@@ -84,7 +84,7 @@ class ArrayLayout
     {
         // Compute the size.
         std::array<long, 1> size;
-        size[0] = _owned_vertices;
+        size[0] = _mesh->count(Own(), Vertex());
         auto is = Cabana::Grid::IndexSpace<1>( size );
         return Cabana::Grid::appendDimension( is, _dofs_per_entity );
     }
@@ -100,7 +100,7 @@ class ArrayLayout
 
         // Compute the upper bound.
         std::array<long, 1> max;
-        max[0] = _owned_vertices + _ghost_vertices;
+        max[0] = _mesh->count(Own(), Vertex()) + _mesh->count(Ghost(), Vertex());
 
         auto is = Cabana::Grid::IndexSpace<1>( min, max );
         return Cabana::Grid::appendDimension( is, _dofs_per_entity );
@@ -113,7 +113,7 @@ class ArrayLayout
     {
         // Compute the size.
         std::array<long, 1> size;
-        size[0] = _owned_edges;
+        size[0] = _mesh->count(Own(), Edge());
         auto is = Cabana::Grid::IndexSpace<1>( size );
         return Cabana::Grid::appendDimension( is, _dofs_per_entity );
     }
@@ -129,7 +129,7 @@ class ArrayLayout
 
         // Compute the upper bound.
         std::array<long, 1> max;
-        max[0] = _owned_edges + _ghost_edges;
+        max[0] = _mesh->count(Own(), Edge()); + _mesh->count(Ghost(), Edge());;
 
         auto is = Cabana::Grid::IndexSpace<1>( min, max );
         return Cabana::Grid::appendDimension( is, _dofs_per_entity );
@@ -142,7 +142,7 @@ class ArrayLayout
     {
         // Compute the size.
         std::array<long, 1> size;
-        size[0] = _owned_faces;
+        size[0] = _mesh->count(Own(), Face());
         auto is = Cabana::Grid::IndexSpace<1>( size );
         return Cabana::Grid::appendDimension( is, _dofs_per_entity );
     }
@@ -157,7 +157,7 @@ class ArrayLayout
 
         // Compute the upper bound.
         std::array<long, 1> max;
-        max[0] = _owned_faces + _ghost_faces;
+        max[0] = _mesh->count(Own(), Face()) + _mesh->count(Ghost(), Face());
 
         auto is = Cabana::Grid::IndexSpace<1>( min, max );
         return Cabana::Grid::appendDimension( is, _dofs_per_entity );
@@ -182,7 +182,7 @@ class ArrayLayout
     {
         // Compute the size.
         std::array<long, 1> size;
-        size[0] = _owned_vertices;
+        size[0] = _mesh->count(Own(), Vertex());
         return Cabana::Grid::IndexSpace<1>( size );
     }
 
@@ -197,7 +197,7 @@ class ArrayLayout
 
         // Compute the upper bound.
         std::array<long, 1> max;
-        max[0] = _owned_vertices + _ghost_vertices;
+        max[0] = _mesh->count(Own(), Vertex()) + _mesh->count(Ghost(), Vertex());
 
         return Cabana::Grid::IndexSpace<1>( min, max );
     }
@@ -209,7 +209,7 @@ class ArrayLayout
     {
         // Compute the size.
         std::array<long, 1> size;
-        size[0] = _owned_edges;
+        size[0] = _mesh->count(Own(), Edge());
         return Cabana::Grid::IndexSpace<1>( size );
     }
 
@@ -224,7 +224,7 @@ class ArrayLayout
 
         // Compute the upper bound.
         std::array<long, 1> max;
-        max[0] = _owned_edges + _ghost_edges;
+        max[0] = _mesh->count(Own(), Edge()); + _mesh->count(Ghost(), Edge());
 
         return Cabana::Grid::IndexSpace<1>( min, max );
     }
@@ -236,7 +236,7 @@ class ArrayLayout
     {
         // Compute the size.
         std::array<long, 1> size;
-        size[0] = _owned_faces;
+        size[0] = _mesh->count(Own(), Face());
         return Cabana::Grid::IndexSpace<1>( size );
     }
 
@@ -250,7 +250,7 @@ class ArrayLayout
 
         // Compute the upper bound.
         std::array<long, 1> max;
-        max[0] = _owned_faces + _ghost_faces;
+        max[0] = _mesh->count(Own(), Face()) + _mesh->count(Ghost(), Face());
 
         return Cabana::Grid::IndexSpace<1>( min, max );
     }
@@ -263,33 +263,12 @@ class ArrayLayout
         return indexSpace(dt, entity_type(), it, e);
     }
 
-
-    int version() { return _version; }
-
-    /**
-     * Update to the latest owned and ghost counts from the mesh
-     */
-    void update()
-    {
-        _version = _mesh->version();
-        _owned_vertices = _mesh->count(Own(), Vertex());
-        _owned_edges = _mesh->count(Own(), Edge());
-        _owned_faces = _mesh->count(Own(), Face());
-        _ghost_vertices = _mesh->count(Ghost(), Vertex());
-        _ghost_edges= _mesh->count(Ghost(), Edge());
-        _ghost_faces = _mesh->count(Ghost(), Face());
-    }
-
-
   private:
     std::shared_ptr<mesh_type> _mesh;
     int _dofs_per_entity;
 
-    // Used to keep ArrayLayout in sync with mesh refinements
-    int _version;
-    int _owned_vertices, _owned_edges, _owned_faces, _ghost_vertices, _ghost_edges, _ghost_faces;
-
-    // Map indicies of ElementType in the mesh to indicies in any arrays created from this layout
+    // The global ID starts of vertices, edges, and faces that this layout is associated with
+    Kokkos::View<int*[3], memory_space> _vef_gid_start;
 };
 
 //! Array static type checker.
@@ -381,8 +360,9 @@ class Array
         : _layout( layout )
         , _data( Cabana::Grid::createView<value_type, Params...>(
               label, layout->indexSpace( Ghost(), entity_type(), Local() ) ) )
+        , _vef_gid_start( layout->mesh()->vef_gid_start())
     {
-        _version = _layout->version();
+        _version = _layout->mesh()->version();
     }
 
     /*!
@@ -395,12 +375,30 @@ class Array
     Array( const std::shared_ptr<array_layout>& layout, const view_type& view )
         : _layout( layout )
         , _data( view )
+        , _vef_gid_start( layout->mesh().vef_gid_start())
     {
         for ( std::size_t d = 0; d < num_space_dim + 1; ++d )
             if ( (long)view.extent( d ) !=
                  layout->indexSpace( Ghost(), Local() ).extent( d ) )
                 throw std::runtime_error(
                     "Layout and view dimensions do not match" );
+    }
+
+    //! Update the array to match the size of the new layout
+    void update()
+    {
+        if (_version == _layout->mesh()->version()) return;
+
+        // Resize the array
+        size_t new_size = _layout->indexSpace(Ghost(), EntityType(), Local()).extent(0);
+        // printf("Updating size: %d -> %d\n", _data.extent(0), new_size);
+        Kokkos::resize(_data, new_size);
+
+        // Update global ID starts
+        _vef_gid_start = _layout->mesh()->vef_gid_start();
+
+        // Update version
+        _version = _layout->mesh()->version();
     }
 
     //! Get the layout of the array.
@@ -421,6 +419,9 @@ class Array
 
     // The ArrayLayout version, which points to the mesh version, this array is sized for
     int _version;
+
+    // The global ID starts of vertices, edges, and faces that this layout is associated with
+    Kokkos::View<int*[3], memory_space> _vef_gid_start;
 
   public:
     //! Subview type.
