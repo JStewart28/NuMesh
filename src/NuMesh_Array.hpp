@@ -54,6 +54,7 @@ class ArrayLayout
                  const int dofs_per_entity )
         : _mesh( mesh )
         , _dofs_per_entity( dofs_per_entity )
+        // , _vef_gid_start(mesh->vef_gid_start())
     {
         update();
     }
