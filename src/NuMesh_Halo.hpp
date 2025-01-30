@@ -234,12 +234,7 @@ class Halo
         size_t num_boundary_faces = boundary_faces.extent(0);
         // size_t num_boundary_edges = _mesh->boundary_edges().extent(0);
 
-        // Get vef_gid_start and copy to device
         auto vef_gid_start = _mesh->vef_gid_start();
-        Kokkos::View<int*[3], memory_space> vef_gid_start_d("vef_gid_start_d", _comm_size);
-        auto hv_tmp = Kokkos::create_mirror_view(vef_gid_start_d);
-        Kokkos::deep_copy(hv_tmp, vef_gid_start);
-        Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
 
         // Vertex slices
         auto v_gid = Cabana::slice<V_GID>(vertices);
@@ -329,7 +324,7 @@ class Halo
             KOKKOS_LAMBDA(int face_idx) {
             
             int fgid_parent = boundary_faces(face_idx);
-            int flid_parent = fgid_parent - vef_gid_start_d(rank, 2);
+            int flid_parent = fgid_parent - vef_gid_start(rank, 2);
             int face_level = f_layer(flid_parent);
             // if (rank == 2) printf("R%d: boundary face gid: %d, level: %d\n", rank, fgid_parent, face_level);
             if (face_level != level) return; // Only consider elements at our level and their children
@@ -338,7 +333,7 @@ class Halo
             for (int i = 0; i < 3; i++)
             {
                 const int vgid_parent = f_vid(flid_parent, i);
-                int vert_owner = Utils::owner_rank(Vertex(), vgid_parent, vef_gid_start_d);
+                int vert_owner = Utils::owner_rank(Vertex(), vgid_parent, vef_gid_start);
 
                 // If unowned vertex, add this face and all child faces to
                 // send to vert_owner
@@ -374,7 +369,7 @@ class Halo
                         int fgid = queue[front];
                         front = (front + 1) % capacity;
                         
-                        int flid = fgid - vef_gid_start_d(rank, 2);
+                        int flid = fgid - vef_gid_start(rank, 2);
                         assert(flid > -1);
 
                         /************************
@@ -397,7 +392,7 @@ class Halo
                         for (int j = 0; j < 3; j++)
                         {
                             int egid = f_eid(flid, j);
-                            int edge_owner = Utils::owner_rank(Edge(), egid, vef_gid_start_d);
+                            int edge_owner = Utils::owner_rank(Edge(), egid, vef_gid_start);
                             // if (fgid == 38) printf("R%d: edge %d from face %d, owner R%d\n", rank, egid, fgid, edge_owner);
                             if (edge_owner != rank)
                             {
@@ -424,7 +419,7 @@ class Halo
                                 // If insertion succeeds; tuple not present; add to AoSoA
                                 int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
                                 assert(edx < ehalo_size);
-                                int elid = egid - vef_gid_start_d(rank, 1);
+                                int elid = egid - vef_gid_start(rank, 1);
                                 edge_halo_export_lids(edx) = elid;
                                 edge_halo_export_ranks(edx) = vert_owner;
                             }
@@ -436,7 +431,7 @@ class Halo
                         for (int k = 0; k < 3; k++)
                         {
                             int vgid1 = f_vid(flid, k);
-                            int vowner = Utils::owner_rank(Vertex(), vgid1, vef_gid_start_d);
+                            int vowner = Utils::owner_rank(Vertex(), vgid1, vef_gid_start);
                             if (vowner != rank) continue; // Can't export verts we don't own
                             hash_key = hashFunction(vgid1, vert_owner);
                             result = vert_halo_map.insert(hash_key, 1);
@@ -444,7 +439,7 @@ class Halo
                                 // If insertion succeeds; tuple not present; add to AoSoA
                                 int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
                                 assert(vdx < vhalo_size);
-                                int vlid1 = vgid1 - vef_gid_start_d(rank, 0);
+                                int vlid1 = vgid1 - vef_gid_start(rank, 0);
                                 vert_halo_export_lids(vdx) = vlid1;
                                 vert_halo_export_ranks(vdx) = vert_owner;
                             }
@@ -545,7 +540,7 @@ class Halo
             KOKKOS_LAMBDA(int i) {
             
             int vgid = vert_distributor_import_gids(i);
-            int vlid = vgid - vef_gid_start_d(rank, 0);
+            int vlid = vgid - vef_gid_start(rank, 0);
             int from_rank = vert_distributor_import_from_ranks(i);
 
             // Add to vert halo
@@ -586,7 +581,7 @@ class Halo
                 int egid = queue[front];
                 front = (front + 1) % capacity;
                 
-                int elid = egid - vef_gid_start_d(rank, 1);
+                int elid = egid - vef_gid_start(rank, 1);
                 assert(elid > -1);
                 
                 // Add this edge to the halo to send to from_rank
@@ -604,7 +599,7 @@ class Halo
                 for (int i = 0; i < 3; i++)
                 {
                     int vgid = e_vid(elid, i);
-                    int vowner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
+                    int vowner = Utils::owner_rank(Vertex(), vgid, vef_gid_start);
                     if (vowner != rank) continue; // Can't export verts we don't own
                     hash_key = hashFunction(vgid, from_rank);
                     result = vert_halo_map.insert(hash_key, 1);
@@ -612,7 +607,7 @@ class Halo
                         // If insertion succeeds; tuple not present; add to AoSoA
                         int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
                         assert(vdx < vhalo_size);
-                        int vlid = vgid - vef_gid_start_d(rank, 0);
+                        int vlid = vgid - vef_gid_start(rank, 0);
                         vert_halo_export_lids(vdx) = vlid;
                         vert_halo_export_ranks(vdx) = from_rank;
                     }

@@ -49,7 +49,8 @@ TYPED_TEST(Mesh2DTest, test1_refinement)
 
     int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
     auto vef_gid_start = this->mesh_->vef_gid_start();
-    int face_gid_start = vef_gid_start(this->rank_, 2);
+    auto vef_gid_start_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), vef_gid_start);
+    int face_gid_start = vef_gid_start_h(this->rank_, 2);
 
     Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
     for (int i = 0; i < num_local_faces; i++)
@@ -78,7 +79,8 @@ TYPED_TEST(Mesh2DTest, test2_refinement)
     {
         int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
         auto vef_gid_start = this->mesh_->vef_gid_start();
-        int face_gid_start = vef_gid_start(this->rank_, 2);
+        auto vef_gid_start_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), vef_gid_start);
+        int face_gid_start = vef_gid_start_h(this->rank_, 2);
 
         Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
         for (int i = 0; i < num_local_faces; i++)

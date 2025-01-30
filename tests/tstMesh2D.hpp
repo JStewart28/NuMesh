@@ -93,7 +93,7 @@ class Mesh2DTest : public ::testing::Test
 
         auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
         auto array = Cabana::Grid::createArray<double, MemorySpace>("for_initialization", layout);
-        this->mesh_->initializeFromArray(*array, *array);
+        this->mesh_->initializeFromArray(*array);
     }
 
     /**
