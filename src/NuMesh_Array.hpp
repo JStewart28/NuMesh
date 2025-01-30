@@ -287,6 +287,8 @@ class ArrayLayout
     // Used to keep ArrayLayout in sync with mesh refinements
     int _version;
     int _owned_vertices, _owned_edges, _owned_faces, _ghost_vertices, _ghost_edges, _ghost_faces;
+
+    // Map indicies of ElementType in the mesh to indicies in any arrays created from this layout
 };
 
 //! Array static type checker.
