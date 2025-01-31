@@ -101,6 +101,9 @@ int main( int argc, char* argv[] )
     }
     positions->update();
     printf("R%d: after: positions: %d, verts: %d\n", rank, positions->view().extent(0), mesh->vertices().size());
+    mesh->gather(0, 1);
+    positions->update();
+    printf("R%d: gather: positions: %d, verts: %d\n", rank, positions->view().extent(0), mesh->vertices().size());
     // if (rank == 0) mesh->printFaces(0, 258);
     // auto halo = NuMesh::createHalo(mesh, 0, 1);
     // halo.gather();

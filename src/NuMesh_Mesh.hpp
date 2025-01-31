@@ -68,7 +68,9 @@ class Mesh
     //using l2g_type = Cabana::Grid::IndexConversion::L2G<mesh_type, Node>;
     // using node_view = Kokkos::View<double***, device_type>;
 
-    using halo_type = Cabana::Grid::Halo<MemorySpace>;
+    // For halo data
+    // (global ID, to_rank) tuples
+    using halo_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int>, memory_space, 4>;
 
     // Note: Larger types should be listed first
     using vertex_data = Cabana::MemberTypes<int,       // Vertex global ID                                 
@@ -100,7 +102,7 @@ class Mesh
     using size_type = typename memory_space::size_type;
 
     // Construct a mesh.
-    Mesh( MPI_Comm comm ) : _comm ( comm )
+    Mesh( MPI_Comm comm ) : _comm( comm )
     {
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
@@ -110,13 +112,21 @@ class Mesh
 
         _version = 0;
 
+        // Mesh starts with no refinement
         _max_depth = 0;
+
+        // Mesh starts with no haloing
+        _halo_level = -1; _halo_depth = 0;
 
         _vef_gid_start = Kokkos::View<int*[3], memory_space>("_vef_gid_start", _comm_size);
         Kokkos::deep_copy(_vef_gid_start, -1);
 
         _owned_vertices = 0, _owned_edges = 0, _owned_faces = 0;
         _ghost_vertices = 0, _ghost_edges = 0, _ghost_faces = 0;
+
+        _vert_halo_export = halo_aosoa("vert_halo_export", 1); 
+        _edge_halo_export = halo_aosoa("edge_halo_export", 1); 
+        _face_halo_export = halo_aosoa("face_halo_export", 1);
     };
 
     ~Mesh()
@@ -1240,7 +1250,7 @@ class Mesh
      */
     void _gather_depth_one()
     {
-        const int level = _halo_level, rank = _rank, tree_depth = _tree_depth
+        const int level = _halo_level, rank = _rank, tree_depth = _max_depth;
 
         // Define the hash map type
         using PairType = std::pair<int, int>;
@@ -1293,13 +1303,12 @@ class Mesh
 
         // Halo data
         // (global ID, to_rank) tuples
-        using halo_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int>, memory_space, 4>;
         size_t vhalo_size = num_boundary_faces*(tree_depth+1)*4; // Slight buffer for faces that must be sent to >1 processes
         size_t ehalo_size = num_boundary_faces*(tree_depth+1)*4; // and for refinements along boundaries
         size_t fhalo_size = num_boundary_faces*(tree_depth+1)*4;
-        halo_aosoa vert_halo_export("vert_halo_export", vhalo_size); 
-        halo_aosoa edge_halo_export("edge_halo_export", ehalo_size); 
-        halo_aosoa face_halo_export("face_halo_export", fhalo_size);
+        _vert_halo_export.resize(vhalo_size); 
+        _edge_halo_export.resize(ehalo_size); 
+        _face_halo_export.resize(fhalo_size);
 
         // Hash tables - used to keep duplicate entries from the distributor and halo data structures
         MapType vert_distributor_map(vert_distributor_size);
@@ -1314,6 +1323,7 @@ class Mesh
         MapType face_halo_map(fhalo_size);
 
         // Counters
+        using int_d = Kokkos::View<size_t, memory_space>;
         int_d vd_idx("vd_idx"); Kokkos::deep_copy(vd_idx, 0); // Vert distributor
         int_d ed_idx("ed_idx"); Kokkos::deep_copy(ed_idx, 0); // Edge distributor
         int_d vh_idx("vh_idx"); Kokkos::deep_copy(vh_idx, 0); // Vert halo
@@ -1327,12 +1337,12 @@ class Mesh
         auto edge_distributor_export_gids = Cabana::slice<0>(edge_distributor_export);
         auto edge_distributor_export_to_ranks = Cabana::slice<1>(edge_distributor_export);
         auto edge_distributor_export_from_ranks = Cabana::slice<2>(edge_distributor_export);
-        auto vert_halo_export_lids = Cabana::slice<0>(vert_halo_export);
-        auto vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
-        auto edge_halo_export_lids = Cabana::slice<0>(edge_halo_export);
-        auto edge_halo_export_ranks = Cabana::slice<1>(edge_halo_export);
-        auto face_halo_export_lids = Cabana::slice<0>(face_halo_export);
-        auto face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
+        auto vert_halo_export_lids = Cabana::slice<0>(_vert_halo_export);
+        auto vert_halo_export_ranks = Cabana::slice<1>(_vert_halo_export);
+        auto edge_halo_export_lids = Cabana::slice<0>(_edge_halo_export);
+        auto edge_halo_export_ranks = Cabana::slice<1>(_edge_halo_export);
+        auto face_halo_export_lids = Cabana::slice<0>(_face_halo_export);
+        auto face_halo_export_ranks = Cabana::slice<1>(_face_halo_export);
 
         /**
          * Iterate over boundary faces. For each boundary face, check if any vertices
@@ -1660,17 +1670,17 @@ class Mesh
         Kokkos::deep_copy(vhalo_size, vh_idx);
         Kokkos::deep_copy(ehalo_size, eh_idx);
         Kokkos::deep_copy(fhalo_size, fh_idx);
-        vert_halo_export.resize(vhalo_size);
-        edge_halo_export.resize(ehalo_size);
-        face_halo_export.resize(fhalo_size);
+        _vert_halo_export.resize(vhalo_size);
+        _edge_halo_export.resize(ehalo_size);
+        _face_halo_export.resize(fhalo_size);
 
         // Update slices
-        vert_halo_export_lids = Cabana::slice<0>(vert_halo_export);
-        vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
-        edge_halo_export_lids = Cabana::slice<0>(edge_halo_export);
-        edge_halo_export_ranks = Cabana::slice<1>(edge_halo_export);
-        face_halo_export_lids = Cabana::slice<0>(face_halo_export);
-        face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
+        vert_halo_export_lids = Cabana::slice<0>(_vert_halo_export);
+        vert_halo_export_ranks = Cabana::slice<1>(_vert_halo_export);
+        edge_halo_export_lids = Cabana::slice<0>(_edge_halo_export);
+        edge_halo_export_ranks = Cabana::slice<1>(_edge_halo_export);
+        face_halo_export_lids = Cabana::slice<0>(_face_halo_export);
+        face_halo_export_ranks = Cabana::slice<1>(_face_halo_export);
 
         // printf("R%d: vef halo sizes: %d, %d, %d\n", rank, vhalo_size, ehalo_size, fhalo_size);
 
@@ -1728,7 +1738,7 @@ class Mesh
 
         // });
 
-        _vhalo = Cabana::Halo<memory_space>( _comm, vertex_count, vert_halo_export_lids, vert_halo_export_ranks);
+        Cabana::Halo<memory_space> vhalo( _comm, vertex_count, vert_halo_export_lids, vert_halo_export_ranks);
         Cabana::Halo<memory_space> ehalo( _comm, edge_count, edge_halo_export_lids, edge_halo_export_ranks);
         Cabana::Halo<memory_space> fhalo( _comm, face_count, face_halo_export_lids, face_halo_export_ranks);
 
@@ -1737,18 +1747,17 @@ class Mesh
         _edges.resize(ehalo.numLocal() + ehalo.numGhost());
         _faces.resize(fhalo.numLocal() + fhalo.numGhost());
         
-        Cabana::gather(vhalo, vertices);
-        Cabana::gather(ehalo, edges);
-        Cabana::gather(fhalo, faces);
+        Cabana::gather(vhalo, _vertices);
+        Cabana::gather(ehalo, _edges);
+        Cabana::gather(fhalo, _faces);
         
         // Update ghost counts in mesh
-        _owned_vertices = vhalo.numLocal());
-        _owned_edges = ehalo.numLocal());
-        _owned_faces = fhalo.numLocal());
-        _ghost_vertices = vhalo.numGhost());
-        _ghost_edges = ehalo.numGhost());
-        _ghost_faces = fhalo.numGhost());
-        
+        _owned_vertices = vhalo.numLocal();
+        _owned_edges = ehalo.numLocal();
+        _owned_faces = fhalo.numLocal();
+        _ghost_vertices = vhalo.numGhost();
+        _ghost_edges = ehalo.numGhost();
+        _ghost_faces = fhalo.numGhost();
     }
 
     /**
@@ -2045,14 +2054,24 @@ class Mesh
         _populate_boundary_elements();
     }
 
-    void gather()
+    /**
+     * Gather vertices, edges, and faces at the given
+     * level of the tree and any levels higher (i.e.
+     * their children) and for the given depth into
+     * remotely owned sections of the mesh
+     * 
+     * Populates the vhalo, ehalo, fhalo objects
+     */
+    void gather(int level, int depth)
     {
+        _halo_level = level; _halo_depth = depth;
         _gather_depth_one();
         // if (_rank == 1)
         // {
         //     printf("R%d: total verts: %d\n", _rank, _mesh->vertices().size());
         //     _mesh->printVertices();
         // }
+        _version++;
     }
     
     v_array_type& vertices() {return _vertices;}
@@ -2066,12 +2085,6 @@ class Mesh
     int count(Ghost, Vertex) {return _ghost_vertices;}
     int count(Ghost, Edge) {return _ghost_edges;}
     int count(Ghost, Face) {return _ghost_faces;}
-    void set(Own, Vertex, int x) { _owned_vertices = x; }
-    void set(Own, Edge, int x) { _owned_edges = x; }
-    void set(Own, Face, int x) { _owned_faces = x; }
-    void set(Ghost, Vertex, int x) { _ghost_vertices = x; }
-    void set(Ghost, Edge, int x) { _ghost_edges = x; }
-    void set(Ghost, Face, int x) { _ghost_faces = x; }
 
     MPI_Comm comm() {return _comm;}
     int version() {return _version;}
@@ -2215,9 +2228,9 @@ class Mesh
     int _version;
 
     // Halos associated with this mesh version
-    Cabana::Halo<memory_space> _vhalo;
-    Cabana::Halo<memory_space> _ehalo;
-    Cabana::Halo<memory_space> _fhalo;
+    halo_aosoa _vert_halo_export;
+    halo_aosoa _edge_halo_export;
+    halo_aosoa _face_halo_export;
     int _halo_level, _halo_depth;
 
     // Max depth of tree
