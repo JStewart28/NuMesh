@@ -19,6 +19,8 @@
 
 #include <NuMesh_Utils.hpp>
 
+#include "_hypre_parcsr_ls.h"
+
 #ifndef AOSOA_SLICE_INDICES
 #define AOSOA_SLICE_INDICES 1
 #endif
@@ -113,7 +115,7 @@ class Mesh
         _version = 0;
 
         // Mesh starts with no refinement
-        _max_depth = 0;
+        _max_tree_level = 0;
 
         // Mesh starts with no haloing
         _halo_level = -1; _halo_depth = 0;
@@ -123,10 +125,6 @@ class Mesh
 
         _owned_vertices = 0, _owned_edges = 0, _owned_faces = 0;
         _ghost_vertices = 0, _ghost_edges = 0, _ghost_faces = 0;
-
-        _vert_halo_export = halo_aosoa("vert_halo_export", 1); 
-        _edge_halo_export = halo_aosoa("edge_halo_export", 1); 
-        _face_halo_export = halo_aosoa("face_halo_export", 1);
     };
 
     ~Mesh()
@@ -1250,7 +1248,7 @@ class Mesh
      */
     void _gather_depth_one()
     {
-        const int level = _halo_level, rank = _rank, tree_depth = _max_depth;
+        const int level = _halo_level, rank = _rank, tree_depth = _max_tree_level;
 
         // Define the hash map type
         using PairType = std::pair<int, int>;
@@ -1306,9 +1304,9 @@ class Mesh
         size_t vhalo_size = num_boundary_faces*(tree_depth+1)*4; // Slight buffer for faces that must be sent to >1 processes
         size_t ehalo_size = num_boundary_faces*(tree_depth+1)*4; // and for refinements along boundaries
         size_t fhalo_size = num_boundary_faces*(tree_depth+1)*4;
-        _vert_halo_export.resize(vhalo_size); 
-        _edge_halo_export.resize(ehalo_size); 
-        _face_halo_export.resize(fhalo_size);
+        halo_aosoa vert_halo_export("vert_halo_export", vhalo_size);
+        halo_aosoa edge_halo_export("edge_halo_export", ehalo_size);
+        halo_aosoa face_halo_export("face_halo_export", fhalo_size);
 
         // Hash tables - used to keep duplicate entries from the distributor and halo data structures
         MapType vert_distributor_map(vert_distributor_size);
@@ -1337,12 +1335,12 @@ class Mesh
         auto edge_distributor_export_gids = Cabana::slice<0>(edge_distributor_export);
         auto edge_distributor_export_to_ranks = Cabana::slice<1>(edge_distributor_export);
         auto edge_distributor_export_from_ranks = Cabana::slice<2>(edge_distributor_export);
-        auto vert_halo_export_lids = Cabana::slice<0>(_vert_halo_export);
-        auto vert_halo_export_ranks = Cabana::slice<1>(_vert_halo_export);
-        auto edge_halo_export_lids = Cabana::slice<0>(_edge_halo_export);
-        auto edge_halo_export_ranks = Cabana::slice<1>(_edge_halo_export);
-        auto face_halo_export_lids = Cabana::slice<0>(_face_halo_export);
-        auto face_halo_export_ranks = Cabana::slice<1>(_face_halo_export);
+        auto vert_halo_export_lids = Cabana::slice<0>(vert_halo_export);
+        auto vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
+        auto edge_halo_export_lids = Cabana::slice<0>(edge_halo_export);
+        auto edge_halo_export_ranks = Cabana::slice<1>(edge_halo_export);
+        auto face_halo_export_lids = Cabana::slice<0>(face_halo_export);
+        auto face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
 
         /**
          * Iterate over boundary faces. For each boundary face, check if any vertices
@@ -1666,21 +1664,26 @@ class Mesh
             
         });
 
-        // Finalize halo sizes and set duplicates to -1
+        // Finalize halo sizes
         Kokkos::deep_copy(vhalo_size, vh_idx);
         Kokkos::deep_copy(ehalo_size, eh_idx);
         Kokkos::deep_copy(fhalo_size, fh_idx);
-        _vert_halo_export.resize(vhalo_size);
-        _edge_halo_export.resize(ehalo_size);
-        _face_halo_export.resize(fhalo_size);
+        vert_halo_export.resize(vhalo_size);
+        edge_halo_export.resize(ehalo_size);
+        face_halo_export.resize(fhalo_size);
+
+        // Add this halo data to the halo vectors
+        _vert_halo_export.push_back(vert_halo_export);
+        _edge_halo_export.push_back(edge_halo_export);
+        _face_halo_export.push_back(face_halo_export);
 
         // Update slices
-        vert_halo_export_lids = Cabana::slice<0>(_vert_halo_export);
-        vert_halo_export_ranks = Cabana::slice<1>(_vert_halo_export);
-        edge_halo_export_lids = Cabana::slice<0>(_edge_halo_export);
-        edge_halo_export_ranks = Cabana::slice<1>(_edge_halo_export);
-        face_halo_export_lids = Cabana::slice<0>(_face_halo_export);
-        face_halo_export_ranks = Cabana::slice<1>(_face_halo_export);
+        vert_halo_export_lids = Cabana::slice<0>(vert_halo_export);
+        vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
+        edge_halo_export_lids = Cabana::slice<0>(edge_halo_export);
+        edge_halo_export_ranks = Cabana::slice<1>(edge_halo_export);
+        face_halo_export_lids = Cabana::slice<0>(face_halo_export);
+        face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
 
         // printf("R%d: vef halo sizes: %d, %d, %d\n", rank, vhalo_size, ehalo_size, fhalo_size);
 
@@ -1758,6 +1761,83 @@ class Mesh
         _ghost_vertices = vhalo.numGhost();
         _ghost_edges = ehalo.numGhost();
         _ghost_faces = fhalo.numGhost();
+    }
+
+    /**
+     * Make a sparse matrix and square it
+     */
+    void make_sparse()
+    {
+        /**
+         * A = hypre_ParCSRMatrixCreate(...)
+         * row_starts and col_starts: these will be the same. Arrays of size 2 where
+         *      0 = the global row/col I start
+         *      1 = the global row/col I end, non-inclusive (Add number of row/col I own to index 0)
+         * num_cols_offd: number of non-zero columns in the rows I own.
+         *      Number of distinct vertices that I am connected to that I do not own.
+         * num_nonzeros_diag: The number of non-zeroes in the part of the matrix that own (the fully local bit)
+         *      Number of edges fully local between two vertices I own
+         * num_nonzeroes_offd: total number of non-zero values in the rows but not the columns I own.
+         *      Number of edges that go to any other node on any other process
+         * returns a matrix of type hypre_ParCSRMatrix *A.
+         * 
+         * https://github.com/hypre-space/hypre/blob/master/src/parcsr_ls/par_laplace_27pt.c
+         * 
+         * Hypre uses structs to store all the parts of the matrix
+         * Line 1667: you make your own CSR 
+         * Use HYPRE_MEMORY_DEVICE
+         * col_map_offd = size = num_cols_offd; this holds, for each non-zero offd column the global ID of the column, 
+         *      ordered from lowest to highest.
+         * 
+         * Use HYPRE_MEMORY_HOST even if you want it on the GPU, 
+         * at the end call hypre_ParCSRMatrixMigrate with HYPRE_MEMORY_DEVICE as second arg.
+         * 
+         * How to print out matrix:
+         *      hypre_ParCRSMatrixPrint(). Might have to call upper-case version
+         * 
+         * TO get these functions, migh tneed to just go to the files Amanda sent and include those includes.
+         * 
+         * To multiply matrix:
+         *      See Amanada notes
+         * 
+         * How to extract info from matrix:
+         *      Call the set diags/values functions in reverse.
+         */
+
+        hypre_ParCSRMatrix *A;
+        hypre_CSRMatrix *diag;
+        hypre_CSRMatrix *offd;
+
+        HYPRE_Int    *diag_i;
+        HYPRE_Int    *diag_j;
+        HYPRE_Real *diag_data;
+
+        HYPRE_Int    *offd_i;
+        HYPRE_Int    *offd_j = NULL;
+        HYPRE_BigInt *big_offd_j = NULL;
+        HYPRE_Real *offd_data = NULL;
+
+        HYPRE_BigInt global_part[2];
+        HYPRE_BigInt ix, iy, iz;
+        HYPRE_Int cnt, o_cnt;
+        HYPRE_Int local_num_rows;
+        HYPRE_BigInt *col_map_offd;
+        HYPRE_Int row_index;
+        HYPRE_Int i;
+
+        HYPRE_Int nx_local, ny_local, nz_local;
+        HYPRE_Int num_cols_offd;
+        HYPRE_BigInt grid_size;
+
+        // diag_i = hypre_CTAlloc(HYPRE_Int,  local_num_rows + 1, HYPRE_MEMORY_HOST);
+        // offd_i = hypre_CTAlloc(HYPRE_Int,  local_num_rows + 1, HYPRE_MEMORY_HOST);
+
+
+        // A = hypre_ParCSRMatrixCreate(comm, grid_size, grid_size,
+        //                         global_part, global_part, num_cols_offd,
+        //                         diag_i[local_num_rows],
+        //                         offd_i[local_num_rows]);
+        
     }
 
     /**
@@ -2029,7 +2109,7 @@ class Mesh
         Kokkos::fence();
 
         // All initialized faces are on the same level
-        _max_depth = 0;
+        _max_tree_level = 0;
 
         _finializeInit();
     }
@@ -2045,13 +2125,20 @@ class Mesh
     template <class View>
     void refine(View& fgids)
     {
+        // Refining clears halo data
+        _halo_level = 0; _halo_depth = 0;
+        _vert_halo_export.clear();
+        _edge_halo_export.clear();
+        _face_halo_export.clear();
+
         _refineFaces(fgids);
 
         // Increase max tree depth by 1
-        _max_depth++;
+        _max_tree_level++;
 
         // _sort_by_layer();
         _populate_boundary_elements();
+        _version++;
     }
 
     /**
@@ -2064,6 +2151,16 @@ class Mesh
      */
     void gather(int level, int depth)
     {
+        if (depth < 1)
+            throw std::runtime_error(
+                    "NuMesh::Mesh: halo depth of gather must be at least 1." );
+        if (level < 0)
+            throw std::runtime_error(
+                    "NuMesh::Mesh: level of gather must be at least 1." );
+        if (level > _max_tree_level)
+            throw std::runtime_error(
+                    "NuMesh::Mesh: level of gather must be at <= max tree level." );
+        
         _halo_level = level; _halo_depth = depth;
         _gather_depth_one();
         // if (_rank == 1)
@@ -2078,7 +2175,7 @@ class Mesh
     e_array_type& edges() {return _edges;}
     f_array_type& faces() {return _faces;}
 
-    int depth() {return _max_depth;}
+    int depth() {return _max_tree_level;}
     int count(Own, Vertex) {return _owned_vertices;}
     int count(Own, Edge) {return _owned_edges;}
     int count(Own, Face) {return _owned_faces;}
@@ -2228,13 +2325,13 @@ class Mesh
     int _version;
 
     // Halos associated with this mesh version
-    halo_aosoa _vert_halo_export;
-    halo_aosoa _edge_halo_export;
-    halo_aosoa _face_halo_export;
+    std::vector<halo_aosoa> _vert_halo_export;
+    std::vector<halo_aosoa> _edge_halo_export;
+    std::vector<halo_aosoa> _face_halo_export;
     int _halo_level, _halo_depth;
 
     // Max depth of tree
-    int _max_depth;
+    int _max_tree_level;
 };
 //---------------------------------------------------------------------------//
 
