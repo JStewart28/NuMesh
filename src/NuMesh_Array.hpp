@@ -390,7 +390,7 @@ class Array
         if (_version == _layout->mesh()->version()) return;
 
         // Resize the array
-        size_t new_size = _layout->indexSpace(Ghost(), EntityType(), Local()).extent(0);
+        size_t new_size = _layout->indexSpace(Ghost(), EntityType(), Local(), Element()).extent(0);
         // printf("Updating size: %d -> %d\n", _data.extent(0), new_size);
         Kokkos::resize(_data, new_size);
 
