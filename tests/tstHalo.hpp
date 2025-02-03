@@ -55,8 +55,7 @@ class HaloTest : public Mesh2DTest<T>
     {
         const int rank = this->rank_;
 
-        auto halo = NuMesh::createHalo(this->mesh_, 0, 1);
-        halo.gather();
+        this->mesh_->gather(0, 1);
         
         this->copytoHost();
 
