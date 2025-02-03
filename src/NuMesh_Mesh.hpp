@@ -415,7 +415,7 @@ class Mesh
      */
     template <class View>
     void _refineFaces(View fgids)
-    {        
+    {
         const int rank = _rank, comm_size = _comm_size;
         const int num_face_refinements = fgids.extent(0);
         auto vef_gid_start = _vef_gid_start;
@@ -2125,7 +2125,7 @@ class Mesh
     template <class View>
     void refine(View& fgids)
     {
-        // Refining clears halo data
+        // Refining outdates halo data
         _halo_level = 0; _halo_depth = 0;
         _vert_halo_export.clear();
         _edge_halo_export.clear();
@@ -2174,17 +2174,22 @@ class Mesh
     v_array_type& vertices() {return _vertices;}
     e_array_type& edges() {return _edges;}
     f_array_type& faces() {return _faces;}
+    std::vector<halo_aosoa> halo_export(Vertex) const {return _vert_halo_export;}
+    std::vector<halo_aosoa> halo_export(Edge) const {return _edge_halo_export;}
+    std::vector<halo_aosoa> halo_export(Face) const {return _face_halo_export;}
+    int halo_level() const {return _halo_level;}
+    int halo_depth() const {return _halo_depth;}
 
-    int depth() {return _max_tree_level;}
-    int count(Own, Vertex) {return _owned_vertices;}
-    int count(Own, Edge) {return _owned_edges;}
-    int count(Own, Face) {return _owned_faces;}
-    int count(Ghost, Vertex) {return _ghost_vertices;}
-    int count(Ghost, Edge) {return _ghost_edges;}
-    int count(Ghost, Face) {return _ghost_faces;}
+    int depth() const {return _max_tree_level;}
+    int count(Own, Vertex) const {return _owned_vertices;}
+    int count(Own, Edge) const {return _owned_edges;}
+    int count(Own, Face) const {return _owned_faces;}
+    int count(Ghost, Vertex) const {return _ghost_vertices;}
+    int count(Ghost, Edge) const {return _ghost_edges;}
+    int count(Ghost, Face) const {return _ghost_faces;}
 
     MPI_Comm comm() {return _comm;}
-    int version() {return _version;}
+    int version() const {return _version;}
 
     auto vef_gid_start() {return _vef_gid_start;}
     auto neighbors() {return _neighbors;}

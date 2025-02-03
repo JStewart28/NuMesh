@@ -53,6 +53,10 @@ class Halo
 
     ~Halo() {}
 
+    std::shared_ptr<Mesh> mesh() {return _mesh;}
+    int level() const {return _level;}
+    int depth() const {return _depth;}
+
 
   private:
     std::shared_ptr<Mesh> _mesh;
@@ -71,6 +75,21 @@ template <class Mesh>
 auto createHalo(std::shared_ptr<Mesh> mesh, const int level, const int depth)
 {
     return Halo(mesh, level, depth);
+}
+
+
+template <class HaloType, class ArrayType>
+void gather(const HaloType& halo, ArrayType& data)
+{
+    using entity_type = typename ArrayType::entity_type;
+    int mesh_level = halo->mesh()->halo_level();
+    int halo_level = halo->level();
+    if (mesh_level < halo_level)
+    {
+        halo->mesh()->gather(halo_level, halo->depth());
+    }
+    auto export_indices = halo->mesh()->halo_export(entity_type);
+    
 }
 
 } // end namespce NuMesh
