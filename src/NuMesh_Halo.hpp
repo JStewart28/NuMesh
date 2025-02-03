@@ -8,8 +8,7 @@
 #include <NuMesh_Utils.hpp>
 #include <NuMesh_Mesh.hpp>
 #include <NuMesh_Maps.hpp>
-
-#include "_hypre_parcsr_ls.h"
+#include <NuMesh_Array.hpp>
 
 #include <mpi.h>
 
@@ -46,9 +45,6 @@ class Halo
             throw std::runtime_error(
                     "NuMesh::Halo must be initialized with a halo depth of at least 1." );
         }
-
-        MPI_Comm_rank( _comm, &_rank );
-        MPI_Comm_size( _comm, &_comm_size );
     };
 
     ~Halo() {}
@@ -60,7 +56,6 @@ class Halo
 
   private:
     std::shared_ptr<Mesh> _mesh;
-    MPI_Comm _comm;
 
     int _rank, _comm_size;   
 
@@ -79,17 +74,39 @@ auto createHalo(std::shared_ptr<Mesh> mesh, const int level, const int depth)
 
 
 template <class HaloType, class ArrayType>
-void gather(const HaloType& halo, ArrayType& data)
+void gather(HaloType& halo, std::shared_ptr<ArrayType> data)
 {
+    static_assert( Array::is_array<ArrayType>::value, "NuMesh::Array required" );
+
     using entity_type = typename ArrayType::entity_type;
-    int mesh_level = halo->mesh()->halo_level();
-    int halo_level = halo->level();
-    if (mesh_level < halo_level)
+    using memory_space = typename ArrayType::memory_space;
+    auto mesh = halo.mesh();
+    int mesh_halo_depth = mesh->halo_depth();
+    int halo_level = halo.level();
+    int halo_halo_depth = halo.depth();
+    if (mesh_halo_depth < halo_halo_depth)
     {
-        halo->mesh()->gather(halo_level, halo->depth());
+        halo.mesh()->gather(halo_level, halo_halo_depth);
     }
-    auto export_indices = halo->mesh()->halo_export(entity_type);
+    auto export_data_all = mesh->halo_export(entity_type());
+    auto export_data = export_data_all[mesh_halo_depth-1];
+    auto export_ids = Cabana::slice<0>(export_data);
+    auto export_ranks = Cabana::slice<1>(export_data);
     
+    Cabana::Halo<memory_space> cabana_halo(mesh->comm(), mesh->count(Own(), entity_type()),
+                                    export_ids, export_ranks);
+
+    // Check that the data view is large anough for the gather
+    size_t num_local = cabana_halo.numLocal();
+    size_t num_ghost = cabana_halo.numGhost();
+    auto data_view = data->view();
+    if (data_view.extent(0) != (num_local+num_ghost))
+    {
+        throw std::runtime_error(
+                    "NuMesh::gather: Array extents not large enough for gather");
+    }
+    Kokkos::View<double*[3], memory_space
+    Cabana::gather(cabana_halo, data_view);
 }
 
 } // end namespce NuMesh

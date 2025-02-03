@@ -12,7 +12,7 @@ int main( int argc, char* argv[] )
     using memory_space = execution_space::memory_space;
     // using execution_space = Kokkos::Cuda;
     // using memory_space = Kokkos::CudaSpace;
-    // using nu_mesh_type = NuMesh::Mesh<execution_space, memory_space>;
+    using nu_mesh_type = NuMesh::Mesh<execution_space, memory_space>;
 
     MPI_Init( &argc, &argv );         // Initialize MPI
     Kokkos::initialize( argc, argv ); // Initialize Kokkos
@@ -104,6 +104,10 @@ int main( int argc, char* argv[] )
     mesh->gather(0, 1);
     positions->update();
     printf("R%d: gather: positions: %d, verts: %d\n", rank, positions->view().extent(0), mesh->vertices().size());
+
+    auto halo = createHalo(mesh, 0, 1);
+    NuMesh::gather(halo, positions);
+
     // if (rank == 0) mesh->printFaces(0, 258);
     // auto halo = NuMesh::createHalo(mesh, 0, 1);
     // halo.gather();
