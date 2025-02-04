@@ -478,7 +478,7 @@ clone( const Array<MemorySpace, LayoutType>& array )
 template <class Array_t, class DecompositionTag>
 void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
-    static_assert( is_array<Array_t>::value, "Cabana::Grid::Array required" );
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
     using execution_space = typename Array_t::execution_space;
     using entity_type = typename Array_t::entity_type;
     auto a_space = a.layout()->indexSpace( tag, entity_type(), Local() );
