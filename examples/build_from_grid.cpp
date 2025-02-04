@@ -76,14 +76,16 @@ int main( int argc, char* argv[] )
 
     auto mesh = NuMesh::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
 
+    using tuple_type = Cabana::MemberTypes<double[3]>;
+
     auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
     auto array = Cabana::Grid::createArray<double, memory_space>("for_initialization", layout);
     mesh->initializeFromArray(*array);
     auto vef_gid_start = mesh->vef_gid_start();
 
-    auto vertex_triple_layout = NuMesh::Array::createArrayLayout(mesh, 3, NuMesh::Vertex());
-    auto positions = NuMesh::Array::createArray<double, memory_space>("positions", vertex_triple_layout);
-    printf("R%d: before: positions: %d, verts: %d\n", rank, positions->view().extent(0), mesh->vertices().size());
+    auto vertex_triple_layout = NuMesh::Array::createArrayLayout<tuple_type>(mesh, 3, NuMesh::Vertex());
+    auto positions = NuMesh::Array::createArray<memory_space>("positions", vertex_triple_layout);
+    printf("R%d: before: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
 
     // Uniform refinement
     for (int i = 0; i < 1; i++)
@@ -100,13 +102,15 @@ int main( int argc, char* argv[] )
         mesh->refine(fin);
     }
     positions->update();
-    printf("R%d: after: positions: %d, verts: %d\n", rank, positions->view().extent(0), mesh->vertices().size());
+    printf("R%d: after: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
     mesh->gather(0, 1);
     positions->update();
-    printf("R%d: gather: positions: %d, verts: %d\n", rank, positions->view().extent(0), mesh->vertices().size());
+    printf("R%d: gather: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
+    auto positions2 = NuMesh::Array::ArrayOp::cloneCopy(*positions, NuMesh::Own());
+    auto positions3 = NuMesh::Array::ArrayOp::cloneCopy(*positions, NuMesh::Ghost());
 
-    auto halo = createHalo(mesh, 0, 1);
-    NuMesh::gather(halo, positions);
+    // auto halo = createHalo(mesh, 0, 1);
+    // NuMesh::gather(halo, positions);
 
     // if (rank == 0) mesh->printFaces(0, 258);
     // auto halo = NuMesh::createHalo(mesh, 0, 1);

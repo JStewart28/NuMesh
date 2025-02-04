@@ -99,14 +99,13 @@ void gather(HaloType& halo, std::shared_ptr<ArrayType> data)
     // Check that the data view is large anough for the gather
     size_t num_local = cabana_halo.numLocal();
     size_t num_ghost = cabana_halo.numGhost();
-    auto data_view = data->view();
-    if (data_view.extent(0) != (num_local+num_ghost))
+    auto aosoa = data->aosoa();
+    if (aosoa.size() != (num_local+num_ghost))
     {
         throw std::runtime_error(
                     "NuMesh::gather: Array extents not large enough for gather");
     }
-    Kokkos::View<double*[3], memory_space
-    Cabana::gather(cabana_halo, data_view);
+    Cabana::gather(cabana_halo, aosoa);
 }
 
 } // end namespce NuMesh

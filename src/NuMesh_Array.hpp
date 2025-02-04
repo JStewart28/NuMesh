@@ -31,7 +31,7 @@ namespace Array
   \tparam EntityType Array entity type: Vertex, Edge, or Face
   \tparam MeshType Mesh type: UnstructuredMesh
 */
-template <class EntityType, class MeshType>
+template <class EntityType, class MeshType, class TupleType>
 class ArrayLayout
 {
   public:
@@ -42,6 +42,9 @@ class ArrayLayout
 
     //! Mesh type.
     using mesh_type = MeshType;
+
+    //! AoSoA tuple type.
+    using tuple_type = TupleType;
 
     //! Spatial dimension.
     static constexpr std::size_t num_space_dim = 1;
@@ -278,15 +281,15 @@ struct is_array_layout : public std::false_type
 };
 
 //! Array static type checker.
-template <class EntityType, class MeshType>
-struct is_array_layout<ArrayLayout<EntityType, MeshType>>
+template <class EntityType, class MeshType, class TupleType>
+struct is_array_layout<ArrayLayout<EntityType, MeshType, TupleType>>
     : public std::true_type
 {
 };
 
 //! Array static type checker.
-template <class EntityType, class MeshType>
-struct is_array_layout<const ArrayLayout<EntityType, MeshType>>
+template <class EntityType, class MeshType, class TupleType>
+struct is_array_layout<const ArrayLayout<EntityType, MeshType, TupleType>>
     : public std::true_type
 {
 };
@@ -301,12 +304,12 @@ struct is_array_layout<const ArrayLayout<EntityType, MeshType>>
   \return Shared pointer to an ArrayLayout.
   \note EntityType The entity: Cell, Node, Face, or Edge
 */
-template <class EntityType, class MeshType>
-std::shared_ptr<ArrayLayout<EntityType, MeshType>>
+template <class TupleType, class EntityType, class MeshType>
+std::shared_ptr<ArrayLayout<EntityType, MeshType, TupleType>>
 createArrayLayout( const std::shared_ptr<MeshType>& mesh,
                    const int dofs_per_entity, EntityType )
 {
-    return std::make_shared<ArrayLayout<EntityType, MeshType>>(
+    return std::make_shared<ArrayLayout<EntityType, MeshType, TupleType>>(
         mesh, dofs_per_entity );
 }
 
@@ -316,38 +319,30 @@ createArrayLayout( const std::shared_ptr<MeshType>& mesh,
   \brief A wrapper around a slice of some data in the unstructured mesh
 
   \tparam Scalar Scalar type.
-  \tparam EntityType Array entity type (vertex, edge, face).
   \tparam MeshType Mesh type (uniform, non-uniform).
   \tparam Params Kokkos View parameters.
 */
-template <class Scalar, class EntityType, class MeshType, class... Params>
+template <class MemorySpace, class LayoutType>
 class Array
 {
   public:
-    //! Value type.
-    using value_type = Scalar;
-
-    //! Entity type.
-    using entity_type = EntityType;
-
-    //! Mesh type.
-    using mesh_type = MeshType;
-
-    //! Spatial dimension.
-    static constexpr std::size_t num_space_dim = 1;
-
-    //! Array layout type.
-    using array_layout = ArrayLayout<entity_type, mesh_type>;
-
-    //! View type.
-    using view_type = Kokkos::View<value_type**, Params...>;
-
     //! Memory space.
-    using memory_space = typename view_type::memory_space;
+    using memory_space = MemorySpace;
     //! Default device type.
     using device_type [[deprecated]] = typename memory_space::device_type;
     //! Default execution space.
     using execution_space = typename memory_space::execution_space;
+
+    //! Entity type.
+    using entity_type = typename LayoutType::entity_type;
+
+    //! Tuple type.
+    using tuple_type = typename LayoutType::tuple_type; 
+
+    using aosoa_type = Cabana::AoSoA<tuple_type, memory_space, 4>;
+
+    //! Spatial dimension.
+    static constexpr std::size_t num_space_dim = 1;
 
     /*!
       \brief Create an array with the given layout. Arrays are constructed
@@ -356,32 +351,13 @@ class Array
       \param layout The array layout over which to construct the view.
     */
     Array( const std::string& label,
-           const std::shared_ptr<array_layout>& layout )
+           const std::shared_ptr<LayoutType>& layout )
         : _layout( layout )
-        , _data( Cabana::Grid::createView<value_type, Params...>(
-              label, layout->indexSpace( Ghost(), entity_type(), Local() ) ) )
+        , _data( Cabana::AoSoA<tuple_type, memory_space, 4>(
+              label, layout->indexSpace( Ghost(), entity_type(), Local() ).extent(0) ) )
         , _vef_gid_start( layout->mesh()->vef_gid_start())
     {
         _version = _layout->mesh()->version();
-    }
-
-    /*!
-      \brief Create an array with the given layout and view. This view should
-      match the array index spaces in size.
-      \param layout The layout of the array.
-      \param view The array data - this is a Cabana::slice, which
-                  is a wrapper around aKokkos::View
-    */
-    Array( const std::shared_ptr<array_layout>& layout, const view_type& view )
-        : _layout( layout )
-        , _data( view )
-        , _vef_gid_start( layout->mesh().vef_gid_start())
-    {
-        for ( std::size_t d = 0; d < num_space_dim + 1; ++d )
-            if ( (long)view.extent( d ) !=
-                 layout->indexSpace( Ghost(), Local() ).extent( d ) )
-                throw std::runtime_error(
-                    "Layout and view dimensions do not match" );
     }
 
     //! Update the array to match the size of the new layout
@@ -390,9 +366,9 @@ class Array
         if (_version == _layout->mesh()->version()) return;
 
         // Resize the array
-        size_t new_size = _layout->indexSpace(Ghost(), EntityType(), Local(), Element()).extent(0);
+        size_t new_size = _layout->indexSpace(Ghost(), entity_type(), Local(), Element()).extent(0);
         // printf("Updating size: %d -> %d\n", _data.extent(0), new_size);
-        Kokkos::resize(_data, new_size);
+        _data.resize(new_size);
 
         // Update global ID starts
         _vef_gid_start = _layout->mesh()->vef_gid_start();
@@ -402,20 +378,20 @@ class Array
     }
 
     //! Get the layout of the array.
-    std::shared_ptr<array_layout> layout() const { return _layout; }
+    std::shared_ptr<LayoutType> layout() const { return _layout; }
 
-    //! Get a view of the array data.
-    view_type view() const { return _data; }
+    //! Get the aosoa of the array data.
+    aosoa_type aosoa() const { return _data; }
 
-    //! Get the array label.
+    //! Get the aosoa label.
     std::string label() const { return _data.label(); }
 
     //! Get the version of the array
     int version() { return _version; }
 
   private:
-    std::shared_ptr<array_layout> _layout;
-    view_type _data;
+    std::shared_ptr<LayoutType> _layout;
+    aosoa_type _data;
 
     // The ArrayLayout version, which points to the mesh version, this array is sized for
     int _version;
@@ -423,17 +399,17 @@ class Array
     // The global ID starts of vertices, edges, and faces that this layout is associated with
     Kokkos::View<int*[3], memory_space> _vef_gid_start;
 
-  public:
-    //! Subview type.
-    using subview_type = decltype( createSubview(
-        _data, _layout->indexSpace( Ghost(), entity_type(), Local() ) ) );
-    //! Subview array layout type.
-    using subview_layout = typename subview_type::array_layout;
-    //! Subview memory traits.
-    using subview_memory_traits = typename subview_type::memory_traits;
-    //! Subarray type.
-    using subarray_type = Array<Scalar, EntityType, MeshType, subview_layout,
-                                memory_space, subview_memory_traits>;
+//   public:
+//     //! Subview type.
+//     using subview_type = decltype( createSubview(
+//         _data, _layout->indexSpace( Ghost(), entity_type(), Local() ) ) );
+//     //! Subview array layout type.
+//     using subview_layout = typename subview_type::array_layout;
+//     //! Subview memory traits.
+//     using subview_memory_traits = typename subview_type::memory_traits;
+//     //! Subarray type.
+//     using subarray_type = Array<Scalar, EntityType, MeshType, subview_layout,
+//                                 memory_space, subview_memory_traits>;
 };
 
 //---------------------------------------------------------------------------//
@@ -445,14 +421,14 @@ struct is_array : public std::false_type
 {
 };
 
-template <class Scalar, class EntityType, class MeshType, class... Params>
-struct is_array<Array<Scalar, EntityType, MeshType, Params...>>
+template <class MemorySpace, class LayoutType>
+struct is_array<Array<MemorySpace, LayoutType>>
     : public std::true_type
 {
 };
 
-template <class Scalar, class EntityType, class MeshType, class... Params>
-struct is_array<const Array<Scalar, EntityType, MeshType, Params...>>
+template <class MemorySpace, class LayoutType>
+struct is_array<const Array<MemorySpace, LayoutType>>
     : public std::true_type
 {
 };
@@ -467,12 +443,12 @@ struct is_array<const Array<Scalar, EntityType, MeshType, Params...>>
   \param layout The array layout over which to construct the view.
   \return Shared pointer to an Array.
 */
-template <class Scalar, class... Params, class EntityType, class MeshType>
-std::shared_ptr<Array<Scalar, EntityType, MeshType, Params...>>
+template <class MemorySpace, class LayoutType>
+std::shared_ptr<Array<MemorySpace, LayoutType>>
 createArray( const std::string& label,
-             const std::shared_ptr<ArrayLayout<EntityType, MeshType>>& layout )
+             const std::shared_ptr<LayoutType>& layout )
 {
-    return std::make_shared<Array<Scalar, EntityType, MeshType, Params...>>(
+    return std::make_shared<Array<MemorySpace, LayoutType>>(
         label, layout );
 }
 
@@ -485,11 +461,11 @@ createArray( const std::string& label,
 namespace ArrayOp
 {
 
-template <class Scalar, class... Params, class EntityType, class MeshType>
-std::shared_ptr<Array<Scalar, EntityType, MeshType, Params...>>
-clone( const Array<Scalar, EntityType, MeshType, Params...>& array )
+template <class MemorySpace, class LayoutType>
+std::shared_ptr<Array<MemorySpace, LayoutType>>
+clone( const Array<MemorySpace, LayoutType>& array )
 {
-    return createArray<Scalar, Params...>( array.label(), array.layout() );
+    return createArray<MemorySpace>( array.label(), array.layout() );
 }
 
 //---------------------------------------------------------------------------//
@@ -503,14 +479,25 @@ template <class Array_t, class DecompositionTag>
 void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "Cabana::Grid::Array required" );
+    using execution_space = typename Array_t::execution_space;
     using entity_type = typename Array_t::entity_type;
     auto a_space = a.layout()->indexSpace( tag, entity_type(), Local() );
     auto b_space = b.layout()->indexSpace( tag, entity_type(), Local() );
     if ( a_space != b_space )
         throw std::logic_error( "NuMesh::ArrayOp::copy: Incompatible index spaces" );
-    auto subview_a = Cabana::Grid::createSubview( a.view(), a_space );
-    auto subview_b = Cabana::Grid::createSubview( b.view(), b_space );
-    Kokkos::deep_copy( subview_a, subview_b );
+    // auto subview_a = Cabana::subview( a, a.view(), a_space );
+    // auto subview_b = Cabana::Grid::createSubview( b.view(), b_space );
+    // Kokkos::deep_copy( subview_a, subview_b );
+    // printf("aspace: (%d, %d), (%d, %d), bspace: (%d, %d), (%d, %d)\n",
+    //     a_space.min(0), a_space.max(0), a_space.min(1), a_space.max(1),
+    //     b_space.min(0), b_space.max(0), b_space.min(1), b_space.max(1));
+    auto a_data = Cabana::slice<0>(a.aosoa());
+    auto b_data = Cabana::slice<0>(b.aosoa());
+    auto policy = Cabana::Grid::createExecutionPolicy(a_space, execution_space());
+    Kokkos::parallel_for( "NuMesh::ArrayOp::copy", policy,
+        KOKKOS_LAMBDA( const int i, const int j) {
+            a_data( i, j ) = b_data( i, j );
+        } );
 }
 
 //---------------------------------------------------------------------------//
@@ -528,36 +515,37 @@ std::shared_ptr<Array_t> cloneCopy( const Array_t& array, DecompositionTag tag )
 }
 
 /**
- * Create a copy of one dimension of an array
+ * Create a copy of one dimension of an aosoa slice
  */
 template <class Array_t, class DecompositionTag>
 std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
 {
     using entity_type = typename Array_t::entity_type;
-    using value_type = typename  Array_t::value_type;
+    using tuple_type = typename  Array_t::tuple_type;
     using memory_space = typename Array_t::memory_space;
     using execution_space = typename Array_t::execution_space;
 
-    auto layout = NuMesh::Array::createArrayLayout( a.layout(), 1, entity_type() );
-    auto out = NuMesh::Array::createArray<value_type, memory_space>("copyDim_out", layout);
-    auto out_view = out->view();
+    auto layout = NuMesh::Array::createArrayLayout<tuple_type>( a.layout(), 1, entity_type() );
+    auto out = NuMesh::Array::createArray<memory_space>("copyDim_out", layout);
+    auto out_aosoa = out->aosoa();
+    auto out_slice = Cabana::slice<0>(out_aosoa);
 
     // Check dimensions
-    auto a_view = a.view();
-
-    const int aw = a_view.extent(1);
+    auto a_aosoa = a.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    const int aw = a_slice.extent(1);
 
     if (dimA >= aw) {
         throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension is larger than the number of dimensions in the array.");
     }
 
     auto policy = Cabana::Grid::createExecutionPolicy(
-        a.layout()->indexSpace( tag, entity_type(), Cabana::Grid::Local() ),
+        a.layout()->indexSpace( tag, entity_type(), Cabana::Grid::Local(), Element() ),
         execution_space() );
     Kokkos::parallel_for(
         "NuMesh::ArrayOp::copyDim", policy,
-        KOKKOS_LAMBDA( const int i, const int j) {
-            out_view( i, 0 ) = a_view( i, dimA );
+        KOKKOS_LAMBDA( const int i) {
+            out_slice( i, 0 ) = a_slice( i, dimA );
         } );
     return out;
 }
@@ -571,13 +559,15 @@ void copyDim( Array_t& a, int dimA, Array_t& b, int dimB, DecompositionTag tag )
     using entity_type = typename Array_t::entity_type;
     using execution_space = typename Array_t::execution_space;
 
-    auto a_view = a.view();
-    auto b_view = b.view();
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
 
-    const int an = a_view.extent(0);
-    const int bn = b_view.extent(0);
-    const int am = a_view.extent(1);
-    const int bm = b_view.extent(1);
+    const int an = a_slice.extent(0);
+    const int bn = b_slice.extent(0);
+    const int am = a_slice.extent(1);
+    const int bm = b_slice.extent(1);
 
     if (an != bn) {
         throw std::invalid_argument("NuMesh::ArrayOp::copyDim: First dimension of a and b arrays do not match.");
@@ -595,53 +585,72 @@ void copyDim( Array_t& a, int dimA, Array_t& b, int dimB, DecompositionTag tag )
     Kokkos::parallel_for(
         "NuMesh::ArrayOp::copyDim", policy,
         KOKKOS_LAMBDA( const int i, const int j) {
-            a_view( i, dimA ) = b_view( i, dimB );
+            a_slice( i, dimA ) = b_slice( i, dimB );
     } );
 }
 
 //---------------------------------------------------------------------------//
 /*!
-  \brief Assign a scalar value to every element of an array.
+  \brief Assign a scalar value to every element of an aosoa slice.
   \param array The array to assign the value to.
   \param alpha The value to assign to the array.
   \param tag The tag for the decomposition over which to perform the operation.
 */
+// Helpers to extract base types of Cabana::MemberTypes<...>
+template <typename... Ts>
+struct ExtractBaseTypes;
+
+template <typename... Ts>
+struct ExtractBaseTypes<Cabana::MemberTypes<Ts...>>
+{
+    using type = std::tuple<typename std::remove_extent<Ts>::type...>;
+};
 template <class Array_t, class DecompositionTag>
-void assign( Array_t& array, const typename Array_t::value_type alpha,
+void assign( Array_t& array, const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type alpha,
              DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using execution_space = typename Array_t::execution_space;
     using entity_t = typename Array_t::entity_type;
-    auto subview = createSubview( array.view(),
-                                  array.layout()->indexSpace( tag, entity_t(), Local() ) );
-    Kokkos::deep_copy( subview, alpha );
+    auto aosoa = array.aosoa();
+    auto slice = Cabana::slice<0>(aosoa);
+    auto policy = Cabana::Grid::createExecutionPolicy(
+         array.layout()->indexSpace( tag, entity_t(), Local() ), execution_space() );
+    Kokkos::parallel_for(
+        "NuMesh::ArrayOp::assign", policy,
+        KOKKOS_LAMBDA( const int i, const int j) {
+            slice( i, j ) = alpha;
+    } );
 }
 
 /*!
-  \brief Scale every element of an array by a scalar value. 2D specialization.
+  \brief Scale every element of an aosoa slice by a scalar value. 2D specialization.
   \param array The array to scale.
   \param alpha The value to scale the array by.
   \param tag The tag for the decomposition over which to perform the operation.
 */
 template <class Array_t, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
-scale( Array_t& array, const typename Array_t::value_type alpha,
+scale( Array_t& array, const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type alpha,
        DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
     using entity_t = typename Array_t::entity_type;
-    auto view = array.view();
+    auto aosoa = array.aosoa();
+    auto slice = Cabana::slice<0>(aosoa);
     Kokkos::parallel_for(
         "ArrayOp::scale",
         createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
                                typename Array_t::execution_space() ),
         KOKKOS_LAMBDA( const int i, const int j ) {
-            view( i, j ) *= alpha;
+            slice( i, j ) *= alpha;
         } );
 }
 
 /*!
-  \brief Apply some function to every element of an array
+  \brief Apply some function to every element of an aosoa slice
   \param array The array to operate on.
   \param function A functor that operates on the array elements.
   \param tag The tag for the decomposition over which to perform the operation.
@@ -652,13 +661,14 @@ apply( Array_t& array, Function& function, DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
     using entity_t = typename Array_t::entity_type;
-    auto view = array.view();
+    auto aosoa = array.aosoa();
+    auto slice = Cabana::slice<0>(aosoa);
     Kokkos::parallel_for(
         "ArrayOp::apply",
         createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
                                typename Array_t::execution_space() ),
         KOKKOS_LAMBDA( const int i, const int j) {
-            view( i, j ) = function(view( i, j ));
+            slice( i, j ) = function(slice( i, j ));
         } );
 }
 
@@ -672,20 +682,25 @@ apply( Array_t& array, Function& function, DecompositionTag tag )
 */
 template <class Array_t, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
-update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
-        const typename Array_t::value_type beta, DecompositionTag tag )
+update( Array_t& a, const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type alpha, const Array_t& b,
+            const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type beta,
+            DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
     using entity_type = typename Array_t::entity_type;
-    auto a_view = a.view();
-    auto b_view = b.view();
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
     Kokkos::parallel_for(
         "ArrayOp::update",
         createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
                                typename Array_t::execution_space() ),
         KOKKOS_LAMBDA( const long i, const long j ) {
-            a_view( i, j ) =
-                alpha * a_view( i, j ) + beta * b_view( i, j );
+            a_slice( i, j ) =
+                alpha * a_slice( i, j ) + beta * b_slice( i, j );
         } );
 }
 
@@ -701,23 +716,29 @@ update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
 */
 template <class Array_t, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
-update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
-        const typename Array_t::value_type beta, const Array_t& c,
-        const typename Array_t::value_type gamma, DecompositionTag tag )
+update( Array_t& a, const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type alpha, const Array_t& b,
+        const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type beta, const Array_t& c,
+        const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type gamma, DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
     using entity_type = typename Array_t::entity_type;
-    auto a_view = a.view();
-    auto b_view = b.view();
-    auto c_view = c.view();
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto c_aosoa = c.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
+    auto c_slice = Cabana::slice<0>(c_aosoa);
     Kokkos::parallel_for(
         "ArrayOp::update",
         createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
                                typename Array_t::execution_space() ),
         KOKKOS_LAMBDA( const int i, const int j ) {
-            a_view( i, j ) = alpha * a_view( i, j ) +
-                                beta * b_view( i, j ) +
-                                gamma * c_view( i, j );
+            a_slice( i, j ) = alpha * a_slice( i, j ) +
+                                beta * b_slice( i, j ) +
+                                gamma * c_slice( i, j );
         } );
 }
 
@@ -727,25 +748,29 @@ update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
 template <class Array_t, class DecompositionTag>
 std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
-    using mesh_type = typename Array_t::mesh_type;
     using entity_type = typename Array_t::entity_type;
-    using value_type = typename  Array_t::value_type;
+    using tuple_type = typename  Array_t::tuple_type;
+    using single_type = typename ExtractBaseTypes<
+            typename Array_t::tuple_type>::type;
     using memory_space = typename Array_t::memory_space;
     using execution_space = typename Array_t::execution_space;
 
     // The resulting 'dot' array has the shape (i, j, 1)
-    auto scalar_layout = NuMesh::Array::createArrayLayout(a.layout()->mesh(), 1, entity_type());
-    auto dot = NuMesh::Array::createArray<value_type, memory_space>("dot", scalar_layout);
-    auto dot_view = dot->view();
+    auto scalar_layout = NuMesh::Array::createArrayLayout<single_type>(a.layout()->mesh(), 1, entity_type());
+    auto dot = NuMesh::Array::createArray<memory_space>("dot", scalar_layout);
+    auto dot_aosoa = dot->aosoa();
+    auto dot_slice = Cabana::slice<0>(dot_aosoa);
 
     // Check dimensions
-    auto a_view = a.view();
-    auto b_view = b.view();
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
 
-    const int an = a_view.extent(0);
-    const int am = a_view.extent(1);
-    const int bn = b_view.extent(0);
-    const int bm = b_view.extent(1);
+    const int an = a_slice.extent(0);
+    const int am = a_slice.extent(1);
+    const int bn = b_slice.extent(0);
+    const int bm = b_slice.extent(1);
 
     // Ensure the third dimension is 3 for 3D vectors
     if (am != 3 || bm != 3) {
@@ -760,9 +785,9 @@ std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, Decompositio
             execution_space() );
     Kokkos::parallel_for("compute_dot_product", policy,
         KOKKOS_LAMBDA(const int i) {
-            dot_view(i, 0) = a_view(i, 0) * b_view(i, 0)
-                              + a_view(i, 1) * b_view(i, 1)
-                              + a_view(i, 2) * b_view(i, 2);
+            dot_slice(i) = a_slice(i, 0) * b_slice(i, 0)
+                              + a_slice(i, 1) * b_slice(i, 1)
+                              + a_slice(i, 2) * b_slice(i, 2);
         });
 
     return dot;
@@ -774,25 +799,29 @@ std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, Decompositio
 template <class Array_t, class DecompositionTag>
 std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
-    using mesh_type = typename Array_t::mesh_type;
     using entity_type = typename Array_t::entity_type;
-    using value_type = typename  Array_t::value_type;
+    using tuple_type = typename  Array_t::tuple_type;
+    using value_type = typename ExtractBaseTypes<
+            typename Array_t::tuple_type>::type;
     using memory_space = typename Array_t::memory_space;
     using execution_space = typename Array_t::execution_space;
 
-    // The resulting 'dot' array has the shape (i, j, 1)
-    auto layout = NuMesh::Array::createArrayLayout(a.layout()->mesh(), 3, entity_type());
-    auto cross = NuMesh::Array::createArray<double, memory_space>("cross", layout);
-    auto cross_view = cross->view();
+    // The resulting 'dot' array has the shape (i, j, 3)
+    auto layout = NuMesh::Array::createArrayLayout<tuple_type>(a.layout()->mesh(), 3, entity_type());
+    auto cross = NuMesh::Array::createArray<memory_space>("cross", layout);
+    auto cross_aosoa = cross->aosoa();
+    auto cross_slice = Cabana::slice<0>(cross_aosoa);
 
     // Check dimensions
-    auto a_view = a.view();
-    auto b_view = b.view();
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
 
-    const int an = a_view.extent(0);
-    const int am = a_view.extent(1);
-    const int bn = b_view.extent(0);
-    const int bm = b_view.extent(1);
+    const int an = a_slice.extent(0);
+    const int am = a_slice.extent(1);
+    const int bn = b_slice.extent(0);
+    const int bm = b_slice.extent(1);
 
     // Ensure the third dimension is 3 for 3D vectors
     if (am != 3 || bm != 3) {
@@ -808,18 +837,18 @@ std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, Decomposit
     // Create output view for cross product results
     Kokkos::parallel_for("CrossProductKernel", policy,
         KOKKOS_LAMBDA(const int i) {
-        value_type a_x = a_view(i, 0);
-        value_type a_y = a_view(i, 1);
-        value_type a_z = a_view(i, 2);
+        value_type a_x = a_slice(i, 0);
+        value_type a_y = a_slice(i, 1);
+        value_type a_z = a_slice(i, 2);
         
-        value_type b_x = b_view(i, 0);
-        value_type b_y = b_view(i, 1);
-        value_type b_z = b_view(i, 2);
+        value_type b_x = b_slice(i, 0);
+        value_type b_y = b_slice(i, 1);
+        value_type b_z = b_slice(i, 2);
 
         // Cross product: a x b = (ay*bz - az*by, az*bx - ax*bz, ax*by - ay*bx)
-        cross_view(i, 0) = a_y * b_z - a_z * b_y;
-        cross_view(i, 1) = a_z * b_x - a_x * b_z;
-        cross_view(i, 2) = a_x * b_y - a_y * b_x;
+        cross_slice(i, 0) = a_y * b_z - a_z * b_y;
+        cross_slice(i, 1) = a_z * b_x - a_x * b_z;
+        cross_slice(i, 2) = a_x * b_y - a_y * b_x;
     });
 
     return cross;
@@ -835,23 +864,24 @@ std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, Decomposit
 template <class Array_t, class DecompositionTag>
 std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
-    using mesh_type = typename Array_t::mesh_type;
     using entity_type = typename Array_t::entity_type;
-    using value_type = typename  Array_t::value_type;
     using memory_space = typename Array_t::memory_space;
     using execution_space = typename Array_t::execution_space;
 
     auto out = clone(a);
-    auto out_view = out->view();
+    auto out_aosoa = out->aosoa();
+    auto out_slice = Cabana::slice<0>(out_aosoa);
 
     // Check dimensions
-    auto a_view = a.view();
-    auto b_view = b.view();
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
 
-    const int an = a_view.extent(0);
-    const int bn = b_view.extent(0);
-    const int am = a_view.extent(1);
-    const int bm = b_view.extent(1);
+    const int an = a_slice.extent(0);
+    const int bn = b_slice.extent(0);
+    const int am = a_slice.extent(1);
+    const int bm = b_slice.extent(1);
 
     // Ensure the third dimension is 3 for 3D vectors
     if (an != bn) {
@@ -867,7 +897,7 @@ std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, Decompo
             createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
                                 execution_space() ),
             KOKKOS_LAMBDA( const int i, const int j ) {
-                out_view( i, j ) = a_view( i, j ) * b_view( i, j );
+                out_slice( i, j ) = a_slice( i, j ) * b_slice( i, j );
             } );
 
         return out;
@@ -884,7 +914,7 @@ std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, Decompo
             KOKKOS_LAMBDA( const int i) {
                 for (int j = 0; j < bm; j++)
                 {
-                    out_view( i, j ) = a_view( i, 0 ) * b_view( i, j );
+                    out_slice( i, j ) = a_slice( i, 0 ) * b_slice( i, j );
                 }
             } );
 
