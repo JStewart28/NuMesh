@@ -759,16 +759,19 @@ std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, Decompositio
     // The resulting 'dot' array has the shape (i, j, 1)
     auto scalar_layout = NuMesh::Array::createArrayLayout<single_type>(a.layout()->mesh(), 1, entity_type());
     auto dot = NuMesh::Array::createArray<memory_space>("dot", scalar_layout);
-    auto dot_view = dot->view();
+    auto dot_aosoa = dot->aosoa();
+    auto dot_slice = Cabana::slice<0>(dot_aosoa);
 
     // Check dimensions
-    auto a_view = a.view();
-    auto b_view = b.view();
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
 
-    const int an = a_view.extent(0);
-    const int am = a_view.extent(1);
-    const int bn = b_view.extent(0);
-    const int bm = b_view.extent(1);
+    const int an = a_slice.extent(0);
+    const int am = a_slice.extent(1);
+    const int bn = b_slice.extent(0);
+    const int bm = b_slice.extent(1);
 
     // Ensure the third dimension is 3 for 3D vectors
     if (am != 3 || bm != 3) {
@@ -778,146 +781,154 @@ std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, Decompositio
         throw std::invalid_argument("First dimension of a and b views do not match.");
     }
 
-//     auto policy = Cabana::Grid::createExecutionPolicy(
-//             scalar_layout->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
-//             execution_space() );
-//     Kokkos::parallel_for("compute_dot_product", policy,
-//         KOKKOS_LAMBDA(const int i) {
-//             dot_view(i, 0) = a_view(i, 0) * b_view(i, 0)
-//                               + a_view(i, 1) * b_view(i, 1)
-//                               + a_view(i, 2) * b_view(i, 2);
-//         });
+    auto policy = Cabana::Grid::createExecutionPolicy(
+            scalar_layout->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
+            execution_space() );
+    Kokkos::parallel_for("compute_dot_product", policy,
+        KOKKOS_LAMBDA(const int i) {
+            dot_slice(i) = a_slice(i, 0) * b_slice(i, 0)
+                              + a_slice(i, 1) * b_slice(i, 1)
+                              + a_slice(i, 2) * b_slice(i, 2);
+        });
 
-//     return dot;
-// }
+    return dot;
+}
 
-// /**
-//  * Element-wise cross product
-//  */
-// template <class Array_t, class DecompositionTag>
-// std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, DecompositionTag tag )
-// {
-//     using mesh_type = typename Array_t::mesh_type;
-//     using entity_type = typename Array_t::entity_type;
-//     using value_type = typename  Array_t::value_type;
-//     using memory_space = typename Array_t::memory_space;
-//     using execution_space = typename Array_t::execution_space;
+/**
+ * Element-wise cross product
+ */
+template <class Array_t, class DecompositionTag>
+std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, DecompositionTag tag )
+{
+    using mesh_type = typename Array_t::mesh_type;
+    using entity_type = typename Array_t::entity_type;
+    using tuple_type = typename  Array_t::tuple_type;
+    using value_type = typename ExtractBaseTypes<
+            typename Array_t::tuple_type>::type;
+    using memory_space = typename Array_t::memory_space;
+    using execution_space = typename Array_t::execution_space;
 
-//     // The resulting 'dot' array has the shape (i, j, 1)
-//     auto layout = NuMesh::Array::createArrayLayout(a.layout()->mesh(), 3, entity_type());
-//     auto cross = NuMesh::Array::createArray<double, memory_space>("cross", layout);
-//     auto cross_view = cross->view();
+    // The resulting 'dot' array has the shape (i, j, 3)
+    auto layout = NuMesh::Array::createArrayLayout<tuple_type>(a.layout()->mesh(), 3, entity_type());
+    auto cross = NuMesh::Array::createArray<memory_space>("cross", layout);
+    auto cross_aosoa = cross->aosoa();
+    auto cross_slice = Cabana::slice<0>(cross_aosoa);
 
-//     // Check dimensions
-//     auto a_view = a.view();
-//     auto b_view = b.view();
+    // Check dimensions
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
 
-//     const int an = a_view.extent(0);
-//     const int am = a_view.extent(1);
-//     const int bn = b_view.extent(0);
-//     const int bm = b_view.extent(1);
+    const int an = a_slice.extent(0);
+    const int am = a_slice.extent(1);
+    const int bn = b_slice.extent(0);
+    const int bm = b_slice.extent(1);
 
-//     // Ensure the third dimension is 3 for 3D vectors
-//     if (am != 3 || bm != 3) {
-//         throw std::invalid_argument("Second dimension must be 3 for 3D vectors.");
-//     }
-//     if (an != bn) {
-//         throw std::invalid_argument("First dimension of a and b views do not match.");
-//     }
+    // Ensure the third dimension is 3 for 3D vectors
+    if (am != 3 || bm != 3) {
+        throw std::invalid_argument("Second dimension must be 3 for 3D vectors.");
+    }
+    if (an != bn) {
+        throw std::invalid_argument("First dimension of a and b views do not match.");
+    }
 
-//     auto policy = Cabana::Grid::createExecutionPolicy(
-//             layout->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
-//             execution_space() );
-//     // Create output view for cross product results
-//     Kokkos::parallel_for("CrossProductKernel", policy,
-//         KOKKOS_LAMBDA(const int i) {
-//         value_type a_x = a_view(i, 0);
-//         value_type a_y = a_view(i, 1);
-//         value_type a_z = a_view(i, 2);
+    auto policy = Cabana::Grid::createExecutionPolicy(
+            layout->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
+            execution_space() );
+    // Create output view for cross product results
+    Kokkos::parallel_for("CrossProductKernel", policy,
+        KOKKOS_LAMBDA(const int i) {
+        value_type a_x = a_slice(i, 0);
+        value_type a_y = a_slice(i, 1);
+        value_type a_z = a_slice(i, 2);
         
-//         value_type b_x = b_view(i, 0);
-//         value_type b_y = b_view(i, 1);
-//         value_type b_z = b_view(i, 2);
+        value_type b_x = b_slice(i, 0);
+        value_type b_y = b_slice(i, 1);
+        value_type b_z = b_slice(i, 2);
 
-//         // Cross product: a x b = (ay*bz - az*by, az*bx - ax*bz, ax*by - ay*bx)
-//         cross_view(i, 0) = a_y * b_z - a_z * b_y;
-//         cross_view(i, 1) = a_z * b_x - a_x * b_z;
-//         cross_view(i, 2) = a_x * b_y - a_y * b_x;
-//     });
+        // Cross product: a x b = (ay*bz - az*by, az*bx - ax*bz, ax*by - ay*bx)
+        cross_slice(i, 0) = a_y * b_z - a_z * b_y;
+        cross_slice(i, 1) = a_z * b_x - a_x * b_z;
+        cross_slice(i, 2) = a_x * b_y - a_y * b_x;
+    });
 
-//     return cross;
-// }
+    return cross;
+}
 
-// /**
-//  * Element-wise multiplication, where (1, 3) * (4, 7) = (4, 21)
-//  * If a and b do not have matching second dimensions, place the view with the 
-//  * smaller second dimension first.
-//  * 
-//  * If a has a third dimension of 1, out(x, y) = b(x, y) * a(x, 0) for 0 <= y < b extent
-//  */ 
-// template <class Array_t, class DecompositionTag>
-// std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, DecompositionTag tag )
-// {
-//     using mesh_type = typename Array_t::mesh_type;
-//     using entity_type = typename Array_t::entity_type;
-//     using value_type = typename  Array_t::value_type;
-//     using memory_space = typename Array_t::memory_space;
-//     using execution_space = typename Array_t::execution_space;
+/**
+ * Element-wise multiplication, where (1, 3) * (4, 7) = (4, 21)
+ * If a and b do not have matching second dimensions, place the view with the 
+ * smaller second dimension first.
+ * 
+ * If a has a third dimension of 1, out(x, y) = b(x, y) * a(x, 0) for 0 <= y < b extent
+ */ 
+template <class Array_t, class DecompositionTag>
+std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, DecompositionTag tag )
+{
+    using mesh_type = typename Array_t::mesh_type;
+    using entity_type = typename Array_t::entity_type;
+    using value_type = typename  Array_t::value_type;
+    using memory_space = typename Array_t::memory_space;
+    using execution_space = typename Array_t::execution_space;
 
-//     auto out = clone(a);
-//     auto out_view = out->view();
+    auto out = clone(a);
+    auto out_aosoa = out->aosoa();
+    auto out_slice = Cabana::slice<0>(out_aosoa);
 
-//     // Check dimensions
-//     auto a_view = a.view();
-//     auto b_view = b.view();
+    // Check dimensions
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
 
-//     const int an = a_view.extent(0);
-//     const int bn = b_view.extent(0);
-//     const int am = a_view.extent(1);
-//     const int bm = b_view.extent(1);
+    const int an = a_slice.extent(0);
+    const int bn = b_slice.extent(0);
+    const int am = a_slice.extent(1);
+    const int bm = b_slice.extent(1);
 
-//     // Ensure the third dimension is 3 for 3D vectors
-//     if (an != bn) {
-//         throw std::invalid_argument("First dimension of a and b views do not match.");
-//     }
-//     if (am == bm)
-//     {
-//         auto policy = Cabana::Grid::createExecutionPolicy(
-//                 a.layout()->indexSpace( tag, entity_type(), NuMesh::Local() ),
-//                 execution_space() );
-//         Kokkos::parallel_for(
-//             "ArrayOp::update",
-//             createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
-//                                 execution_space() ),
-//             KOKKOS_LAMBDA( const int i, const int j ) {
-//                 out_view( i, j ) = a_view( i, j ) * b_view( i, j );
-//             } );
+    // Ensure the third dimension is 3 for 3D vectors
+    if (an != bn) {
+        throw std::invalid_argument("First dimension of a and b views do not match.");
+    }
+    if (am == bm)
+    {
+        auto policy = Cabana::Grid::createExecutionPolicy(
+                a.layout()->indexSpace( tag, entity_type(), NuMesh::Local() ),
+                execution_space() );
+        Kokkos::parallel_for(
+            "ArrayOp::update",
+            createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
+                                execution_space() ),
+            KOKKOS_LAMBDA( const int i, const int j ) {
+                out_slice( i, j ) = a_slice( i, j ) * b_slice( i, j );
+            } );
 
-//         return out;
-//     }
-//     // If a has a third dimension of 1
-//     if ((am == 1) && (am < bm))
-//     {
-//         using entity_type = typename Array_t::entity_type;
-//         auto policy = Cabana::Grid::createExecutionPolicy(
-//             a.layout()->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
-//             execution_space() );
-//         Kokkos::parallel_for(
-//             "ArrayOp::update", policy,
-//             KOKKOS_LAMBDA( const int i) {
-//                 for (int j = 0; j < bm; j++)
-//                 {
-//                     out_view( i, j ) = a_view( i, 0 ) * b_view( i, j );
-//                 }
-//             } );
+        return out;
+    }
+    // If a has a third dimension of 1
+    if ((am == 1) && (am < bm))
+    {
+        using entity_type = typename Array_t::entity_type;
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            a.layout()->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
+            execution_space() );
+        Kokkos::parallel_for(
+            "ArrayOp::update", policy,
+            KOKKOS_LAMBDA( const int i) {
+                for (int j = 0; j < bm; j++)
+                {
+                    out_slice( i, j ) = a_slice( i, 0 ) * b_slice( i, j );
+                }
+            } );
 
-//         return out;
-//     }
-//     else
-//     {
-//         throw std::invalid_argument("First array argument must have equal or smaller third dimension than second array argument.");
-//     }
-// }
+        return out;
+    }
+    else
+    {
+        throw std::invalid_argument("First array argument must have equal or smaller third dimension than second array argument.");
+    }
+}
 
 } // end neamspace ArrayOp
 
