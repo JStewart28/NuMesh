@@ -319,11 +319,10 @@ createArrayLayout( const std::shared_ptr<MeshType>& mesh,
   \brief A wrapper around a slice of some data in the unstructured mesh
 
   \tparam Scalar Scalar type.
-  \tparam EntityType Array entity type (vertex, edge, face).
   \tparam MeshType Mesh type (uniform, non-uniform).
   \tparam Params Kokkos View parameters.
 */
-template <class MemorySpace, class EntityType, class MeshType, class TupleType>
+template <class MemorySpace, class LayoutType>
 class Array
 {
   public:
@@ -335,23 +334,15 @@ class Array
     using execution_space = typename memory_space::execution_space;
 
     //! Entity type.
-    using entity_type = EntityType;
-
-    //! Mesh type.
-    using mesh_type = MeshType;
+    using entity_type = typename LayoutType::entity_type;
 
     //! Tuple type.
-    using tuple_type = TupleType; 
+    using tuple_type = typename LayoutType::tuple_type; 
 
     using aosoa_type = Cabana::AoSoA<tuple_type, memory_space, 4>;
 
     //! Spatial dimension.
     static constexpr std::size_t num_space_dim = 1;
-
-    //! Array layout type.
-    using array_layout = ArrayLayout<entity_type, mesh_type, tuple_type>;
-    
-
 
     /*!
       \brief Create an array with the given layout. Arrays are constructed
@@ -360,10 +351,10 @@ class Array
       \param layout The array layout over which to construct the view.
     */
     Array( const std::string& label,
-           const std::shared_ptr<array_layout>& layout )
+           const std::shared_ptr<LayoutType>& layout )
         : _layout( layout )
         , _data( Cabana::AoSoA<tuple_type, memory_space, 4>(
-              label, layout->indexSpace( Ghost(), entity_type(), Local() ) ) )
+              label, layout->indexSpace( Ghost(), entity_type(), Local() ).extent(0) ) )
         , _vef_gid_start( layout->mesh()->vef_gid_start())
     {
         _version = _layout->mesh()->version();
@@ -375,7 +366,7 @@ class Array
         if (_version == _layout->mesh()->version()) return;
 
         // Resize the array
-        size_t new_size = _layout->indexSpace(Ghost(), EntityType(), Local(), Element()).extent(0);
+        size_t new_size = _layout->indexSpace(Ghost(), entity_type(), Local(), Element()).extent(0);
         // printf("Updating size: %d -> %d\n", _data.extent(0), new_size);
         _data.resize(new_size);
 
@@ -387,7 +378,7 @@ class Array
     }
 
     //! Get the layout of the array.
-    std::shared_ptr<array_layout> layout() const { return _layout; }
+    std::shared_ptr<LayoutType> layout() const { return _layout; }
 
     //! Get the aosoa of the array data.
     aosoa_type aosoa() const { return _data; }
@@ -399,7 +390,7 @@ class Array
     int version() { return _version; }
 
   private:
-    std::shared_ptr<array_layout> _layout;
+    std::shared_ptr<LayoutType> _layout;
     aosoa_type _data;
 
     // The ArrayLayout version, which points to the mesh version, this array is sized for
@@ -430,14 +421,14 @@ struct is_array : public std::false_type
 {
 };
 
-template <class Scalar, class EntityType, class MeshType, class... Params>
-struct is_array<Array<Scalar, EntityType, MeshType, Params...>>
+template <class MemorySpace, class LayoutType>
+struct is_array<Array<MemorySpace, LayoutType>>
     : public std::true_type
 {
 };
 
-template <class Scalar, class EntityType, class MeshType, class... Params>
-struct is_array<const Array<Scalar, EntityType, MeshType, Params...>>
+template <class MemorySpace, class LayoutType>
+struct is_array<const Array<MemorySpace, LayoutType>>
     : public std::true_type
 {
 };
@@ -452,12 +443,12 @@ struct is_array<const Array<Scalar, EntityType, MeshType, Params...>>
   \param layout The array layout over which to construct the view.
   \return Shared pointer to an Array.
 */
-template <class MemorySpace, class EntityType,class MeshType, class TupleType>
-std::shared_ptr<Array<MemorySpace, EntityType, MeshType, TupleType>>
+template <class MemorySpace, class LayoutType>
+std::shared_ptr<Array<MemorySpace, LayoutType>>
 createArray( const std::string& label,
-             const std::shared_ptr<ArrayLayout<EntityType, MeshType, TupleType>>& layout )
+             const std::shared_ptr<LayoutType>& layout )
 {
-    return std::make_shared<Array<MemorySpace, EntityType, MeshType, TupleType>>(
+    return std::make_shared<Array<MemorySpace, LayoutType>>(
         label, layout );
 }
 
@@ -470,275 +461,322 @@ createArray( const std::string& label,
 namespace ArrayOp
 {
 
-// template <class Scalar, class... Params, class EntityType, class MeshType>
-// std::shared_ptr<Array<Scalar, EntityType, MeshType, Params...>>
-// clone( const Array<Scalar, EntityType, MeshType, Params...>& array )
-// {
-//     return createArray<Scalar, Params...>( array.label(), array.layout() );
-// }
+template <class MemorySpace, class LayoutType>
+std::shared_ptr<Array<MemorySpace, LayoutType>>
+clone( const Array<MemorySpace, LayoutType>& array )
+{
+    return createArray<MemorySpace>( array.label(), array.layout() );
+}
 
-// //---------------------------------------------------------------------------//
-// /*!
-//   \brief Copy one array into another over the designated decomposition. A <- B
-//   \param a The array to which the data will be copied.
-//   \param b The array from which the data will be copied.
-//   \param tag The tag for the decomposition over which to perform the operation.
-// */
-// template <class Array_t, class DecompositionTag>
-// void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
-// {
-//     static_assert( is_array<Array_t>::value, "Cabana::Grid::Array required" );
-//     using entity_type = typename Array_t::entity_type;
-//     auto a_space = a.layout()->indexSpace( tag, entity_type(), Local() );
-//     auto b_space = b.layout()->indexSpace( tag, entity_type(), Local() );
-//     if ( a_space != b_space )
-//         throw std::logic_error( "NuMesh::ArrayOp::copy: Incompatible index spaces" );
-//     auto subview_a = Cabana::Grid::createSubview( a.view(), a_space );
-//     auto subview_b = Cabana::Grid::createSubview( b.view(), b_space );
-//     Kokkos::deep_copy( subview_a, subview_b );
-// }
+//---------------------------------------------------------------------------//
+/*!
+  \brief Copy one array into another over the designated decomposition. A <- B
+  \param a The array to which the data will be copied.
+  \param b The array from which the data will be copied.
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+template <class Array_t, class DecompositionTag>
+void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "Cabana::Grid::Array required" );
+    using execution_space = typename Array_t::execution_space;
+    using entity_type = typename Array_t::entity_type;
+    auto a_space = a.layout()->indexSpace( tag, entity_type(), Local() );
+    auto b_space = b.layout()->indexSpace( tag, entity_type(), Local() );
+    if ( a_space != b_space )
+        throw std::logic_error( "NuMesh::ArrayOp::copy: Incompatible index spaces" );
+    // auto subview_a = Cabana::subview( a, a.view(), a_space );
+    // auto subview_b = Cabana::Grid::createSubview( b.view(), b_space );
+    // Kokkos::deep_copy( subview_a, subview_b );
+    // printf("aspace: (%d, %d), (%d, %d), bspace: (%d, %d), (%d, %d)\n",
+    //     a_space.min(0), a_space.max(0), a_space.min(1), a_space.max(1),
+    //     b_space.min(0), b_space.max(0), b_space.min(1), b_space.max(1));
+    auto a_data = Cabana::slice<0>(a.aosoa());
+    auto b_data = Cabana::slice<0>(b.aosoa());
+    auto policy = Cabana::Grid::createExecutionPolicy(a_space, execution_space());
+    Kokkos::parallel_for( "NuMesh::ArrayOp::copy", policy,
+        KOKKOS_LAMBDA( const int i, const int j) {
+            a_data( i, j ) = b_data( i, j );
+        } );
+}
 
-// //---------------------------------------------------------------------------//
-// /*!
-//   \brief Clone an array and copy its contents into the clone.
-//   \param array The array to clone.
-//   \param tag The tag for the decomposition over which to perform the copy.
-// */
-// template <class Array_t, class DecompositionTag>
-// std::shared_ptr<Array_t> cloneCopy( const Array_t& array, DecompositionTag tag )
-// {
-//     auto cln = clone( array );
-//     copy( *cln, array, tag );
-//     return cln;
-// }
+//---------------------------------------------------------------------------//
+/*!
+  \brief Clone an array and copy its contents into the clone.
+  \param array The array to clone.
+  \param tag The tag for the decomposition over which to perform the copy.
+*/
+template <class Array_t, class DecompositionTag>
+std::shared_ptr<Array_t> cloneCopy( const Array_t& array, DecompositionTag tag )
+{
+    auto cln = clone( array );
+    copy( *cln, array, tag );
+    return cln;
+}
 
-// /**
-//  * Create a copy of one dimension of an array
-//  */
-// template <class Array_t, class DecompositionTag>
-// std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
-// {
-//     using entity_type = typename Array_t::entity_type;
-//     using value_type = typename  Array_t::value_type;
-//     using memory_space = typename Array_t::memory_space;
-//     using execution_space = typename Array_t::execution_space;
+/**
+ * Create a copy of one dimension of an aosoa slice
+ */
+template <class Array_t, class DecompositionTag>
+std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
+{
+    using entity_type = typename Array_t::entity_type;
+    using tuple_type = typename  Array_t::tuple_type;
+    using memory_space = typename Array_t::memory_space;
+    using execution_space = typename Array_t::execution_space;
 
-//     auto layout = NuMesh::Array::createArrayLayout( a.layout(), 1, entity_type() );
-//     auto out = NuMesh::Array::createArray<value_type, memory_space>("copyDim_out", layout);
-//     auto out_view = out->view();
+    auto layout = NuMesh::Array::createArrayLayout<tuple_type>( a.layout(), 1, entity_type() );
+    auto out = NuMesh::Array::createArray<memory_space>("copyDim_out", layout);
+    auto out_aosoa = out->aosoa();
+    auto out_slice = Cabana::slice<0>(out_aosoa);
 
-//     // Check dimensions
-//     auto a_view = a.view();
+    // Check dimensions
+    auto a_aosoa = a.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    const int aw = a_slice.extent(1);
 
-//     const int aw = a_view.extent(1);
+    if (dimA >= aw) {
+        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension is larger than the number of dimensions in the array.");
+    }
 
-//     if (dimA >= aw) {
-//         throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension is larger than the number of dimensions in the array.");
-//     }
+    auto policy = Cabana::Grid::createExecutionPolicy(
+        a.layout()->indexSpace( tag, entity_type(), Cabana::Grid::Local(), Element() ),
+        execution_space() );
+    Kokkos::parallel_for(
+        "NuMesh::ArrayOp::copyDim", policy,
+        KOKKOS_LAMBDA( const int i) {
+            out_slice( i, 0 ) = a_slice( i, dimA );
+        } );
+    return out;
+}
 
-//     auto policy = Cabana::Grid::createExecutionPolicy(
-//         a.layout()->indexSpace( tag, entity_type(), Cabana::Grid::Local() ),
-//         execution_space() );
-//     Kokkos::parallel_for(
-//         "NuMesh::ArrayOp::copyDim", policy,
-//         KOKKOS_LAMBDA( const int i, const int j) {
-//             out_view( i, 0 ) = a_view( i, dimA );
-//         } );
-//     return out;
-// }
+/**
+ * Copy dimB from b into dimA from a 
+ */
+template <class Array_t, class DecompositionTag>
+void copyDim( Array_t& a, int dimA, Array_t& b, int dimB, DecompositionTag tag )
+{
+    using entity_type = typename Array_t::entity_type;
+    using execution_space = typename Array_t::execution_space;
 
-// /**
-//  * Copy dimB from b into dimA from a 
-//  */
-// template <class Array_t, class DecompositionTag>
-// void copyDim( Array_t& a, int dimA, Array_t& b, int dimB, DecompositionTag tag )
-// {
-//     using entity_type = typename Array_t::entity_type;
-//     using execution_space = typename Array_t::execution_space;
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
 
-//     auto a_view = a.view();
-//     auto b_view = b.view();
+    const int an = a_slice.extent(0);
+    const int bn = b_slice.extent(0);
+    const int am = a_slice.extent(1);
+    const int bm = b_slice.extent(1);
 
-//     const int an = a_view.extent(0);
-//     const int bn = b_view.extent(0);
-//     const int am = a_view.extent(1);
-//     const int bm = b_view.extent(1);
+    if (an != bn) {
+        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: First dimension of a and b arrays do not match.");
+    }
+    if (dimA >= am) {
+        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension for 'a' is larger than the number of dimensions in the b array.");
+    }
+    if (dimB >= bm) {
+        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension for 'b' is larger than the number of dimensions in the b array.");
+    }
 
-//     if (an != bn) {
-//         throw std::invalid_argument("NuMesh::ArrayOp::copyDim: First dimension of a and b arrays do not match.");
-//     }
-//     if (dimA >= am) {
-//         throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension for 'a' is larger than the number of dimensions in the b array.");
-//     }
-//     if (dimB >= bm) {
-//         throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension for 'b' is larger than the number of dimensions in the b array.");
-//     }
+    auto policy = Cabana::Grid::createExecutionPolicy(
+        a.layout()->indexSpace( tag, entity_type(), Cabana::Grid::Local() ),
+        execution_space() );
+    Kokkos::parallel_for(
+        "NuMesh::ArrayOp::copyDim", policy,
+        KOKKOS_LAMBDA( const int i, const int j) {
+            a_slice( i, dimA ) = b_slice( i, dimB );
+    } );
+}
 
-//     auto policy = Cabana::Grid::createExecutionPolicy(
-//         a.layout()->indexSpace( tag, entity_type(), Cabana::Grid::Local() ),
-//         execution_space() );
-//     Kokkos::parallel_for(
-//         "NuMesh::ArrayOp::copyDim", policy,
-//         KOKKOS_LAMBDA( const int i, const int j) {
-//             a_view( i, dimA ) = b_view( i, dimB );
-//     } );
-// }
+//---------------------------------------------------------------------------//
+/*!
+  \brief Assign a scalar value to every element of an aosoa slice.
+  \param array The array to assign the value to.
+  \param alpha The value to assign to the array.
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+// Helpers to extract base types of Cabana::MemberTypes<...>
+template <typename... Ts>
+struct ExtractBaseTypes;
 
-// //---------------------------------------------------------------------------//
-// /*!
-//   \brief Assign a scalar value to every element of an array.
-//   \param array The array to assign the value to.
-//   \param alpha The value to assign to the array.
-//   \param tag The tag for the decomposition over which to perform the operation.
-// */
-// template <class Array_t, class DecompositionTag>
-// void assign( Array_t& array, const typename Array_t::value_type alpha,
-//              DecompositionTag tag )
-// {
-//     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
-//     using entity_t = typename Array_t::entity_type;
-//     auto subview = createSubview( array.view(),
-//                                   array.layout()->indexSpace( tag, entity_t(), Local() ) );
-//     Kokkos::deep_copy( subview, alpha );
-// }
+template <typename... Ts>
+struct ExtractBaseTypes<Cabana::MemberTypes<Ts...>>
+{
+    using type = std::tuple<typename std::remove_extent<Ts>::type...>;
+};
+template <class Array_t, class DecompositionTag>
+void assign( Array_t& array, const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type alpha,
+             DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using execution_space = typename Array_t::execution_space;
+    using entity_t = typename Array_t::entity_type;
+    auto aosoa = array.aosoa();
+    auto slice = Cabana::slice<0>(aosoa);
+    auto policy = Cabana::Grid::createExecutionPolicy(
+         array.layout()->indexSpace( tag, entity_t(), Local() ), execution_space() );
+    Kokkos::parallel_for(
+        "NuMesh::ArrayOp::assign", policy,
+        KOKKOS_LAMBDA( const int i, const int j) {
+            slice( i, j ) = alpha;
+    } );
+}
 
-// /*!
-//   \brief Scale every element of an array by a scalar value. 2D specialization.
-//   \param array The array to scale.
-//   \param alpha The value to scale the array by.
-//   \param tag The tag for the decomposition over which to perform the operation.
-// */
-// template <class Array_t, class DecompositionTag>
-// std::enable_if_t<1 == Array_t::num_space_dim, void>
-// scale( Array_t& array, const typename Array_t::value_type alpha,
-//        DecompositionTag tag )
-// {
-//     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
-//     using entity_t = typename Array_t::entity_type;
-//     auto view = array.view();
-//     Kokkos::parallel_for(
-//         "ArrayOp::scale",
-//         createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
-//                                typename Array_t::execution_space() ),
-//         KOKKOS_LAMBDA( const int i, const int j ) {
-//             view( i, j ) *= alpha;
-//         } );
-// }
+/*!
+  \brief Scale every element of an aosoa slice by a scalar value. 2D specialization.
+  \param array The array to scale.
+  \param alpha The value to scale the array by.
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+template <class Array_t, class DecompositionTag>
+std::enable_if_t<1 == Array_t::num_space_dim, void>
+scale( Array_t& array, const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type alpha,
+       DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using entity_t = typename Array_t::entity_type;
+    auto aosoa = array.aosoa();
+    auto slice = Cabana::slice<0>(aosoa);
+    Kokkos::parallel_for(
+        "ArrayOp::scale",
+        createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
+                               typename Array_t::execution_space() ),
+        KOKKOS_LAMBDA( const int i, const int j ) {
+            slice( i, j ) *= alpha;
+        } );
+}
 
-// /*!
-//   \brief Apply some function to every element of an array
-//   \param array The array to operate on.
-//   \param function A functor that operates on the array elements.
-//   \param tag The tag for the decomposition over which to perform the operation.
-// */
-// template <class Array_t, class Function, class DecompositionTag>
-// std::enable_if_t<1 == Array_t::num_space_dim, void>
-// apply( Array_t& array, Function& function, DecompositionTag tag )
-// {
-//     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
-//     using entity_t = typename Array_t::entity_type;
-//     auto view = array.view();
-//     Kokkos::parallel_for(
-//         "ArrayOp::apply",
-//         createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
-//                                typename Array_t::execution_space() ),
-//         KOKKOS_LAMBDA( const int i, const int j) {
-//             view( i, j ) = function(view( i, j ));
-//         } );
-// }
+/*!
+  \brief Apply some function to every element of an aosoa slice
+  \param array The array to operate on.
+  \param function A functor that operates on the array elements.
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+template <class Array_t, class Function, class DecompositionTag>
+std::enable_if_t<1 == Array_t::num_space_dim, void>
+apply( Array_t& array, Function& function, DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using entity_t = typename Array_t::entity_type;
+    auto aosoa = array.aosoa();
+    auto slice = Cabana::slice<0>(aosoa);
+    Kokkos::parallel_for(
+        "ArrayOp::apply",
+        createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
+                               typename Array_t::execution_space() ),
+        KOKKOS_LAMBDA( const int i, const int j) {
+            slice( i, j ) = function(slice( i, j ));
+        } );
+}
 
-// /*!
-//   \brief Update two vectors such that a = alpha * a + beta * b.
-//   \param a The array that will be updated.
-//   \param alpha The value to scale a by.
-//   \param b The array to add to a.
-//   \param beta The value to scale b by.
-//   \param tag The tag for the decomposition over which to perform the operation.
-// */
-// template <class Array_t, class DecompositionTag>
-// std::enable_if_t<1 == Array_t::num_space_dim, void>
-// update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
-//         const typename Array_t::value_type beta, DecompositionTag tag )
-// {
-//     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
-//     using entity_type = typename Array_t::entity_type;
-//     auto a_view = a.view();
-//     auto b_view = b.view();
-//     Kokkos::parallel_for(
-//         "ArrayOp::update",
-//         createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
-//                                typename Array_t::execution_space() ),
-//         KOKKOS_LAMBDA( const long i, const long j ) {
-//             a_view( i, j ) =
-//                 alpha * a_view( i, j ) + beta * b_view( i, j );
-//         } );
-// }
+/*!
+  \brief Update two vectors such that a = alpha * a + beta * b.
+  \param a The array that will be updated.
+  \param alpha The value to scale a by.
+  \param b The array to add to a.
+  \param beta The value to scale b by.
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+template <class Array_t, class DecompositionTag>
+std::enable_if_t<1 == Array_t::num_space_dim, void>
+update( Array_t& a, const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type alpha, const Array_t& b,
+            const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type beta,
+            DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using entity_type = typename Array_t::entity_type;
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
+    Kokkos::parallel_for(
+        "ArrayOp::update",
+        createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
+                               typename Array_t::execution_space() ),
+        KOKKOS_LAMBDA( const long i, const long j ) {
+            a_slice( i, j ) =
+                alpha * a_slice( i, j ) + beta * b_slice( i, j );
+        } );
+}
 
-// /*!
-//   \brief Update three vectors such that a = alpha * a + beta * b + gamma * c.
-//   \param a The array that will be updated.
-//   \param alpha The value to scale a by.
-//   \param b The first array to add to a.
-//   \param beta The value to scale b by.
-//   \param c The second array to add to a.
-//   \param gamma The value to scale b by.
-//   \param tag The tag for the decomposition over which to perform the operation.
-// */
-// template <class Array_t, class DecompositionTag>
-// std::enable_if_t<1 == Array_t::num_space_dim, void>
-// update( Array_t& a, const typename Array_t::value_type alpha, const Array_t& b,
-//         const typename Array_t::value_type beta, const Array_t& c,
-//         const typename Array_t::value_type gamma, DecompositionTag tag )
-// {
-//     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
-//     using entity_type = typename Array_t::entity_type;
-//     auto a_view = a.view();
-//     auto b_view = b.view();
-//     auto c_view = c.view();
-//     Kokkos::parallel_for(
-//         "ArrayOp::update",
-//         createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
-//                                typename Array_t::execution_space() ),
-//         KOKKOS_LAMBDA( const int i, const int j ) {
-//             a_view( i, j ) = alpha * a_view( i, j ) +
-//                                 beta * b_view( i, j ) +
-//                                 gamma * c_view( i, j );
-//         } );
-// }
+/*!
+  \brief Update three vectors such that a = alpha * a + beta * b + gamma * c.
+  \param a The array that will be updated.
+  \param alpha The value to scale a by.
+  \param b The first array to add to a.
+  \param beta The value to scale b by.
+  \param c The second array to add to a.
+  \param gamma The value to scale b by.
+  \param tag The tag for the decomposition over which to perform the operation.
+*/
+template <class Array_t, class DecompositionTag>
+std::enable_if_t<1 == Array_t::num_space_dim, void>
+update( Array_t& a, const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type alpha, const Array_t& b,
+        const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type beta, const Array_t& c,
+        const typename ExtractBaseTypes<
+                typename Array_t::tuple_type>::type gamma, DecompositionTag tag )
+{
+    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    using entity_type = typename Array_t::entity_type;
+    auto a_aosoa = a.aosoa();
+    auto b_aosoa = b.aosoa();
+    auto c_aosoa = c.aosoa();
+    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto b_slice = Cabana::slice<0>(b_aosoa);
+    auto c_slice = Cabana::slice<0>(c_aosoa);
+    Kokkos::parallel_for(
+        "ArrayOp::update",
+        createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
+                               typename Array_t::execution_space() ),
+        KOKKOS_LAMBDA( const int i, const int j ) {
+            a_slice( i, j ) = alpha * a_slice( i, j ) +
+                                beta * b_slice( i, j ) +
+                                gamma * c_slice( i, j );
+        } );
+}
 
-// /**
-//  * Element-wise dot product
-//  */
-// template <class Array_t, class DecompositionTag>
-// std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, DecompositionTag tag )
-// {
-//     using mesh_type = typename Array_t::mesh_type;
-//     using entity_type = typename Array_t::entity_type;
-//     using value_type = typename  Array_t::value_type;
-//     using memory_space = typename Array_t::memory_space;
-//     using execution_space = typename Array_t::execution_space;
+/**
+ * Element-wise dot product
+ */
+template <class Array_t, class DecompositionTag>
+std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, DecompositionTag tag )
+{
+    using mesh_type = typename Array_t::mesh_type;
+    using entity_type = typename Array_t::entity_type;
+    using tuple_type = typename  Array_t::tuple_type;
+    using single_type = typename ExtractBaseTypes<
+            typename Array_t::tuple_type>::type;
+    using memory_space = typename Array_t::memory_space;
+    using execution_space = typename Array_t::execution_space;
 
-//     // The resulting 'dot' array has the shape (i, j, 1)
-//     auto scalar_layout = NuMesh::Array::createArrayLayout(a.layout()->mesh(), 1, entity_type());
-//     auto dot = NuMesh::Array::createArray<value_type, memory_space>("dot", scalar_layout);
-//     auto dot_view = dot->view();
+    // The resulting 'dot' array has the shape (i, j, 1)
+    auto scalar_layout = NuMesh::Array::createArrayLayout<single_type>(a.layout()->mesh(), 1, entity_type());
+    auto dot = NuMesh::Array::createArray<memory_space>("dot", scalar_layout);
+    auto dot_view = dot->view();
 
-//     // Check dimensions
-//     auto a_view = a.view();
-//     auto b_view = b.view();
+    // Check dimensions
+    auto a_view = a.view();
+    auto b_view = b.view();
 
-//     const int an = a_view.extent(0);
-//     const int am = a_view.extent(1);
-//     const int bn = b_view.extent(0);
-//     const int bm = b_view.extent(1);
+    const int an = a_view.extent(0);
+    const int am = a_view.extent(1);
+    const int bn = b_view.extent(0);
+    const int bm = b_view.extent(1);
 
-//     // Ensure the third dimension is 3 for 3D vectors
-//     if (am != 3 || bm != 3) {
-//         throw std::invalid_argument("Second dimension must be 3 for 3D vectors.");
-//     }
-//     if (an != bn) {
-//         throw std::invalid_argument("First dimension of a and b views do not match.");
-//     }
+    // Ensure the third dimension is 3 for 3D vectors
+    if (am != 3 || bm != 3) {
+        throw std::invalid_argument("Second dimension must be 3 for 3D vectors.");
+    }
+    if (an != bn) {
+        throw std::invalid_argument("First dimension of a and b views do not match.");
+    }
 
 //     auto policy = Cabana::Grid::createExecutionPolicy(
 //             scalar_layout->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),

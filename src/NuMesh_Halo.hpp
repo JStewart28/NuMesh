@@ -84,29 +84,28 @@ void gather(HaloType& halo, std::shared_ptr<ArrayType> data)
     int mesh_halo_depth = mesh->halo_depth();
     int halo_level = halo.level();
     int halo_halo_depth = halo.depth();
-    // if (mesh_halo_depth < halo_halo_depth)
-    // {
-    //     halo.mesh()->gather(halo_level, halo_halo_depth);
-    // }
-    // auto export_data_all = mesh->halo_export(entity_type());
-    // auto export_data = export_data_all[mesh_halo_depth-1];
-    // auto export_ids = Cabana::slice<0>(export_data);
-    // auto export_ranks = Cabana::slice<1>(export_data);
+    if (mesh_halo_depth < halo_halo_depth)
+    {
+        halo.mesh()->gather(halo_level, halo_halo_depth);
+    }
+    auto export_data_all = mesh->halo_export(entity_type());
+    auto export_data = export_data_all[mesh_halo_depth-1];
+    auto export_ids = Cabana::slice<0>(export_data);
+    auto export_ranks = Cabana::slice<1>(export_data);
     
-    // Cabana::Halo<memory_space> cabana_halo(mesh->comm(), mesh->count(Own(), entity_type()),
-    //                                 export_ids, export_ranks);
+    Cabana::Halo<memory_space> cabana_halo(mesh->comm(), mesh->count(Own(), entity_type()),
+                                    export_ids, export_ranks);
 
-    // // Check that the data view is large anough for the gather
-    // size_t num_local = cabana_halo.numLocal();
-    // size_t num_ghost = cabana_halo.numGhost();
-    // auto data_view = data->view();
-    // if (data_view.extent(0) != (num_local+num_ghost))
-    // {
-    //     throw std::runtime_error(
-    //                 "NuMesh::gather: Array extents not large enough for gather");
-    // }
-    // Kokkos::View<double*[3], memory_space
-    // Cabana::gather(cabana_halo, data_view);
+    // Check that the data view is large anough for the gather
+    size_t num_local = cabana_halo.numLocal();
+    size_t num_ghost = cabana_halo.numGhost();
+    auto aosoa = data->aosoa();
+    if (aosoa.size() != (num_local+num_ghost))
+    {
+        throw std::runtime_error(
+                    "NuMesh::gather: Array extents not large enough for gather");
+    }
+    Cabana::gather(cabana_halo, aosoa);
 }
 
 } // end namespce NuMesh
