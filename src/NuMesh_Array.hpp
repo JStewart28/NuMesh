@@ -596,15 +596,7 @@ void copyDim( Array_t& a, int dimA, Array_t& b, int dimB, DecompositionTag tag )
   \param alpha The value to assign to the array.
   \param tag The tag for the decomposition over which to perform the operation.
 */
-// Helpers to extract base types of Cabana::MemberTypes<...>
-template <typename... Ts>
-struct ExtractBaseTypes;
 
-template <typename... Ts>
-struct ExtractBaseTypes<Cabana::MemberTypes<Ts...>>
-{
-    using type = std::tuple<typename std::remove_extent<Ts>::type...>;
-};
 template <class Array_t, class DecompositionTag>
 void assign( Array_t& array, const typename ExtractBaseTypes<
                 typename Array_t::tuple_type>::type alpha,

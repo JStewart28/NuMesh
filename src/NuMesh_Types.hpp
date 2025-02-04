@@ -95,6 +95,28 @@ struct Unstructured3DMesh
     static constexpr std::size_t num_space_dim = NumSpaceDim;
 };
 
+//! Helpers to extract base types of Cabana::MemberTypes<...>
+// General template (for non-Cabana::MemberTypes)
+template <typename T, typename Enable = void>
+struct ExtractBaseTypes
+{
+    using type = T;  // Default case: Use T itself
+};
+
+// Specialization for Cabana::MemberTypes<T[N]>
+template <typename T, std::size_t N>
+struct ExtractBaseTypes<Cabana::MemberTypes<T[N]>>
+{
+    using type = T;  // Extract just 'double' from 'double[3]'
+};
+
+// Specialization for general Cabana::MemberTypes (non-array types)
+template <typename... Ts>
+struct ExtractBaseTypes<Cabana::MemberTypes<Ts...>>
+{
+    using type = std::tuple<Ts...>;  // This is for non-array types
+};
+
 } // end namespace NuMesh
 
 #endif // NUMESH_TYPES_HPP
