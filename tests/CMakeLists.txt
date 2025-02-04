@@ -24,4 +24,12 @@ if (ENABLE_TESTS)
     blt_add_test(NAME HaloTests
                  COMMAND tstHalo)
 
+    blt_add_executable(NAME tstArray
+                       SOURCES tstArray.cpp 
+                       HEADERS tstArray.hpp
+                       DEPENDS_ON numesh gtest
+                       OUTPUT_DIR ${TEST_OUTPUT_DIRECTORY})
+    blt_add_test(NAME ArrayTests
+                 COMMAND tstArray)
+
 endif()
