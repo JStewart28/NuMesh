@@ -748,7 +748,6 @@ update( Array_t& a, const typename ExtractBaseTypes<
 template <class Array_t, class DecompositionTag>
 std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
-    using mesh_type = typename Array_t::mesh_type;
     using entity_type = typename Array_t::entity_type;
     using tuple_type = typename  Array_t::tuple_type;
     using single_type = typename ExtractBaseTypes<
@@ -800,7 +799,6 @@ std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, Decompositio
 template <class Array_t, class DecompositionTag>
 std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
-    using mesh_type = typename Array_t::mesh_type;
     using entity_type = typename Array_t::entity_type;
     using tuple_type = typename  Array_t::tuple_type;
     using value_type = typename ExtractBaseTypes<
@@ -866,9 +864,7 @@ std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, Decomposit
 template <class Array_t, class DecompositionTag>
 std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
-    using mesh_type = typename Array_t::mesh_type;
     using entity_type = typename Array_t::entity_type;
-    using value_type = typename  Array_t::value_type;
     using memory_space = typename Array_t::memory_space;
     using execution_space = typename Array_t::execution_space;
 
