@@ -354,7 +354,7 @@ class Array
            const std::shared_ptr<LayoutType>& layout )
         : _layout( layout )
         , _data( Cabana::AoSoA<tuple_type, memory_space, 4>(
-              label, layout->indexSpace( Ghost(), entity_type(), Local() ).extent(0) ) )
+              label, layout->indexSpace( Ghost(), entity_type(), Local(), Element() ).extent(0) ) )
         , _vef_gid_start( layout->mesh()->vef_gid_start())
     {
         _version = _layout->mesh()->version();

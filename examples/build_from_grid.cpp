@@ -85,10 +85,12 @@ int main( int argc, char* argv[] )
 
     auto vertex_triple_layout = NuMesh::Array::createArrayLayout<tuple_type>(mesh, 3, NuMesh::Vertex());
     auto positions = NuMesh::Array::createArray<memory_space>("positions", vertex_triple_layout);
-    auto halo = NuMesh::createHalo(mesh, 0, 1, NuMesh::Vertex());
-    // printf("R%d: before: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
-    positions->update();
-    printf("R%d: after: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
+    auto zslice = Cabana::slice<0>(positions->aosoa());
+    // auto wslice = Cabana::slice<0>(waosoa);
+    // auto halo = NuMesh::createHalo(mesh, 0, 1, NuMesh::Vertex());
+    printf("R%d: slice: %d, positions: %d, mesh verts: %d\n", mesh->rank(), zslice.extent(0), positions->aosoa().size(), mesh->vertices().size());
+    // positions->update();
+    // printf("R%d: after: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
     // NuMesh::gather(halo, positions);
 
     // // Uniform refinement
