@@ -85,29 +85,31 @@ int main( int argc, char* argv[] )
 
     auto vertex_triple_layout = NuMesh::Array::createArrayLayout<tuple_type>(mesh, 3, NuMesh::Vertex());
     auto positions = NuMesh::Array::createArray<memory_space>("positions", vertex_triple_layout);
-    printf("R%d: before: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
+    auto halo = createHalo(mesh, 0, 1);
+    NuMesh::gather(halo, positions);
+    // printf("R%d: before: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
 
-    // Uniform refinement
-    for (int i = 0; i < 1; i++)
-    {
-        int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
-        int face_gid_start = vef_gid_start(rank, 2);
-        Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
-        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
-            KOKKOS_LAMBDA(int i) {
+    // // Uniform refinement
+    // for (int i = 0; i < 1; i++)
+    // {
+    //     int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
+    //     int face_gid_start = vef_gid_start(rank, 2);
+    //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+    //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
+    //         KOKKOS_LAMBDA(int i) {
 
-                fin(i) = face_gid_start + i;
+    //             fin(i) = face_gid_start + i;
 
-            });
-        mesh->refine(fin);
-    }
-    positions->update();
-    printf("R%d: after: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
-    mesh->gather(0, 1);
-    positions->update();
-    printf("R%d: gather: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
-    auto positions2 = NuMesh::Array::ArrayOp::cloneCopy(*positions, NuMesh::Own());
-    auto positions3 = NuMesh::Array::ArrayOp::cloneCopy(*positions, NuMesh::Ghost());
+    //         });
+    //     mesh->refine(fin);
+    // }
+    // positions->update();
+    // printf("R%d: after: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
+    // mesh->gather(0, 1);
+    // positions->update();
+    // printf("R%d: gather: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
+    // auto positions2 = NuMesh::Array::ArrayOp::cloneCopy(*positions, NuMesh::Own());
+    // auto positions3 = NuMesh::Array::ArrayOp::cloneCopy(*positions, NuMesh::Ghost());
 
     // auto halo = createHalo(mesh, 0, 1);
     // NuMesh::gather(halo, positions);

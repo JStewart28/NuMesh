@@ -88,6 +88,9 @@ void gather(HaloType& halo, std::shared_ptr<ArrayType> data)
     {
         halo.mesh()->gather(halo_level, halo_halo_depth);
     }
+    mesh_halo_depth = mesh->halo_depth();
+    printf("Mesh halo depth: %d, halo_depth: %d\n", mesh_halo_depth, halo_halo_depth);
+    return;
     auto export_data_all = mesh->halo_export(entity_type());
     auto export_data = export_data_all[mesh_halo_depth-1];
     auto export_ids = Cabana::slice<0>(export_data);
