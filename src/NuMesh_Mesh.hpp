@@ -1673,9 +1673,9 @@ class Mesh
         face_halo_export.resize(fhalo_size);
 
         // Add this halo data to the halo vectors
-        _vert_halo_export.push_back(vert_halo_export);
-        _edge_halo_export.push_back(edge_halo_export);
-        _face_halo_export.push_back(face_halo_export);
+        _vert_halo_export.push_back(std::make_shared<halo_aosoa>(vert_halo_export));
+        _edge_halo_export.push_back(std::make_shared<halo_aosoa>(edge_halo_export));
+        _face_halo_export.push_back(std::make_shared<halo_aosoa>(face_halo_export));
 
         // Update slices
         vert_halo_export_lids = Cabana::slice<0>(vert_halo_export);
@@ -2163,6 +2163,7 @@ class Mesh
         
         _halo_level = level; _halo_depth = depth;
         _gather_depth_one();
+        // printf("R%d: after gather: %d verts\n", _rank, _vertices.size());
         // if (_rank == 1)
         // {
         //     printf("R%d: total verts: %d\n", _rank, _mesh->vertices().size());
@@ -2174,7 +2175,7 @@ class Mesh
     v_array_type& vertices() {return _vertices;}
     e_array_type& edges() {return _edges;}
     f_array_type& faces() {return _faces;}
-    std::vector<halo_aosoa> halo_export(Vertex) const {return _vert_halo_export;}
+    std::vector<std::shared_ptr<halo_aosoa>> halo_export(Vertex) const {return _vert_halo_export;}
     std::vector<halo_aosoa> halo_export(Edge) const {return _edge_halo_export;}
     std::vector<halo_aosoa> halo_export(Face) const {return _face_halo_export;}
     int halo_level() const {return _halo_level;}
@@ -2190,6 +2191,7 @@ class Mesh
 
     MPI_Comm comm() {return _comm;}
     int version() const {return _version;}
+    int rank() const {return _rank;}
 
     auto vef_gid_start() {return _vef_gid_start;}
     auto neighbors() {return _neighbors;}
@@ -2330,9 +2332,9 @@ class Mesh
     int _version;
 
     // Halos associated with this mesh version
-    std::vector<halo_aosoa> _vert_halo_export;
-    std::vector<halo_aosoa> _edge_halo_export;
-    std::vector<halo_aosoa> _face_halo_export;
+    std::vector<std::shared_ptr<halo_aosoa>> _vert_halo_export;
+    std::vector<std::shared_ptr<halo_aosoa>> _edge_halo_export;
+    std::vector<std::shared_ptr<halo_aosoa>> _face_halo_export;
     int _halo_level, _halo_depth;
 
     // Max depth of tree
