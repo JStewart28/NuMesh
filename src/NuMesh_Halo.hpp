@@ -99,23 +99,23 @@ private:
 template <class Mesh, class EntityType>
 auto createHalo(std::shared_ptr<Mesh> mesh, int level, int depth, EntityType entity)
 {
-    return Halo(mesh, level, depth, entity);
+    return std::make_shared<Halo<EntityType, Mesh>>(mesh, level, depth, entity);
 }
 
 
 
 template <class HaloType, class ArrayType>
-void gather(HaloType& halo, std::shared_ptr<ArrayType> data)
+void gather(std::shared_ptr<HaloType>& halo, std::shared_ptr<ArrayType> data)
 {
     static_assert( Array::is_array<ArrayType>::value, "NuMesh::Array required" );
 
     using entity_type = typename ArrayType::entity_type;
     using memory_space = typename ArrayType::memory_space;
-    auto mesh = halo.mesh();
-    if (halo.comm_size() == 1) return; // No gather needed for comm size 1
+    auto mesh = halo->mesh();
+    if (halo->comm_size() == 1) return; // No gather needed for comm size 1
 
     int mesh_halo_depth = mesh->halo_depth();
-    int halo_halo_depth = halo.depth();
+    int halo_halo_depth = halo->depth();
     if (mesh_halo_depth < halo_halo_depth)
     {
         throw std::runtime_error(
@@ -123,15 +123,15 @@ void gather(HaloType& halo, std::shared_ptr<ArrayType> data)
     }
     
     // Check that the data view is large anough for the gather
-    size_t num_local = halo.numLocal();
-    size_t num_ghost = halo.numGhost();
+    size_t num_local = halo->numLocal();
+    size_t num_ghost = halo->numGhost();
     auto aosoa = data->aosoa();
     if (aosoa.size() != (num_local+num_ghost))
     {
         throw std::runtime_error(
                     "NuMesh::gather: Array extents not large enough for gather");
     }
-    auto cabana_halo = halo.cabana_halo();
+    auto cabana_halo = halo->cabana_halo();
     Cabana::gather(*cabana_halo, aosoa);
 }
 
