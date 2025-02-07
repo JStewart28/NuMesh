@@ -27,9 +27,9 @@ class ArrayTest : public Mesh2DTest<T>
     using v_array_type = Cabana::AoSoA<vertex_data, Kokkos::HostSpace, 4>;
     using e_array_type = Cabana::AoSoA<edge_data, Kokkos::HostSpace, 4>;
     using f_array_type = Cabana::AoSoA<face_data, Kokkos::HostSpace, 4>;
-
-    using tuple_type = Cabana::MemberTypes<double[3]>;
     
+    using triple_tuple_type = Cabana::MemberTypes<double[3]>;
+    using scalar_tuple_type = Cabana::MemberTypes<double>;
 
   protected:
     int rank_, comm_size_;
@@ -54,62 +54,103 @@ class ArrayTest : public Mesh2DTest<T>
   public:
 
     template <class EntityType>
-    auto populateArray(EntityType)
+    auto populateTripleArray(EntityType)
     {
-        auto vertex_triple_layout = NuMesh::Array::createArrayLayout<tuple_type>(this->mesh_, 3, EntityType());
-        auto array = NuMesh::Array::createArray<Kokkos::HostSpace>("positions", vertex_triple_layout);
+        constexpr int tuple_size = NuMesh::ExtractArraySize<triple_tuple_type>::value;
+        auto layout = NuMesh::Array::createArrayLayout<triple_tuple_type>(this->mesh_, tuple_size, EntityType());
+        auto array = NuMesh::Array::createArray<Kokkos::HostSpace>("array", layout);
         auto aosoa = array->aosoa();
         auto slice = Cabana::slice<0>(aosoa);
-        size_t max0 = slice.extent(0);
-        size_t max1 = slice.extent(1);
+        int max0 = aosoa.size();
+        int max1 = tuple_size;
 
-        for (size_t i = 0; i < max0; i++)
+        for (int i = 0; i < max0; i++)
         {
-            for (size_t j = 0; j < max1; j++)
+            for (int j = 0; j < max1; j++)
             {
                 slice(i, j) = (double) ((i*j)+j);
             }
         }
 
         // Copy to device memory
-        auto array_d = NuMesh::Array::createArray<MemorySpace>("positions_d", vertex_triple_layout);
+        auto array_d = NuMesh::Array::createArray<MemorySpace>("array_d", layout);
+        auto aosoa_d = array_d->aosoa();
+        Cabana::deep_copy(aosoa_d, aosoa);
+
+        return array_d;
+    }
+
+    template <class EntityType>
+    auto populateScalarArray(EntityType)
+    {
+        constexpr int tuple_size = NuMesh::ExtractArraySize<scalar_tuple_type>::value;
+        auto layout = NuMesh::Array::createArrayLayout<scalar_tuple_type>(this->mesh_, tuple_size, EntityType());
+        auto array = NuMesh::Array::createArray<Kokkos::HostSpace>("array", layout);
+        auto aosoa = array->aosoa();
+        auto slice = Cabana::slice<0>(aosoa);
+        int max0 = aosoa.size();
+
+        for (int i = 0; i < max0; i++)
+        {
+            slice(i) = (double) (i*29);
+        }
+
+        // Copy to device memory
+        auto array_d = NuMesh::Array::createArray<MemorySpace>("array_d", layout);
         auto aosoa_d = array_d->aosoa();
         Cabana::deep_copy(aosoa_d, aosoa);
 
         return array_d;
     }
     
-    template <class Array_t>
-    void checkEqual(const Array_t& a, const Array_t& b)
+    template <class A_t, class B_t>
+    void checkEqual(const A_t& a, const B_t& b, int asize, int bsize)
     {
-        using execution_space = typename Array_t::execution_space;
-        using entity_type = typename Array_t::entity_type;
+        using a_entity_type = typename A_t::entity_type;
+        using b_entity_type = typename B_t::entity_type;
+        using a_memory_space = typename A_t::memory_space;
+        using b_memory_space = typename B_t::memory_space;
+        using a_execution_space = typename A_t::execution_space;
+        using b_execution_space = typename B_t::execution_space;
+        using a_tuple_type = typename A_t::tuple_type;
+        using b_tuple_type = typename B_t::tuple_type;
 
+        // Check that the types are equal for both arrays
+        static_assert(std::is_same<a_entity_type, b_entity_type>::value,
+            "tstArray::checkEqual: Types are not the same!");
+        static_assert(std::is_same<a_memory_space, b_memory_space>::value,
+            "tstArray::checkEqual: Types are not the same!");
+        static_assert(std::is_same<a_execution_space, b_execution_space>::value,
+            "tstArray::checkEqual: Types are not the same!");
+
+        // Check dimensions
         auto a_aosoa = a.aosoa();
         auto b_aosoa = b.aosoa();
         auto a_slice = Cabana::slice<0>(a_aosoa);
         auto b_slice = Cabana::slice<0>(b_aosoa);
-        size_t amax0 = a_slice.extent(0);
-        size_t amax1 = a_slice.extent(1);
-        size_t bmax0 = b_slice.extent(0);
-        size_t bmax1 = b_slice.extent(1);
+
+        const int amax0 = a_aosoa.size();
+        const int bmax0 = b_aosoa.size();
+        constexpr int amax1 = NuMesh::ExtractArraySize<a_tuple_type>::value;
+        constexpr int bmax1 = NuMesh::ExtractArraySize<b_tuple_type>::value;
 
         // Ensure bounds are the same
-        ASSERT_EQ(amax0, bmax0); ASSERT_EQ(amax1, bmax1);
+        ASSERT_EQ(amax0, bmax0); ASSERT_EQ(amax1, asize); ASSERT_EQ(bmax1, bsize);
 
         // Copy data to host memory
-        Cabana::AoSoA<tuple_type, Kokkos::HostSpace> ahost("ahost", amax0);
-        Cabana::AoSoA<tuple_type, Kokkos::HostSpace> bhost("bhost", bmax0);
+        Cabana::AoSoA<a_tuple_type, Kokkos::HostSpace> ahost("ahost", amax0);
+        Cabana::AoSoA<b_tuple_type, Kokkos::HostSpace> bhost("bhost", bmax0);
         Cabana::deep_copy(ahost, a_aosoa);
         Cabana::deep_copy(bhost, b_aosoa);
         auto ah_slice = Cabana::slice<0>(ahost);
         auto bh_slice = Cabana::slice<0>(bhost);
 
         // Ensure values are the same
-       for (size_t i = 0; i < amax0; i++)
+       for (int i = 0; i < amax0; i++)
         {
-            for (size_t j = 0; j < amax1; j++)
+            for (int j = 0; j < amax1; j++)
             {
+                if (j >= bmax1) break; // b could have a smaller tuple than a
                 double correct = ah_slice(i, j);
                 double test = bh_slice(i, j);
                 ASSERT_DOUBLE_EQ(correct, test);

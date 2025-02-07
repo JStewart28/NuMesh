@@ -156,23 +156,33 @@ struct IsSinglePartMemberTypes
     static constexpr bool value = HasSingleUniqueType<extracted_base_types>::value;
 };
 
-//! Usage Example
-using Allowed1 = Cabana::MemberTypes<double>;         // ✅ Allowed
-using Allowed2 = Cabana::MemberTypes<double[3]>;      // ✅ Allowed
-using Allowed3 = Cabana::MemberTypes<int[2]>;         // ✅ Allowed
+//! Extract array size from Cabana::MemberTypes<T[N]> or return 1 for scalars.
+template <typename T>
+struct ExtractArraySize
+{
+    static constexpr std::size_t value = 1; // Default case for scalars
+};
 
-using NotAllowed1 = Cabana::MemberTypes<double, int>;     // ❌ Not Allowed
-using NotAllowed2 = Cabana::MemberTypes<double[3], int>;  // ❌ Not Allowed
-using NotAllowed3 = Cabana::MemberTypes<double[2], int[2]>; // ❌ Not Allowed
+// Specialization for array types in Cabana::MemberTypes<T[N]>
+template <typename T, std::size_t N>
+struct ExtractArraySize<Cabana::MemberTypes<T[N]>>
+{
+    static constexpr std::size_t value = N;
+};
 
-static_assert(IsSinglePartMemberTypes<Allowed1>::value, "Should be allowed");
-static_assert(IsSinglePartMemberTypes<Allowed2>::value, "Should be allowed");
-static_assert(IsSinglePartMemberTypes<Allowed3>::value, "Should be allowed");
+// Specialization for general Cabana::MemberTypes<T>
+template <typename T>
+struct ExtractArraySize<Cabana::MemberTypes<T>>
+{
+    static constexpr std::size_t value = 1;
+};
 
-static_assert(!IsSinglePartMemberTypes<NotAllowed1>::value, "Should NOT be allowed");
-static_assert(!IsSinglePartMemberTypes<NotAllowed2>::value, "Should NOT be allowed");
-static_assert(!IsSinglePartMemberTypes<NotAllowed3>::value, "Should NOT be allowed");
-
+// Specialization for multiple types (invalid case, prevents compilation)
+template <typename... Ts>
+struct ExtractArraySize<Cabana::MemberTypes<Ts...>>
+{
+    static_assert(sizeof...(Ts) == 1, "ExtractArraySize can only be used with a single Cabana::MemberType.");
+};
 
 } // end namespace NuMesh
 

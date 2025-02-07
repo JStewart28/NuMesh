@@ -570,21 +570,36 @@ std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
 /**
  * Copy dimB from b into dimA from a 
  */
-template <class Array_t, class DecompositionTag>
-void copyDim( Array_t& a, int dimA, Array_t& b, int dimB, DecompositionTag tag )
+template <class A_t, class B_t, class DecompositionTag>
+void copyDim( A_t& a, int dimA, B_t& b, int dimB, DecompositionTag tag )
 {
-    using entity_type = typename Array_t::entity_type;
-    using execution_space = typename Array_t::execution_space;
+    using a_entity_type = typename A_t::entity_type;
+    using b_entity_type = typename B_t::entity_type;
+    using a_memory_space = typename A_t::memory_space;
+    using b_memory_space = typename B_t::memory_space;
+    using a_execution_space = typename A_t::execution_space;
+    using b_execution_space = typename B_t::execution_space;
+    using a_tuple_type = typename A_t::tuple_type;
+    using b_tuple_type = typename B_t::tuple_type;
 
+    // Check that the types are equal for both arrays
+    static_assert(std::is_same<a_entity_type, b_entity_type>::value,
+        "NuMesh::ArrayOp::copyDim: Types are not the same!");
+    static_assert(std::is_same<a_memory_space, b_memory_space>::value,
+        "NuMesh::ArrayOp::copyDim: Types are not the same!");
+    static_assert(std::is_same<a_execution_space, b_execution_space>::value,
+        "NuMesh::ArrayOp::copyDim: Types are not the same!");
+
+    // Check dimensions
     auto a_aosoa = a.aosoa();
     auto b_aosoa = b.aosoa();
     auto a_slice = Cabana::slice<0>(a_aosoa);
     auto b_slice = Cabana::slice<0>(b_aosoa);
 
-    const int an = a_slice.extent(0);
-    const int bn = b_slice.extent(0);
-    const int am = a_slice.extent(1);
-    const int bm = b_slice.extent(1);
+    const int an = a_aosoa.size();
+    const int bn = b_aosoa.size();
+    constexpr int am = ExtractArraySize<a_tuple_type>::value;
+    constexpr int bm = ExtractArraySize<b_tuple_type>::value;
 
     if (an != bn) {
         throw std::invalid_argument("NuMesh::ArrayOp::copyDim: First dimension of a and b arrays do not match.");
@@ -597,8 +612,8 @@ void copyDim( Array_t& a, int dimA, Array_t& b, int dimB, DecompositionTag tag )
     }
 
     auto policy = Cabana::Grid::createExecutionPolicy(
-        a.layout()->indexSpace( tag, entity_type(), Cabana::Grid::Local() ),
-        execution_space() );
+        a.layout()->indexSpace( tag, a_entity_type(), Cabana::Grid::Local() ),
+        a_execution_space() );
     Kokkos::parallel_for(
         "NuMesh::ArrayOp::copyDim", policy,
         KOKKOS_LAMBDA( const int i, const int j) {
@@ -784,13 +799,12 @@ std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, Decompositio
     auto a_slice = Cabana::slice<0>(a_aosoa);
     auto b_slice = Cabana::slice<0>(b_aosoa);
 
-    const int an = a_slice.extent(0);
-    const int am = a_slice.extent(1);
-    const int bn = b_slice.extent(0);
-    const int bm = b_slice.extent(1);
+    const int an = a_aosoa.size();
+    const int bn = b_aosoa.size();
+    constexpr int am = ExtractArraySize<original_tuple_type>::value;
 
     // Ensure the second dimension is 3 for 3D vectors
-    if (am != 3 || bm != 3) {
+    if (am != 3) {
         throw std::invalid_argument("element_dot: Second dimension must be 3 for 3D vectors.");
     }
     if (an != bn) {
@@ -836,13 +850,12 @@ std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, Decomposit
     auto a_slice = Cabana::slice<0>(a_aosoa);
     auto b_slice = Cabana::slice<0>(b_aosoa);
 
-    const int an = a_slice.extent(0);
-    const int am = a_slice.extent(1);
-    const int bn = b_slice.extent(0);
-    const int bm = b_slice.extent(1);
+    const int an = a_aosoa.size();
+    const int bn = b_aosoa.size();
+    constexpr int am = ExtractArraySize<tuple_type>::value;
 
     // Ensure the third dimension is 3 for 3D vectors
-    if (am != 3 || bm != 3) {
+    if (am != 3) {
         throw std::invalid_argument("Second dimension must be 3 for 3D vectors.");
     }
     if (an != bn) {
@@ -879,12 +892,25 @@ std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, Decomposit
  * 
  * If a has a third dimension of 1, out(x, y) = b(x, y) * a(x, 0) for 0 <= y < b extent
  */ 
-template <class Array_t, class DecompositionTag>
-std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, DecompositionTag tag )
+template <class A_t, class B_t, class DecompositionTag>
+std::shared_ptr<A_t> element_multiply( A_t& a, const B_t& b, DecompositionTag tag )
 {
-    using entity_type = typename Array_t::entity_type;
-    using memory_space = typename Array_t::memory_space;
-    using execution_space = typename Array_t::execution_space;
+    using a_entity_type = typename A_t::entity_type;
+    using b_entity_type = typename B_t::entity_type;
+    using a_memory_space = typename A_t::memory_space;
+    using b_memory_space = typename B_t::memory_space;
+    using a_execution_space = typename A_t::execution_space;
+    using b_execution_space = typename B_t::execution_space;
+    using a_tuple_type = typename A_t::tuple_type;
+    using b_tuple_type = typename B_t::tuple_type;
+
+    // Check that the types are equal for both arrays
+    static_assert(std::is_same<a_entity_type, b_entity_type>::value,
+        "NuMesh::ArrayOp::copyDim: Types are not the same!");
+    static_assert(std::is_same<a_memory_space, b_memory_space>::value,
+        "NuMesh::ArrayOp::copyDim: Types are not the same!");
+    static_assert(std::is_same<a_execution_space, b_execution_space>::value,
+        "NuMesh::ArrayOp::copyDim: Types are not the same!");
 
     auto out = clone(a);
     auto out_aosoa = out->aosoa();
@@ -896,10 +922,10 @@ std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, Decompo
     auto a_slice = Cabana::slice<0>(a_aosoa);
     auto b_slice = Cabana::slice<0>(b_aosoa);
 
-    const int an = a_slice.extent(0);
-    const int bn = b_slice.extent(0);
-    const int am = a_slice.extent(1);
-    const int bm = b_slice.extent(1);
+    const int an = a_aosoa.size();
+    const int bn = b_aosoa.size();
+    constexpr int am = ExtractArraySize<a_tuple_type>::value;
+    constexpr int bm = ExtractArraySize<b_tuple_type>::value;
 
     // Ensure the third dimension is 3 for 3D vectors
     if (an != bn) {
@@ -908,12 +934,10 @@ std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, Decompo
     if (am == bm)
     {
         auto policy = Cabana::Grid::createExecutionPolicy(
-                a.layout()->indexSpace( tag, entity_type(), NuMesh::Local() ),
-                execution_space() );
+                a.layout()->indexSpace( tag, a_entity_type(), Local() ),
+                a_execution_space() );
         Kokkos::parallel_for(
-            "ArrayOp::update",
-            createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
-                                execution_space() ),
+            "ArrayOp::update", policy,
             KOKKOS_LAMBDA( const int i, const int j ) {
                 out_slice( i, j ) = a_slice( i, j ) * b_slice( i, j );
             } );
@@ -923,10 +947,9 @@ std::shared_ptr<Array_t> element_multiply( Array_t& a, const Array_t& b, Decompo
     // If a has a third dimension of 1
     if ((am == 1) && (am < bm))
     {
-        using entity_type = typename Array_t::entity_type;
         auto policy = Cabana::Grid::createExecutionPolicy(
-            a.layout()->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
-            execution_space() );
+            a.layout()->indexSpace( tag, a_entity_type(), Local(), Element() ),
+            a_execution_space() );
         Kokkos::parallel_for(
             "ArrayOp::update", policy,
             KOKKOS_LAMBDA( const int i) {
