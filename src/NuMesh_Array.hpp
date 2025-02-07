@@ -49,6 +49,9 @@ class ArrayLayout
     //! Spatial dimension.
     static constexpr std::size_t num_space_dim = 1;
 
+    //! Ensure tuple_type contains only a single type or array of types
+    static_assert(IsSinglePartMemberTypes<tuple_type>::value, "NuMesh::Array: Tuple of single type required");
+
     /*!
       \brief Constructor.
       \param mesh The unstructured mesh over which the layout will be
@@ -524,6 +527,8 @@ std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
     using tuple_type = typename  Array_t::tuple_type;
     using memory_space = typename Array_t::memory_space;
     using execution_space = typename Array_t::execution_space;
+
+    // 
 
     auto layout = NuMesh::Array::createArrayLayout<tuple_type>( a.layout(), 1, entity_type() );
     auto out = NuMesh::Array::createArray<memory_space>("copyDim_out", layout);

@@ -1,6 +1,9 @@
 #ifndef NUMESH_TYPES_HPP
 #define NUMESH_TYPES_HPP
 
+#include <Cabana_Core.hpp>
+#include <type_traits>
+#include <tuple>
 
 namespace NuMesh
 {
@@ -100,22 +103,76 @@ struct Unstructured3DMesh
 template <typename T, typename Enable = void>
 struct ExtractBaseTypes
 {
-    using type = T;  // Default case: Use T itself
+    using type = std::tuple<T>;  // Default case: Wrap T in a tuple
 };
 
-// Specialization for Cabana::MemberTypes<T[N]>
+// Specialization for array types in Cabana::MemberTypes<T[N]>
 template <typename T, std::size_t N>
 struct ExtractBaseTypes<Cabana::MemberTypes<T[N]>>
 {
-    using type = T;  // Extract just 'double' from 'double[3]'
+    using type = std::tuple<T>;  // Extract just 'T' from 'T[N]'
 };
 
-// Specialization for general Cabana::MemberTypes (non-array types)
+// Specialization for general Cabana::MemberTypes (handles multiple types)
 template <typename... Ts>
 struct ExtractBaseTypes<Cabana::MemberTypes<Ts...>>
 {
-    using type = std::tuple<Ts...>;  // This is for non-array types
+    using type = std::tuple<std::remove_extent_t<Ts>...>;  // Extract base types
 };
+
+//! Utility to check if a tuple has exactly one unique base type
+template <typename Tuple>
+struct HasSingleUniqueType;
+
+// Specialization for empty tuple (should not occur in practice)
+template <>
+struct HasSingleUniqueType<std::tuple<>>
+{
+    static constexpr bool value = false;
+};
+
+// Specialization for single-type tuple
+template <typename T>
+struct HasSingleUniqueType<std::tuple<T>>
+{
+    static constexpr bool value = true;
+};
+
+// Specialization for multi-type tuple (not allowed)
+template <typename T, typename U, typename... Rest>
+struct HasSingleUniqueType<std::tuple<T, U, Rest...>>
+{
+    static constexpr bool value = false;
+};
+
+//! Main check function for Cabana::MemberTypes
+template <typename MemberTypes>
+struct IsSinglePartMemberTypes
+{
+    // Ensure we have a fully resolved type before using it
+    using extracted_base_types = typename ExtractBaseTypes<MemberTypes>::type;
+    
+    // Static check for a single unique base type
+    static constexpr bool value = HasSingleUniqueType<extracted_base_types>::value;
+};
+
+//! Usage Example
+using Allowed1 = Cabana::MemberTypes<double>;         // ✅ Allowed
+using Allowed2 = Cabana::MemberTypes<double[3]>;      // ✅ Allowed
+using Allowed3 = Cabana::MemberTypes<int[2]>;         // ✅ Allowed
+
+using NotAllowed1 = Cabana::MemberTypes<double, int>;     // ❌ Not Allowed
+using NotAllowed2 = Cabana::MemberTypes<double[3], int>;  // ❌ Not Allowed
+using NotAllowed3 = Cabana::MemberTypes<double[2], int[2]>; // ❌ Not Allowed
+
+static_assert(IsSinglePartMemberTypes<Allowed1>::value, "Should be allowed");
+static_assert(IsSinglePartMemberTypes<Allowed2>::value, "Should be allowed");
+static_assert(IsSinglePartMemberTypes<Allowed3>::value, "Should be allowed");
+
+static_assert(!IsSinglePartMemberTypes<NotAllowed1>::value, "Should NOT be allowed");
+static_assert(!IsSinglePartMemberTypes<NotAllowed2>::value, "Should NOT be allowed");
+static_assert(!IsSinglePartMemberTypes<NotAllowed3>::value, "Should NOT be allowed");
+
 
 } // end namespace NuMesh
 
