@@ -518,19 +518,28 @@ std::shared_ptr<Array_t> cloneCopy( const Array_t& array, DecompositionTag tag )
 }
 
 /**
- * Create a copy of one dimension of an aosoa slice
+ * Create a copy of one dimension of an AoSoA slice
  */
 template <class Array_t, class DecompositionTag>
 std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
 {
     using entity_type = typename Array_t::entity_type;
-    using tuple_type = typename  Array_t::tuple_type;
+    using original_tuple_type = typename Array_t::tuple_type;
     using memory_space = typename Array_t::memory_space;
     using execution_space = typename Array_t::execution_space;
 
-    // 
+    // Extract the base type from the original tuple type
+    using extracted_base_tuple = typename ExtractBaseTypes<original_tuple_type>::type;
+    static_assert(std::tuple_size<extracted_base_tuple>::value == 1, 
+                  "copyDim only supports tuple types with a single unique base type.");
 
-    auto layout = NuMesh::Array::createArrayLayout<tuple_type>( a.layout(), 1, entity_type() );
+    using base_type = typename std::tuple_element<0, extracted_base_tuple>::type;
+
+    // Define new tuple type with a single non-array value
+    using new_tuple_type = Cabana::MemberTypes<base_type>;
+
+    // Create new layout with updated tuple type
+    auto layout = NuMesh::Array::createArrayLayout<new_tuple_type>( a.layout(), 1, entity_type() );
     auto out = NuMesh::Array::createArray<memory_space>("copyDim_out", layout);
     auto out_aosoa = out->aosoa();
     auto out_slice = Cabana::slice<0>(out_aosoa);
@@ -541,17 +550,20 @@ std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
     const int aw = a_slice.extent(1);
 
     if (dimA >= aw) {
-        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension is larger than the number of dimensions in the array.");
+        throw std::invalid_argument(
+            "NuMesh::ArrayOp::copyDim: Provided dimension is larger than the number of dimensions in the array.");
     }
 
     auto policy = Cabana::Grid::createExecutionPolicy(
-        a.layout()->indexSpace( tag, entity_type(), Cabana::Grid::Local(), Element() ),
-        execution_space() );
+        a.layout()->indexSpace(tag, entity_type(), Cabana::Grid::Local(), Element()),
+        execution_space());
+
     Kokkos::parallel_for(
         "NuMesh::ArrayOp::copyDim", policy,
-        KOKKOS_LAMBDA( const int i) {
-            out_slice( i, 0 ) = a_slice( i, dimA );
-        } );
+        KOKKOS_LAMBDA(const int i) {
+            out_slice(i, 0) = a_slice(i, dimA);  // Extracting only one dimension
+        });
+
     return out;
 }
 
@@ -746,14 +758,22 @@ template <class Array_t, class DecompositionTag>
 std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
     using entity_type = typename Array_t::entity_type;
-    using tuple_type = typename  Array_t::tuple_type;
-    using single_type = typename ExtractBaseTypes<
-            typename Array_t::tuple_type>::type;
+    using original_tuple_type = typename Array_t::tuple_type;
     using memory_space = typename Array_t::memory_space;
     using execution_space = typename Array_t::execution_space;
 
-    // The resulting 'dot' array has the shape (i, j, 1)
-    auto scalar_layout = NuMesh::Array::createArrayLayout<single_type>(a.layout()->mesh(), 1, entity_type());
+    // Extract the base type from the original tuple type
+    using extracted_base_tuple = typename ExtractBaseTypes<original_tuple_type>::type;
+    static_assert(std::tuple_size<extracted_base_tuple>::value == 1, 
+                  "element_dot only supports tuple types with a single unique base type.");
+
+    using base_type = typename std::tuple_element<0, extracted_base_tuple>::type;
+
+    // Define new tuple type for scalar output
+    using scalar_tuple_type = Cabana::MemberTypes<base_type>;
+
+    // Create new layout for the scalar output
+    auto scalar_layout = NuMesh::Array::createArrayLayout<scalar_tuple_type>(a.layout()->mesh(), 1, entity_type());
     auto dot = NuMesh::Array::createArray<memory_space>("dot", scalar_layout);
     auto dot_aosoa = dot->aosoa();
     auto dot_slice = Cabana::slice<0>(dot_aosoa);
@@ -769,22 +789,23 @@ std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, Decompositio
     const int bn = b_slice.extent(0);
     const int bm = b_slice.extent(1);
 
-    // Ensure the third dimension is 3 for 3D vectors
+    // Ensure the second dimension is 3 for 3D vectors
     if (am != 3 || bm != 3) {
-        throw std::invalid_argument("Second dimension must be 3 for 3D vectors.");
+        throw std::invalid_argument("element_dot: Second dimension must be 3 for 3D vectors.");
     }
     if (an != bn) {
-        throw std::invalid_argument("First dimension of a and b views do not match.");
+        throw std::invalid_argument("element_dot: First dimension of a and b views do not match.");
     }
 
     auto policy = Cabana::Grid::createExecutionPolicy(
-            scalar_layout->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
-            execution_space() );
+            scalar_layout->indexSpace(tag, entity_type(), NuMesh::Local(), Element()),
+            execution_space());
+    
     Kokkos::parallel_for("compute_dot_product", policy,
         KOKKOS_LAMBDA(const int i) {
-            dot_slice(i) = a_slice(i, 0) * b_slice(i, 0)
-                              + a_slice(i, 1) * b_slice(i, 1)
-                              + a_slice(i, 2) * b_slice(i, 2);
+            dot_slice(i, 0) = a_slice(i, 0) * b_slice(i, 0)
+                            + a_slice(i, 1) * b_slice(i, 1)
+                            + a_slice(i, 2) * b_slice(i, 2);
         });
 
     return dot;
