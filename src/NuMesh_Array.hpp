@@ -482,8 +482,11 @@ template <class Array_t, class DecompositionTag>
 void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+
     using execution_space = typename Array_t::execution_space;
     using entity_type = typename Array_t::entity_type;
+    using tuple_type = typename Array_t::tuple_type;
+
     auto a_space = a.layout()->indexSpace( tag, entity_type(), Local() );
     auto b_space = b.layout()->indexSpace( tag, entity_type(), Local() );
     if ( a_space != b_space )
@@ -496,11 +499,33 @@ void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
     //     b_space.min(0), b_space.max(0), b_space.min(1), b_space.max(1));
     auto a_data = Cabana::slice<0>(a.aosoa());
     auto b_data = Cabana::slice<0>(b.aosoa());
-    auto policy = Cabana::Grid::createExecutionPolicy(a_space, execution_space());
-    Kokkos::parallel_for( "NuMesh::ArrayOp::copy", policy,
-        KOKKOS_LAMBDA( const int i, const int j) {
-            a_data( i, j ) = b_data( i, j );
-        } );
+
+    constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
+
+    // Slices for non-array tuple AoSoAs have the form slice(i)
+    if constexpr (tuple_size == 1)
+    {
+        // Slices for array tuple AoSoAs have the form slice(i, j)
+        auto space = a.layout()->indexSpace( tag, entity_type(), Local(), Element() );
+        auto policy = Cabana::Grid::createExecutionPolicy(space, execution_space());
+        Kokkos::parallel_for( "NuMesh::ArrayOp::copy", policy,
+            KOKKOS_LAMBDA( const int i ) {
+                a_data( i ) = b_data( i );
+            } );
+    }
+    else if constexpr (tuple_size > 1)
+    {
+        // Slices for array tuple AoSoAs have the form slice(i, j)
+        auto policy = Cabana::Grid::createExecutionPolicy(a_space, execution_space());
+        Kokkos::parallel_for( "NuMesh::ArrayOp::copy", policy,
+            KOKKOS_LAMBDA( const int i, const int j) {
+                a_data( i, j ) = b_data( i, j );
+            } );
+    }
+    else
+    {
+        throw std::runtime_error("NuMesh::ArrayOp::copy: Invalid tuple size!");
+    }
 }
 
 //---------------------------------------------------------------------------//
@@ -555,7 +580,7 @@ std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
     }
 
     auto policy = Cabana::Grid::createExecutionPolicy(
-        a.layout()->indexSpace(tag, entity_type(), Cabana::Grid::Local(), Element()),
+        a.layout()->indexSpace(tag, entity_type(), Local(), Element()),
         execution_space());
 
     Kokkos::parallel_for(
@@ -600,6 +625,8 @@ void copyDim( A_t& a, int dimA, B_t& b, int dimB, DecompositionTag tag )
     const int bn = b_aosoa.size();
     constexpr int am = ExtractArraySize<a_tuple_type>::value;
     constexpr int bm = ExtractArraySize<b_tuple_type>::value;
+    
+    static_assert(!((am == 1) && (bm == 1)), "NuMesh::ArrayOp::copyDim: Use copy when tuples are the same size");
 
     if (an != bn) {
         throw std::invalid_argument("NuMesh::ArrayOp::copyDim: First dimension of a and b arrays do not match.");
@@ -611,14 +638,46 @@ void copyDim( A_t& a, int dimA, B_t& b, int dimB, DecompositionTag tag )
         throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension for 'b' is larger than the number of dimensions in the b array.");
     }
 
-    auto policy = Cabana::Grid::createExecutionPolicy(
-        a.layout()->indexSpace( tag, a_entity_type(), Cabana::Grid::Local() ),
-        a_execution_space() );
-    Kokkos::parallel_for(
-        "NuMesh::ArrayOp::copyDim", policy,
-        KOKKOS_LAMBDA( const int i, const int j) {
-            a_slice( i, dimA ) = b_slice( i, dimB );
-    } );
+    if constexpr ((am == bm) && (am != 1))
+    {
+        // A and B are not tuple size 1
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            a.layout()->indexSpace( tag, a_entity_type(), Local() ),
+            a_execution_space() );
+        Kokkos::parallel_for(
+            "NuMesh::ArrayOp::copyDim", policy,
+            KOKKOS_LAMBDA( const int i, const int j) {
+                a_slice( i, dimA ) = b_slice( i, dimB );
+        } );
+    }
+    if constexpr ((am == 1) && (am < bm))
+    {
+        // If a has tuple size 1 but not b
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            a.layout()->indexSpace( tag, a_entity_type(), Local(), Element() ),
+            a_execution_space() );
+        Kokkos::parallel_for(
+            "NuMesh::ArrayOp::copyDim", policy,
+            KOKKOS_LAMBDA( const int i ) {
+                a_slice( i ) = b_slice( i, dimB );
+        } );
+    }
+    if constexpr ((bm == 1) && (bm < am))
+    {
+        // If b has tuple size 1 but not a
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            a.layout()->indexSpace( tag, a_entity_type(), Local(), Element() ),
+            a_execution_space() );
+        Kokkos::parallel_for(
+            "NuMesh::ArrayOp::copyDim", policy,
+            KOKKOS_LAMBDA( const int i ) {
+                a_slice( i, dimA ) = b_slice( i );
+        } );
+    }
+    else
+    {
+        throw std::invalid_argument("First array argument must have equal or smaller third dimension than second array argument.");
+    }
 }
 
 //---------------------------------------------------------------------------//
@@ -927,11 +986,11 @@ std::shared_ptr<A_t> element_multiply( A_t& a, const B_t& b, DecompositionTag ta
     constexpr int am = ExtractArraySize<a_tuple_type>::value;
     constexpr int bm = ExtractArraySize<b_tuple_type>::value;
 
-    // Ensure the third dimension is 3 for 3D vectors
     if (an != bn) {
         throw std::invalid_argument("First dimension of a and b views do not match.");
     }
-    if (am == bm)
+
+    if constexpr ((am == bm) && (am != 1))
     {
         auto policy = Cabana::Grid::createExecutionPolicy(
                 a.layout()->indexSpace( tag, a_entity_type(), Local() ),
@@ -944,8 +1003,22 @@ std::shared_ptr<A_t> element_multiply( A_t& a, const B_t& b, DecompositionTag ta
 
         return out;
     }
-    // If a has a third dimension of 1
-    if ((am == 1) && (am < bm))
+    // If a and b have tuple size 1
+    if constexpr ((am == bm) && (am == 1))
+    {
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            a.layout()->indexSpace( tag, a_entity_type(), Local() ),
+            a_execution_space() );
+        Kokkos::parallel_for(
+            "ArrayOp::update", policy,
+            KOKKOS_LAMBDA( const int i ) {
+                out_slice( i ) = a_slice( i ) * b_slice( i );
+            } );
+
+        return out;
+    }
+    // If a has tuple size 1 but not b
+    if constexpr ((am == 1) && (am < bm))
     {
         auto policy = Cabana::Grid::createExecutionPolicy(
             a.layout()->indexSpace( tag, a_entity_type(), Local(), Element() ),
@@ -953,10 +1026,7 @@ std::shared_ptr<A_t> element_multiply( A_t& a, const B_t& b, DecompositionTag ta
         Kokkos::parallel_for(
             "ArrayOp::update", policy,
             KOKKOS_LAMBDA( const int i) {
-                for (int j = 0; j < bm; j++)
-                {
-                    out_slice( i, j ) = a_slice( i, 0 ) * b_slice( i, j );
-                }
+                out_slice( i ) = a_slice( i ) * b_slice( i, 0 );
             } );
 
         return out;

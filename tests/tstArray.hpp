@@ -29,6 +29,7 @@ class ArrayTest : public Mesh2DTest<T>
     using f_array_type = Cabana::AoSoA<face_data, Kokkos::HostSpace, 4>;
     
     using triple_tuple_type = Cabana::MemberTypes<double[3]>;
+    using double_tuple_type = Cabana::MemberTypes<double[2]>;
     using scalar_tuple_type = Cabana::MemberTypes<double>;
 
   protected:
@@ -54,7 +55,7 @@ class ArrayTest : public Mesh2DTest<T>
   public:
 
     template <class EntityType>
-    auto populateTripleArray(EntityType)
+    auto populateTripleArray(EntityType, int seed)
     {
         constexpr int tuple_size = NuMesh::ExtractArraySize<triple_tuple_type>::value;
         auto layout = NuMesh::Array::createArrayLayout<triple_tuple_type>(this->mesh_, tuple_size, EntityType());
@@ -68,7 +69,7 @@ class ArrayTest : public Mesh2DTest<T>
         {
             for (int j = 0; j < max1; j++)
             {
-                slice(i, j) = (double) ((i*j)+j);
+                slice(i, j) = (double) (((i*j*seed)+j)%seed);
             }
         }
 
@@ -81,7 +82,34 @@ class ArrayTest : public Mesh2DTest<T>
     }
 
     template <class EntityType>
-    auto populateScalarArray(EntityType)
+    auto populateDoubleArray(EntityType, int seed)
+    {
+        constexpr int tuple_size = NuMesh::ExtractArraySize<double_tuple_type>::value;
+        auto layout = NuMesh::Array::createArrayLayout<double_tuple_type>(this->mesh_, tuple_size, EntityType());
+        auto array = NuMesh::Array::createArray<Kokkos::HostSpace>("array", layout);
+        auto aosoa = array->aosoa();
+        auto slice = Cabana::slice<0>(aosoa);
+        int max0 = aosoa.size();
+        int max1 = tuple_size;
+
+        for (int i = 0; i < max0; i++)
+        {
+            for (int j = 0; j < max1; j++)
+            {
+                slice(i, j) = (double) (((i*j*seed)+j)%seed);
+            }
+        }
+
+        // Copy to device memory
+        auto array_d = NuMesh::Array::createArray<MemorySpace>("array_d", layout);
+        auto aosoa_d = array_d->aosoa();
+        Cabana::deep_copy(aosoa_d, aosoa);
+
+        return array_d;
+    }
+
+    template <class EntityType>
+    auto populateScalarArray(EntityType, int seed)
     {
         constexpr int tuple_size = NuMesh::ExtractArraySize<scalar_tuple_type>::value;
         auto layout = NuMesh::Array::createArrayLayout<scalar_tuple_type>(this->mesh_, tuple_size, EntityType());
@@ -92,7 +120,7 @@ class ArrayTest : public Mesh2DTest<T>
 
         for (int i = 0; i < max0; i++)
         {
-            slice(i) = (double) (i*29);
+            slice(i) = (double) (i*29*seed);
         }
 
         // Copy to device memory
@@ -146,16 +174,33 @@ class ArrayTest : public Mesh2DTest<T>
         auto bh_slice = Cabana::slice<0>(bhost);
 
         // Ensure values are the same
-       for (int i = 0; i < amax0; i++)
+        if constexpr (amax1 == 1)
         {
-            for (int j = 0; j < amax1; j++)
+            for (int i = 0; i < amax0; i++)
             {
-                if (j >= bmax1) break; // b could have a smaller tuple than a
-                double correct = ah_slice(i, j);
-                double test = bh_slice(i, j);
+                double correct = ah_slice(i);
+                double test = bh_slice(i);
                 ASSERT_DOUBLE_EQ(correct, test);
             }
         }
+        else if constexpr (amax1 > 1)
+        {
+            for (int i = 0; i < amax0; i++)
+            {
+                for (int j = 0; j < amax1; j++)
+                {
+                    if (j >= bmax1) break; // b could have a smaller tuple than a
+                    double correct = ah_slice(i, j);
+                    double test = bh_slice(i, j);
+                    ASSERT_DOUBLE_EQ(correct, test);
+                }
+            }
+        }
+        else
+        {
+            throw std::runtime_error("checkEqual: Invalid tuple sizes");
+        }
+        
     }
 
 };
