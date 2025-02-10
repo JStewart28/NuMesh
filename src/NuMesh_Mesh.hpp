@@ -399,12 +399,11 @@ class Mesh
      *  2. Update the edges to reflect which faces they are part of
      *  3. Gather face global IDs from remotely owned faces to the edges
      */
-    void _finializeInit()
+    void _finalizeInit()
     {
         _createFaces();
         // _sort_by_layer();
         _populate_boundary_elements();
-        printf("R%d: num_verts: %d, func: %d\n", _rank, _owned_vertices, this->count(Own(), Vertex()));
     }
 
         /**
@@ -2112,7 +2111,7 @@ class Mesh
         // All initialized faces are on the same level
         _max_tree_level = 0;
 
-        _finializeInit();
+        _finalizeInit();
     }
         
 
