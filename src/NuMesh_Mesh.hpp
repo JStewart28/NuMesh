@@ -404,6 +404,7 @@ class Mesh
         _createFaces();
         // _sort_by_layer();
         _populate_boundary_elements();
+        printf("R%d: num_verts: %d, func: %d\n", _rank, _owned_vertices, this->count(Own(), Vertex()));
     }
 
         /**

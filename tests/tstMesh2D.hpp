@@ -94,6 +94,7 @@ class Mesh2DTest : public ::testing::Test
         auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
         auto array = Cabana::Grid::createArray<double, MemorySpace>("for_initialization", layout);
         this->mesh_->initializeFromArray(*array);
+        printf("R%d: init verts: %d\n", this->rank_, this->mesh_->count(NuMesh::Own(), NuMesh::Vertex()));
     }
 
     /**
