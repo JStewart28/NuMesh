@@ -94,7 +94,13 @@ class Mesh2DTest : public ::testing::Test
         auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
         auto array = Cabana::Grid::createArray<double, MemorySpace>("for_initialization", layout);
         this->mesh_->initializeFromArray(*array);
-        printf("R%d: init verts: %d\n", this->rank_, this->mesh_->count(NuMesh::Own(), NuMesh::Vertex()));
+
+        // Ensure the size of the mesh is greater than 0
+        int num_verts = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
+        int num_edges = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
+        int num_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+
+        ASSERT_GT(num_verts, 0); ASSERT_GT(num_edges, 0); ASSERT_GT(num_faces, 0);
     }
 
     /**
