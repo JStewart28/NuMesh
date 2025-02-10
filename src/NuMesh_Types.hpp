@@ -98,6 +98,15 @@ struct Unstructured3DMesh
     static constexpr std::size_t num_space_dim = NumSpaceDim;
 };
 
+//! Helpers to determine is T is a Cabana::MemberTypes<...> type
+// Primary template: Assume false
+template <typename T, typename Enable = void>
+struct IsCabanaMemberTypes : std::false_type {};
+
+// Specialization for Cabana::MemberTypes<Ts...>
+template <typename... Ts>
+struct IsCabanaMemberTypes<Cabana::MemberTypes<Ts...>> : std::true_type {};
+
 //! Helpers to extract base types of Cabana::MemberTypes<...>
 // General template (for non-Cabana::MemberTypes)
 template <typename T, typename Enable = void>
