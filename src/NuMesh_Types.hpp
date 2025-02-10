@@ -112,7 +112,7 @@ struct IsCabanaMemberTypes<Cabana::MemberTypes<Ts...>> : std::true_type {};
 template <typename T, typename Enable = void>
 struct ExtractBaseTypes
 {
-    using type = std::tuple<T>;  // Default case: Wrap T in a tuple
+    using type = T;  // Default case: Wrap T in a tuple
 };
 
 // Specialization for array types in Cabana::MemberTypes<T[N]>
