@@ -24,12 +24,10 @@ TYPED_TEST(ArrayTest, test_cloneCopy)
     {
         mesh_size = 5;
     }
-    
     this->init(mesh_size, 1);
 
-    auto correct = this->populateTripleArray(NuMesh::Vertex(), 1);
+    auto correct = this->populateTripleArray(NuMesh::Vertex(), 847);
     auto test = NuMesh::Array::ArrayOp::cloneCopy(*correct, NuMesh::Own());
-    printf("R%d: c/t sizes: %d, %d\n", this->rank_, correct->aosoa().size(), test->aosoa().size());
     this->checkEqual(*correct, *test, 3, 3);
 }
 
@@ -38,67 +36,66 @@ TYPED_TEST(ArrayTest, test_cloneCopy)
  *  B having dim 1
  *  A having dim 3
  */
-// TYPED_TEST(ArrayTest, test_elementMultiplyDim1)
-// {
-//     int mesh_size = this->comm_size_ * 2;
-//     if (this->comm_size_ == 1)
-//     {
-//         mesh_size = 5;
-//     }
+TYPED_TEST(ArrayTest, test_elementMultiplyDim1)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
     
-//     this->init(mesh_size, 1);
+    this->init(mesh_size, 1);
 
-//     auto three_size = this->populateTripleArray(NuMesh::Vertex(), 1);
-//     auto one_size = this->populateScalarArray(NuMesh::Vertex(), 7);
+    auto three_size = this->populateTripleArray(NuMesh::Vertex(), 938);
+    auto one_size = this->populateScalarArray(NuMesh::Vertex(), 235);
 
-//     // Manually multiply the first dimension of three_size into one_size
-//     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*one_size, NuMesh::Own());
-//     auto slice3 = Cabana::slice<0>(three_size->aosoa());
-//     auto slice1 = Cabana::slice<0>(correct->aosoa());
-//     for (size_t i = 0; i < three_size->aosoa().size(); i++)
-//     {
-//         double tmp = slice1(i);
-//         slice1(i) = slice1(i) * slice3(i, 0);
-//         printf("R%d: i%d: correct: %0.1lf = %0.1lf * %0.1lf\n", this->rank_, i, slice1(i), tmp, slice3(i, 0));
-//     }
+    // Manually multiply the first dimension of three_size into one_size
+    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*one_size, NuMesh::Own());
+    auto slice3 = Cabana::slice<0>(three_size->aosoa());
+    auto slice1 = Cabana::slice<0>(correct->aosoa());
+    for (size_t i = 0; i < three_size->aosoa().size(); i++)
+    {
+        double tmp = slice1(i);
+        slice1(i) = slice1(i) * slice3(i, 0);
+    }
 
-//     auto test = NuMesh::Array::ArrayOp::element_multiply(*one_size, *three_size, NuMesh::Own());
-//     this->checkEqual(*correct, *test, 1, 1);
-// }
+    auto test = NuMesh::Array::ArrayOp::element_multiply(*one_size, *three_size, NuMesh::Own());
+    this->checkEqual(*correct, *test, 1, 1);
+}
 
 /**
  * Tests elementMultiply with
  *  B having dim 3
  *  A having dim 3
  */
-// TYPED_TEST(ArrayTest, test_elementMultiplyDim3)
-// {
-//     int mesh_size = this->comm_size_ * 2;
-//     if (this->comm_size_ == 1)
-//     {
-//         mesh_size = 5;
-//     }
+TYPED_TEST(ArrayTest, test_elementMultiplyDim3)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
     
-//     this->init(mesh_size, 1);
+    this->init(mesh_size, 1);
 
-//     auto three_size0 = this->populateTripleArray(NuMesh::Vertex(), 1);
-//     auto three_size1 = this->populateTripleArray(NuMesh::Vertex(), 7);
+    auto three_size0 = this->populateTripleArray(NuMesh::Vertex(), 857);
+    auto three_size1 = this->populateTripleArray(NuMesh::Vertex(), 286);
 
-//     // Manually multiply the first dimension of three_size into one_size
-//     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*three_size0, NuMesh::Own());
-//     auto slice0 = Cabana::slice<0>(three_size0->aosoa());
-//     auto slice_c = Cabana::slice<0>(correct->aosoa());
-//     for (size_t i = 0; i < three_size0->aosoa().size(); i++)
-//     {
-//         for (size_t j = 0; j < 3; j++)
-//         {
-//             slice_c(i, j) = slice_c(i, j) * slice0(i, j);
-//         }
-//     }
+    // Manually multiply the first dimension of three_size into one_size
+    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*three_size0, NuMesh::Own());
+    auto slice0 = Cabana::slice<0>(three_size1->aosoa());
+    auto slice_c = Cabana::slice<0>(correct->aosoa());
+    for (size_t i = 0; i < three_size0->aosoa().size(); i++)
+    {
+        for (size_t j = 0; j < 3; j++)
+        {
+            slice_c(i, j) = slice_c(i, j) * slice0(i, j);
+        }
+    }
 
-//     auto test = NuMesh::Array::ArrayOp::element_multiply(*three_size0, *three_size1, NuMesh::Own());
-//     this->checkEqual(*correct, *test, 3, 3);
-// }
+    auto test = NuMesh::Array::ArrayOp::element_multiply(*three_size0, *three_size1, NuMesh::Own());
+    this->checkEqual(*correct, *test, 3, 3);
+}
 
 /**
  * Tests copyDim with
@@ -107,64 +104,64 @@ TYPED_TEST(ArrayTest, test_cloneCopy)
  *  Copy dim 1 of B into dim 0 of A
  * This is a use case in Beatnik
  */
-// TYPED_TEST(ArrayTest, test_copyDim0)
-// {
-//     int mesh_size = this->comm_size_ * 2;
-//     if (this->comm_size_ == 1)
-//     {
-//         mesh_size = 5;
-//     }
+TYPED_TEST(ArrayTest, test_copyDim0)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
     
-//     this->init(mesh_size, 1);
+    this->init(mesh_size, 1);
 
-//     auto double_array = this->populateDoubleArray(NuMesh::Vertex(), 1);
-//     auto scalar_array = this->populateScalarArray(NuMesh::Vertex(), 7);
+    auto double_array = this->populateDoubleArray(NuMesh::Vertex(), 482);
+    auto scalar_array = this->populateScalarArray(NuMesh::Vertex(), 915);
 
-//     // Manually copy the first dimension of B in to the first dim of A
-//     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*double_array, NuMesh::Own());
-//     auto slice_s = Cabana::slice<0>(scalar_array->aosoa());
-//     auto slice_d = Cabana::slice<0>(correct->aosoa());
-//     for (size_t i = 0; i < double_array->aosoa().size(); i++)
-//     {
-//         slice_d(i, 0) = slice_s(i);
-//     }
+    // Manually copy the first dimension of B in to the first dim of A
+    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*double_array, NuMesh::Own());
+    auto slice_s = Cabana::slice<0>(scalar_array->aosoa());
+    auto slice_d = Cabana::slice<0>(correct->aosoa());
+    for (size_t i = 0; i < double_array->aosoa().size(); i++)
+    {
+        slice_d(i, 0) = slice_s(i);
+    }
 
-//     NuMesh::Array::ArrayOp::copyDim(*double_array, 0, *scalar_array, 0, NuMesh::Own());
-//     this->checkEqual(*correct, *double_array, 2, 2);
-// }
+    NuMesh::Array::ArrayOp::copyDim(*double_array, 0, *scalar_array, 0, NuMesh::Own());
+    this->checkEqual(*correct, *double_array, 2, 2);
+}
 
-// /**
-//  * Tests copyDim with
-//  *  A having dim 2
-//  *  B having dim 1
-//  *  Copy dim 1 of B into dim 1 of A
-//  * This is a use case in Beatnik
-//  */
-// TYPED_TEST(ArrayTest, test_copyDim1)
-// {
-//     int mesh_size = this->comm_size_ * 2;
-//     if (this->comm_size_ == 1)
-//     {
-//         mesh_size = 5;
-//     }
+/**
+ * Tests copyDim with
+ *  A having dim 2
+ *  B having dim 1
+ *  Copy dim 0 of B into dim 1 of A
+ * This is a use case in Beatnik
+ */
+TYPED_TEST(ArrayTest, test_copyDim1)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
     
-//     this->init(mesh_size, 1);
+    this->init(mesh_size, 1);
 
-//     auto double_array = this->populateDoubleArray(NuMesh::Vertex(), 1);
-//     auto scalar_array = this->populateScalarArray(NuMesh::Vertex(), 7);
+    auto double_array = this->populateDoubleArray(NuMesh::Vertex(), 207);
+    auto scalar_array = this->populateScalarArray(NuMesh::Vertex(), 374);
 
-//     // Manually copy the first dimension of B in to the first dim of A
-//     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*double_array, NuMesh::Own());
-//     auto slice_s = Cabana::slice<0>(scalar_array->aosoa());
-//     auto slice_d = Cabana::slice<0>(correct->aosoa());
-//     for (size_t i = 0; i < double_array->aosoa().size(); i++)
-//     {
-//         slice_d(i, 1) = slice_s(i);
-//     }
+    // Manually copy the first dimension of B in to the first dim of A
+    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*double_array, NuMesh::Own());
+    auto slice_s = Cabana::slice<0>(scalar_array->aosoa());
+    auto slice_d = Cabana::slice<0>(correct->aosoa());
+    for (size_t i = 0; i < double_array->aosoa().size(); i++)
+    {
+        slice_d(i, 1) = slice_s(i);
+    }
 
-//     NuMesh::Array::ArrayOp::copyDim(*double_array, 1, *scalar_array, 0, NuMesh::Own());
-//     this->checkEqual(*correct, *double_array, 2, 2);
-// }
+    NuMesh::Array::ArrayOp::copyDim(*double_array, 1, *scalar_array, 0, NuMesh::Own());
+    this->checkEqual(*correct, *double_array, 2, 2);
+}
 
 
 } // end namespace NuMeshTest

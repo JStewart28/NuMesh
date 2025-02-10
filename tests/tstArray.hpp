@@ -12,6 +12,9 @@
 
 #include <mpi.h>
 
+#include <cmath>
+#include <cstdint>
+
 namespace NuMeshTest
 {
 
@@ -33,15 +36,6 @@ class ArrayTest : public Mesh2DTest<T>
     using scalar_tuple_type = Cabana::MemberTypes<double>;
 
   protected:
-    int rank_, comm_size_;
-    int periodic_;
-    std::shared_ptr<mesh_t> mesh_ = NuMesh::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
-    v_array_type vertices;
-    e_array_type edges;
-    f_array_type faces;
-    // l = local, g = ghost
-    int lv = -1, le = -1, lf = -1, gv = -1, ge = -1, gf = -1;
-
     void SetUp() override
     {
         Mesh2DTest<T>::SetUp();
@@ -53,6 +47,19 @@ class ArrayTest : public Mesh2DTest<T>
     }
 
   public:
+    double generateUniqueDouble(int i, int j, int seed) {
+        // Mix the inputs using bitwise operations for better uniqueness
+        std::uint64_t hash = (std::uint64_t(i) * 73856093) ^ 
+                            (std::uint64_t(j) * 19349663) ^ 
+                            (std::uint64_t(seed) * 83492791);
+        
+        // Convert hash to a double in the range [0,1] using normalization
+        double normalized = (hash % 1000000) / 1000000.0;
+        
+        // Scale it up to ensure non-trivial values and uniqueness
+        return (normalized + 1.0) * seed * 0.01;
+    }
+
 
     template <class EntityType>
     auto populateTripleArray(EntityType, int seed)
@@ -64,13 +71,13 @@ class ArrayTest : public Mesh2DTest<T>
         auto slice = Cabana::slice<0>(aosoa);
         int max0 = aosoa.size();
         int max1 = tuple_size;
-        printf("R%d: triple create size: %d, num_verts: %d\n", this->rank_, max0, this->mesh_->count(NuMesh::Own(), NuMesh::Vertex()));
 
         for (int i = 0; i < max0; i++)
         {
             for (int j = 0; j < max1; j++)
             {
-                slice(i, j) = (double) (((i*j*seed)+j)%seed);
+                double val = generateUniqueDouble(i, j, seed);
+                slice(i, j) = val;
             }
         }
 
@@ -92,7 +99,6 @@ class ArrayTest : public Mesh2DTest<T>
         auto slice = Cabana::slice<0>(aosoa);
         int max0 = aosoa.size();
         int max1 = tuple_size;
-        printf("R%d: double create size: %d\n", this->rank_, max0);
 
         for (int i = 0; i < max0; i++)
         {
@@ -119,7 +125,6 @@ class ArrayTest : public Mesh2DTest<T>
         auto aosoa = array->aosoa();
         auto slice = Cabana::slice<0>(aosoa);
         int max0 = aosoa.size();
-        printf("R%d: scalar create size: %d\n", this->rank_, max0);
 
         for (int i = 0; i < max0; i++)
         {
@@ -177,14 +182,13 @@ class ArrayTest : public Mesh2DTest<T>
         auto bh_slice = Cabana::slice<0>(bhost);
 
         // Ensure values are the same
-        printf("R%d: a01: (%d, %d), b01: (%d, %d)\n", this->rank_, amax0, amax1, bmax0, bmax1);
         if constexpr (amax1 == 1)
         {
             for (int i = 0; i < amax0; i++)
             {
                 double correct = ah_slice(i);
                 double test = bh_slice(i);
-                printf("Test: R%d: i%d: correct: %0.1lf, test: %0.1lf\n", this->rank_, i, correct, test);
+                // printf("Test: R%d: i%d: correct: %0.1lf, test: %0.1lf\n", this->rank_, i, correct, test);
                 ASSERT_DOUBLE_EQ(correct, test);
             }
         }
@@ -192,9 +196,6 @@ class ArrayTest : public Mesh2DTest<T>
         {
             for (int i = 0; i < amax0; i++)
             {
-                printf("Test: R%d: i%d: correct: (%0.1lf, %0.1lf, %0.1lf), test: (%0.1lf, %0.1lf, %0.1lf)\n", this->rank_, i,
-                    ah_slice(i, 0), ah_slice(i, 1), ah_slice(i, 2),
-                    bh_slice(i, 0), bh_slice(i, 1), bh_slice(i, 2));
                 for (int j = 0; j < amax1; j++)
                 {
                     if (j >= bmax1) break; // b could have a smaller tuple than a
