@@ -32,6 +32,63 @@ TYPED_TEST(ArrayTest, test_cloneCopy)
 }
 
 /**
+ * Tests assign with a three-tuple
+ */
+TYPED_TEST(ArrayTest, test_assignDim3)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
+    
+    this->init(mesh_size, 1);
+
+    auto three_size = this->populateTripleArray(NuMesh::Vertex(), 938);
+
+    // Manually assign
+    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*three_size, NuMesh::Own());
+    auto slice_c = Cabana::slice<0>(correct->aosoa());
+    for (size_t i = 0; i < three_size->aosoa().size(); i++)
+    {
+        for (size_t j = 0; j < 3; j++)
+        {
+            slice_c(i, j) = 8.8;
+        }
+    }
+
+    NuMesh::Array::ArrayOp::assign(*three_size, 8.8, NuMesh::Own());
+    this->checkEqual(*correct, *three_size, 3, 3);
+}
+
+/**
+ * Tests assign with a one-tuple
+ */
+TYPED_TEST(ArrayTest, test_assignDim1)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
+    
+    this->init(mesh_size, 1);
+
+    auto one_size = this->populateScalarArray(NuMesh::Vertex(), 938);
+
+    // Manually assign
+    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*one_size, NuMesh::Own());
+    auto slice_c = Cabana::slice<0>(correct->aosoa());
+    for (size_t i = 0; i < one_size->aosoa().size(); i++)
+    {
+        slice_c(i) = 8.8;
+    }
+
+    NuMesh::Array::ArrayOp::assign(*one_size, 8.8, NuMesh::Own());
+    this->checkEqual(*correct, *one_size, 1, 1);
+}
+
+/**
  * Tests elementMultiply with
  *  B having dim 1
  *  A having dim 3

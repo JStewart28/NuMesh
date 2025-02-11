@@ -49,8 +49,11 @@ class ArrayLayout
     //! Spatial dimension.
     static constexpr std::size_t num_space_dim = 1;
 
+    //! Ensure tuple_type is a Cabana::MemberTypes
+    static_assert(IsCabanaMemberTypes<tuple_type>::value, "NuMesh::ArrayLayout: Tuple must be a Cabana::MemberType");
+
     //! Ensure tuple_type contains only a single type or array of types
-    static_assert(IsSinglePartMemberTypes<tuple_type>::value, "NuMesh::Array: Tuple of single type required");
+    static_assert(IsSinglePartMemberTypes<tuple_type>::value, "NuMesh::ArrayLayout: Tuple of single type required");
 
     /*!
       \brief Constructor.
@@ -340,7 +343,11 @@ class Array
     using entity_type = typename LayoutType::entity_type;
 
     //! Tuple type.
-    using tuple_type = typename LayoutType::tuple_type; 
+    using tuple_type = typename LayoutType::tuple_type;
+
+    //! Value type in the tuple
+    using value_type = typename ExtractSingleType<
+        typename ExtractBaseTypes<tuple_type>::type>::type
 
     using aosoa_type = Cabana::AoSoA<tuple_type, memory_space, 4>;
 
@@ -689,23 +696,32 @@ void copyDim( A_t& a, int dimA, B_t& b, int dimB, DecompositionTag tag )
 */
 
 template <class Array_t, class DecompositionTag>
-void assign( Array_t& array, const typename ExtractBaseTypes<
-                typename Array_t::tuple_type>::type alpha,
+void assign( Array_t& array,
+             const typename ExtractSingleType<
+                 typename ExtractBaseTypes<typename Array_t::tuple_type>::type
+                    >::type alpha, 
              DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+
     using execution_space = typename Array_t::execution_space;
+    using value_type = typename Array_t::value_type;
     using entity_t = typename Array_t::entity_type;
+    
     auto aosoa = array.aosoa();
     auto slice = Cabana::slice<0>(aosoa);
+    constexpr int am = ExtractArraySize<original_tuple_type>::value;
     auto policy = Cabana::Grid::createExecutionPolicy(
-         array.layout()->indexSpace( tag, entity_t(), Local() ), execution_space() );
+         array.layout()->indexSpace(tag, entity_t(), Local()), execution_space() );
+
     Kokkos::parallel_for(
         "NuMesh::ArrayOp::assign", policy,
-        KOKKOS_LAMBDA( const int i, const int j) {
-            slice( i, j ) = alpha;
-    } );
+        KOKKOS_LAMBDA( const int i, const int j ) {
+            slice(i, j) = alpha;
+        }
+    );
 }
+
 
 /*!
   \brief Scale every element of an aosoa slice by a scalar value. 2D specialization.
@@ -715,8 +731,10 @@ void assign( Array_t& array, const typename ExtractBaseTypes<
 */
 template <class Array_t, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
-scale( Array_t& array, const typename ExtractBaseTypes<
-                typename Array_t::tuple_type>::type alpha,
+scale( Array_t& array,
+        const typename ExtractSingleType<
+            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
+                >::type alpha, 
        DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
@@ -765,11 +783,15 @@ apply( Array_t& array, Function& function, DecompositionTag tag )
 */
 template <class Array_t, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
-update( Array_t& a, const typename ExtractBaseTypes<
-                typename Array_t::tuple_type>::type alpha, const Array_t& b,
-            const typename ExtractBaseTypes<
-                typename Array_t::tuple_type>::type beta,
-            DecompositionTag tag )
+update( Array_t& a,
+        const typename ExtractSingleType<
+            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
+                >::type alpha, 
+        const Array_t& b,
+        const typename ExtractSingleType<
+            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
+                >::type beta, 
+        DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
     using entity_type = typename Array_t::entity_type;
@@ -799,12 +821,19 @@ update( Array_t& a, const typename ExtractBaseTypes<
 */
 template <class Array_t, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
-update( Array_t& a, const typename ExtractBaseTypes<
-                typename Array_t::tuple_type>::type alpha, const Array_t& b,
-        const typename ExtractBaseTypes<
-                typename Array_t::tuple_type>::type beta, const Array_t& c,
-        const typename ExtractBaseTypes<
-                typename Array_t::tuple_type>::type gamma, DecompositionTag tag )
+update( Array_t& a,
+        const typename ExtractSingleType<
+            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
+                >::type alpha, 
+        const Array_t& b,
+        const typename ExtractSingleType<
+            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
+                >::type beta,
+        const Array_t& c,
+        const typename ExtractSingleType<
+            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
+                >::type gamma,
+        DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
     using entity_type = typename Array_t::entity_type;

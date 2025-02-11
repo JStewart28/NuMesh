@@ -107,12 +107,40 @@ struct IsCabanaMemberTypes : std::false_type {};
 template <typename... Ts>
 struct IsCabanaMemberTypes<Cabana::MemberTypes<Ts...>> : std::true_type {};
 
+// Primary template: Invalid case (multiple or empty types)
+template <typename Tuple, typename Enable = void>
+struct ExtractSingleType;
+
+// Specialization for a tuple with exactly one type
+template <typename T>
+struct ExtractSingleType<std::tuple<T>>
+{
+    using type = T;
+};
+
+//! Helpers to extract the type T in a Tuple<T>
+// Specialization for invalid cases (empty or multiple types)
+template <typename T, typename U, typename... Rest>
+struct ExtractSingleType<std::tuple<T, U, Rest...>>
+{
+    static_assert(sizeof...(Rest) == 0, 
+                  "ExtractSingleType can only be used with a single-type tuple.");
+};
+
+// Specialization for empty tuple (should not occur)
+template <>
+struct ExtractSingleType<std::tuple<>>
+{
+    static_assert(sizeof(std::tuple<>) != 0, 
+                  "ExtractSingleType cannot be used with an empty tuple.");
+};
+
 //! Helpers to extract base types of Cabana::MemberTypes<...>
 // General template (for non-Cabana::MemberTypes)
 template <typename T, typename Enable = void>
 struct ExtractBaseTypes
 {
-    using type = T;  // Default case: Wrap T in a tuple
+    using type = std::tuple<T>;  // Default case: Wrap T in a tuple
 };
 
 // Specialization for array types in Cabana::MemberTypes<T[N]>
