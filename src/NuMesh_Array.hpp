@@ -66,7 +66,10 @@ class ArrayLayout
         : _mesh( mesh )
         , _dofs_per_entity( dofs_per_entity )
         , _vef_gid_start(mesh->vef_gid_start())
-    {}
+    {
+        // Assert tuple_size is the same as dofs_per_entity
+        assert(ExtractArraySize<tuple_type>::value == dofs_per_entity);
+    }
 
     //! Get the mesh over which this layout is defined.
     const std::shared_ptr<mesh_type> mesh() const { return _mesh; }
@@ -200,15 +203,11 @@ class ArrayLayout
     Cabana::Grid::IndexSpace<num_space_dim>
     indexSpace( Ghost, Vertex, Local, Element ) const
     {
-        // Compute the lower bound.
-        std::array<long, 1> min;
-        min[0] = 0;
-
         // Compute the upper bound.
         std::array<long, 1> max;
         max[0] = _mesh->count(Own(), Vertex()) + _mesh->count(Ghost(), Vertex());
 
-        return Cabana::Grid::IndexSpace<1>( min, max );
+        return Cabana::Grid::IndexSpace<1>( max );
     }
 
     //---------------------------------------------------------------------------//
@@ -227,15 +226,11 @@ class ArrayLayout
     Cabana::Grid::IndexSpace<num_space_dim>
     indexSpace( Ghost, Edge, Local, Element ) const
     {
-        // Compute the lower bound.
-        std::array<long, 1> min;
-        min[0] = 0;
-
         // Compute the upper bound.
         std::array<long, 1> max;
         max[0] = _mesh->count(Own(), Edge()); + _mesh->count(Ghost(), Edge());
 
-        return Cabana::Grid::IndexSpace<1>( min, max );
+        return Cabana::Grid::IndexSpace<1>( max );
     }
 
     //---------------------------------------------------------------------------//
@@ -253,15 +248,11 @@ class ArrayLayout
     Cabana::Grid::IndexSpace<num_space_dim>
     indexSpace( Ghost, Face, Local, Element ) const
     {
-        // Compute the lower bound.
-        std::array<long, 1> min;
-        min[0] = 0;
-
         // Compute the upper bound.
         std::array<long, 1> max;
         max[0] = _mesh->count(Own(), Face()) + _mesh->count(Ghost(), Face());
 
-        return Cabana::Grid::IndexSpace<1>( min, max );
+        return Cabana::Grid::IndexSpace<1>( max );
     }
 
     // Get the local index space of the owned+ghosted ArrayLayout entity type, element version.
@@ -347,7 +338,7 @@ class Array
 
     //! Value type in the tuple
     using value_type = typename ExtractSingleType<
-        typename ExtractBaseTypes<tuple_type>::type>::type
+        typename ExtractBaseTypes<tuple_type>::type>::type;
 
     using aosoa_type = Cabana::AoSoA<tuple_type, memory_space, 4>;
 
@@ -531,7 +522,8 @@ void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
     }
     else
     {
-        throw std::runtime_error("NuMesh::ArrayOp::copy: Invalid tuple size!");
+        static_assert(tuple_size > 1 || tuple_size == 1,
+            "NuMesh::ArrayOp::copy: Invalid tuple size!");
     }
 }
 
@@ -579,7 +571,7 @@ std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
     // Check dimensions
     auto a_aosoa = a.aosoa();
     auto a_slice = Cabana::slice<0>(a_aosoa);
-    const int aw = a_slice.extent(1);
+    constexpr int aw = ExtractArraySize<original_tuple_type>::value;
 
     if (dimA >= aw) {
         throw std::invalid_argument(
@@ -593,7 +585,7 @@ std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
     Kokkos::parallel_for(
         "NuMesh::ArrayOp::copyDim", policy,
         KOKKOS_LAMBDA(const int i) {
-            out_slice(i, 0) = a_slice(i, dimA);  // Extracting only one dimension
+            out_slice(i) = a_slice(i, dimA);
         });
 
     return out;
@@ -696,10 +688,7 @@ void copyDim( A_t& a, int dimA, B_t& b, int dimB, DecompositionTag tag )
 */
 
 template <class Array_t, class DecompositionTag>
-void assign( Array_t& array,
-             const typename ExtractSingleType<
-                 typename ExtractBaseTypes<typename Array_t::tuple_type>::type
-                    >::type alpha, 
+void assign( Array_t& array, typename Array_t::value_type alpha, 
              DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
@@ -707,19 +696,36 @@ void assign( Array_t& array,
     using execution_space = typename Array_t::execution_space;
     using value_type = typename Array_t::value_type;
     using entity_t = typename Array_t::entity_type;
+    using tuple_type = typename Array_t::tuple_type;
     
     auto aosoa = array.aosoa();
     auto slice = Cabana::slice<0>(aosoa);
-    constexpr int am = ExtractArraySize<original_tuple_type>::value;
-    auto policy = Cabana::Grid::createExecutionPolicy(
-         array.layout()->indexSpace(tag, entity_t(), Local()), execution_space() );
-
-    Kokkos::parallel_for(
-        "NuMesh::ArrayOp::assign", policy,
-        KOKKOS_LAMBDA( const int i, const int j ) {
+    constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
+    if constexpr(tuple_size > 1)
+    {
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            array.layout()->indexSpace(tag, entity_t(), Local()), execution_space() );
+   
+        Kokkos::parallel_for("NuMesh::ArrayOp::assign", policy,
+           KOKKOS_LAMBDA( const int i, const int j ) {
             slice(i, j) = alpha;
-        }
-    );
+        });
+    }
+    else if constexpr(tuple_size == 1)
+    {
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            array.layout()->indexSpace(tag, entity_t(), Local(), Element()), execution_space() );
+   
+        Kokkos::parallel_for("NuMesh::ArrayOp::assign", policy,
+           KOKKOS_LAMBDA( const int i ) {
+            slice(i) = alpha;
+        });
+    }
+    else
+    {
+        static_assert(tuple_size > 1 || tuple_size == 1,
+            "NuMesh::ArrayOp::assign: Invalid tuple size");
+    }
 }
 
 
@@ -731,23 +737,42 @@ void assign( Array_t& array,
 */
 template <class Array_t, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
-scale( Array_t& array,
-        const typename ExtractSingleType<
-            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
-                >::type alpha, 
+scale( Array_t& array, const typename Array_t::value_type alpha, 
        DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+
     using entity_t = typename Array_t::entity_type;
+    using tuple_type = typename Array_t::tuple_type;
+    using execution_space = typename Array_t::execution_space;
     auto aosoa = array.aosoa();
     auto slice = Cabana::slice<0>(aosoa);
-    Kokkos::parallel_for(
-        "ArrayOp::scale",
-        createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
-                               typename Array_t::execution_space() ),
-        KOKKOS_LAMBDA( const int i, const int j ) {
-            slice( i, j ) *= alpha;
-        } );
+    constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
+    if constexpr(tuple_size > 1)
+    {
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            array.layout()->indexSpace(tag, entity_t(), Local()), execution_space() );
+   
+        Kokkos::parallel_for("NuMesh::ArrayOp::scale", policy,
+           KOKKOS_LAMBDA( const int i, const int j ) {
+            slice(i, j) *= alpha;
+        });
+    }
+    else if constexpr(tuple_size == 1)
+    {
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            array.layout()->indexSpace(tag, entity_t(), Local(), Element()), execution_space() );
+   
+        Kokkos::parallel_for("NuMesh::ArrayOp::scale", policy,
+           KOKKOS_LAMBDA( const int i ) {
+            slice(i) *= alpha;
+        });
+    }
+    else
+    {
+        static_assert(tuple_size > 1 || tuple_size == 1, 
+            "NuMesh::ArrayOp::scale: Invalid tuple size");
+    }
 }
 
 /*!
@@ -761,16 +786,38 @@ std::enable_if_t<1 == Array_t::num_space_dim, void>
 apply( Array_t& array, Function& function, DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+
+    using tuple_type = typename Array_t::tuple_type;
     using entity_t = typename Array_t::entity_type;
+    using execution_space = typename Array_t::execution_space;
     auto aosoa = array.aosoa();
     auto slice = Cabana::slice<0>(aosoa);
-    Kokkos::parallel_for(
-        "ArrayOp::apply",
-        createExecutionPolicy( array.layout()->indexSpace( tag, entity_t(), Local() ),
-                               typename Array_t::execution_space() ),
-        KOKKOS_LAMBDA( const int i, const int j) {
-            slice( i, j ) = function(slice( i, j ));
-        } );
+    constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
+    if constexpr(tuple_size > 1)
+    {
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            array.layout()->indexSpace(tag, entity_t(), Local()), execution_space() );
+   
+        Kokkos::parallel_for("NuMesh::ArrayOp::scale", policy,
+           KOKKOS_LAMBDA( const int i, const int j ) {
+            slice(i, j) *= function(slice( i, j ));
+        });
+    }
+    else if constexpr(tuple_size == 1)
+    {
+        auto policy = Cabana::Grid::createExecutionPolicy(
+            array.layout()->indexSpace(tag, entity_t(), Local(), Element()), execution_space());
+   
+        Kokkos::parallel_for("NuMesh::ArrayOp::scale", policy,
+           KOKKOS_LAMBDA( const int i ) {
+            slice(i) *= function(slice( i ));
+        });
+    }
+    else
+    {
+        static_assert(tuple_size > 1 || tuple_size == 1, 
+            "NuMesh::ArrayOp::apply: Invalid tuple size");
+    }
 }
 
 /*!
@@ -783,30 +830,43 @@ apply( Array_t& array, Function& function, DecompositionTag tag )
 */
 template <class Array_t, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
-update( Array_t& a,
-        const typename ExtractSingleType<
-            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
-                >::type alpha, 
-        const Array_t& b,
-        const typename ExtractSingleType<
-            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
-                >::type beta, 
+update( Array_t& a, const typename Array_t::tuple_type alpha, 
+        const Array_t& b, const typename Array_t::tuple_type beta, 
         DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
     using entity_type = typename Array_t::entity_type;
+    using tuple_type = typename Array_t::tuple_type;
     auto a_aosoa = a.aosoa();
     auto b_aosoa = b.aosoa();
     auto a_slice = Cabana::slice<0>(a_aosoa);
     auto b_slice = Cabana::slice<0>(b_aosoa);
-    Kokkos::parallel_for(
-        "ArrayOp::update",
-        createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
-                               typename Array_t::execution_space() ),
-        KOKKOS_LAMBDA( const long i, const long j ) {
-            a_slice( i, j ) =
-                alpha * a_slice( i, j ) + beta * b_slice( i, j );
-        } );
+    constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
+    if constexpr(tuple_size > 1)
+    {
+        Kokkos::parallel_for( "ArrayOp::update",
+            createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
+                                   typename Array_t::execution_space() ),
+            KOKKOS_LAMBDA( const long i, const long j ) {
+                a_slice( i, j ) =
+                    alpha * a_slice( i, j ) + beta * b_slice( i, j );
+            });
+    }
+    else if constexpr(tuple_size == 1)
+    {
+        Kokkos::parallel_for( "ArrayOp::update",
+            createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local(), Element() ),
+                                   typename Array_t::execution_space() ),
+            KOKKOS_LAMBDA( const long i ) {
+                a_slice( i ) =
+                    alpha * a_slice( i ) + beta * b_slice( i );
+            });
+    }
+    else
+    {
+        static_assert(tuple_size > 1 || tuple_size == 1, 
+            "NuMesh::ArrayOp::update: Invalid tuple size");
+    }
 }
 
 /*!
@@ -821,37 +881,48 @@ update( Array_t& a,
 */
 template <class Array_t, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
-update( Array_t& a,
-        const typename ExtractSingleType<
-            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
-                >::type alpha, 
-        const Array_t& b,
-        const typename ExtractSingleType<
-            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
-                >::type beta,
-        const Array_t& c,
-        const typename ExtractSingleType<
-            typename ExtractBaseTypes<typename Array_t::tuple_type>::type
-                >::type gamma,
+update( Array_t& a, const typename Array_t::tuple_type alpha, 
+        const Array_t& b, const typename Array_t::tuple_type beta,
+        const Array_t& c, const typename Array_t::tuple_type gamma,
         DecompositionTag tag )
 {
     static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
     using entity_type = typename Array_t::entity_type;
+    using tuple_type = typename Array_t::tuple_type;
     auto a_aosoa = a.aosoa();
     auto b_aosoa = b.aosoa();
     auto c_aosoa = c.aosoa();
     auto a_slice = Cabana::slice<0>(a_aosoa);
     auto b_slice = Cabana::slice<0>(b_aosoa);
     auto c_slice = Cabana::slice<0>(c_aosoa);
-    Kokkos::parallel_for(
-        "ArrayOp::update",
-        createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
-                               typename Array_t::execution_space() ),
-        KOKKOS_LAMBDA( const int i, const int j ) {
-            a_slice( i, j ) = alpha * a_slice( i, j ) +
-                                beta * b_slice( i, j ) +
-                                gamma * c_slice( i, j );
-        } );
+    constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
+    if constexpr(tuple_size > 1)
+    {
+        Kokkos::parallel_for("ArrayOp::update",
+            createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local() ),
+                                   typename Array_t::execution_space() ),
+            KOKKOS_LAMBDA( const int i, const int j ) {
+                a_slice( i, j ) = alpha * a_slice( i, j ) +
+                                    beta * b_slice( i, j ) +
+                                    gamma * c_slice( i, j );
+            });
+    }
+    else if constexpr(tuple_size == 1)
+    {
+        Kokkos::parallel_for("ArrayOp::update",
+            createExecutionPolicy( a.layout()->indexSpace( tag, entity_type(), Local(), Element() ),
+                                   typename Array_t::execution_space() ),
+            KOKKOS_LAMBDA( const int i ) {
+                a_slice( i ) = alpha * a_slice( i ) +
+                                    beta * b_slice( i ) +
+                                    gamma * c_slice( i );
+            });
+    }
+    else
+    {
+        static_assert(tuple_size > 1 || tuple_size == 1, 
+            "NuMesh::ArrayOp::update: Invalid tuple size");
+    }
 }
 
 /**
