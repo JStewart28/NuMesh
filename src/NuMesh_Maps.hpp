@@ -244,7 +244,7 @@ class V2F
                     if (vlid > -1)
                     {
                         int insert_idx = Kokkos::atomic_fetch_add(&current_offset(vlid), 1);
-                        // if (rank == 0) printf("R%d insert idx: %d, v l/g: %d, %d\n", rank, insert_idx, vlid, vgid);
+                        // if (rank == 0) printf("R%d flid %d, insert idx: %d, v l/g: %d, %d\n", rank, f, insert_idx, vlid, vgid);
                         indices(insert_idx) = f;  // Store face LID.
                     }
                 }
@@ -342,12 +342,11 @@ class V2V
 
         // Allocate offsets and indices (first pass to count unique neighbors)
         integer_view neighbor_counts("neighbor_counts", num_vertices);
-        printf("Before count_neighbors\n");
         Kokkos::parallel_for("count_neighbors", Kokkos::RangePolicy<execution_space>(0, num_vertices),
             KOKKOS_LAMBDA(int vlid) {
                 int offset = face_offsets(vlid);
                 int next_offset = (vlid + 1 < (int)face_offsets.extent(0)) ? face_offsets(vlid + 1) : (int)face_indices.extent(0);
-
+                printf("vlid: %d, offsets: %d, %d\n", vlid, offset, next_offset);
                 int num_neighbors = 0;
                 for (int i = offset; i < next_offset; i++)
                 {
@@ -357,10 +356,15 @@ class V2V
                     {
                         int vgid = f_vid(flid, j);
                         int vlid0 = Utils::get_lid(v_gid, vgid, 0, num_vertices);
+                        printf("vlid: %d, vlid0: %d\n", vlid, vlid0);
                         if ((vlid0 != vlid) && (vlid0 > -1)) { // Exclude self and vertices not in our AoSoA
                             auto hash_key = hashFunction(vlid, vlid0);
                             auto result = vert_vert_map.insert(hash_key, vlid0); // Add (vert, neighbor vert) pair to map
-                            if (result.success()) num_neighbors++; // Pair not in map; increment num neigbors                            
+                            if (result.success()) 
+                            {
+                                num_neighbors++; // Pair not in map; increment num neigbors                            
+                                printf("vlid: %d, nieghbor: %d\n", vlid, vlid0);
+                            }
                         }
                     }
                 }

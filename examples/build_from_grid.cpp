@@ -87,14 +87,14 @@ int main( int argc, char* argv[] )
     auto positions = NuMesh::Array::createArray<memory_space>("positions", vertex_triple_layout);
     
     // auto wslice = Cabana::slice<0>(waosoa);
-    auto halo = NuMesh::createHalo(mesh, 0, 1, NuMesh::Vertex());
+    // auto halo = NuMesh::createHalo(mesh, 0, 1, NuMesh::Vertex());
     // positions->update();
     // auto zslice = Cabana::slice<0>(positions->aosoa());
-    printf("R%d: positions: %d, mesh verts: %d\n", mesh->rank(), positions->aosoa().size(), mesh->vertices().size());
+    // printf("R%d: positions: %d, mesh verts: %d\n", mesh->rank(), positions->aosoa().size(), mesh->vertices().size());
     // positions->update();
     // printf("R%d: after: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
-    positions->update();
-    NuMesh::gather(halo, positions);
+    // positions->update();
+    // NuMesh::gather(halo, positions);
 
     // // Uniform refinement
     // for (int i = 0; i < 1; i++)
@@ -126,45 +126,45 @@ int main( int argc, char* argv[] )
     // halo.gather();
     // mesh->printFaces(1, 376);
     // mesh->printFaces(1, 326);
-    // auto v2f = NuMesh::Maps::V2F(mesh);
-    // auto offsets_d = v2f.offsets();
-    // auto indices_d = v2f.indices();
-    // auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
-    // auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
-    // auto& vertices = mesh->vertices();
-    // auto& faces = mesh->faces();
-    // auto v_owner = Cabana::slice<V_OWNER>(vertices);
-    // auto v_gid = Cabana::slice<V_GID>(vertices);
-    // auto f_gid = Cabana::slice<F_GID>(faces);
-    // printf("R%d: verts size: %d\n", rank, vertices.size());
-    // printf("R%d: num faces: %d\n", rank, faces.size());
-    // // Iterate over all owned vertices
-    // for (int vlid = 0; vlid < (int) vertices.size(); vlid++)
-    // {
-    //     int vowner = v_owner(vlid);
-    //     if (vowner != rank) continue;
-    //     int vgid = v_gid(vlid);
+    auto v2f = NuMesh::Maps::V2F(mesh);
+    auto offsets_d = v2f.offsets();
+    auto indices_d = v2f.indices();
+    auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
+    auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
+    auto& vertices = mesh->vertices();
+    auto& faces = mesh->faces();
+    auto v_owner = Cabana::slice<V_OWNER>(vertices);
+    auto v_gid = Cabana::slice<V_GID>(vertices);
+    auto f_gid = Cabana::slice<F_GID>(faces);
+    printf("R%d: verts size: %d\n", rank, vertices.size());
+    printf("R%d: num faces: %d\n", rank, faces.size());
+    // Iterate over all owned vertices
+    for (int vlid = 0; vlid < (int) vertices.size(); vlid++)
+    {
+        int vowner = v_owner(vlid);
+        if (vowner != rank) continue;
+        int vgid = v_gid(vlid);
 
-    //     int offset = offsets(vlid);
+        int offset = offsets(vlid);
 
-    //     // Handle the last vertex case
-    //     int next_offset = (vlid + 1 < (int)offsets.extent(0)) ? 
-    //                     offsets(vlid + 1) : 
-    //                     (int)indices.extent(0);
+        // Handle the last vertex case
+        int next_offset = (vlid + 1 < (int)offsets.extent(0)) ? 
+                        offsets(vlid + 1) : 
+                        (int)indices.extent(0);
         
-    //     // Each vert should be connected to at least six faces
-    //     // NOTE: This only holds with uniform refinement
-    //     int connected_faces = next_offset - offset;
-    //     if (connected_faces < 6)
-    //     {
-    //         for (int i = offset; i < next_offset; i++)
-    //         {
-    //             int parent_face_lid = indices(i);
-    //             int fgid_parent = f_gid(parent_face_lid);
-    //             if (vgid == 0) printf("R%d: vgid %d: connected face %d\n", rank, vgid, fgid_parent);
-    //         }
-    //     }
-    // }
+        // Each vert should be connected to at least six faces
+        // NOTE: This only holds with uniform refinement
+        int connected_faces = next_offset - offset;
+        if (connected_faces < 6)
+        {
+            for (int i = offset; i < next_offset; i++)
+            {
+                int parent_face_lid = indices(i);
+                int fgid_parent = f_gid(parent_face_lid);
+                if (vgid == 0) printf("R%d: vgid %d: connected face %d\n", rank, vgid, fgid_parent);
+            }
+        }
+    }
 
 
     // mesh->printFaces(1, 261);
