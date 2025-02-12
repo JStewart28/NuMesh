@@ -42,7 +42,7 @@ class V2E
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
 
-        build();
+        rebuild();
     };
 
     ~V2E() {}
@@ -50,7 +50,7 @@ class V2E
     /**
      * Build the V2E
      */
-    void build()
+    void rebuild()
     {
         auto vertices = _mesh->vertices();
         auto edges = _mesh->edges();
@@ -120,6 +120,7 @@ class V2E
                 }
             });
         Kokkos::fence();
+        _map_version = _mesh->version();
     }
 
     auto offsets() {return _offsets;}
@@ -168,7 +169,7 @@ class V2F
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
 
-        build();
+        rebuild();
     };
 
     ~V2F() {}
@@ -176,7 +177,7 @@ class V2F
     /**
      * Build the V2F
      */
-    void build()
+    void rebuild()
     {
         auto vertices = _mesh->vertices();
         auto faces = _mesh->faces();
@@ -250,6 +251,8 @@ class V2F
                 }
             });
         Kokkos::fence();
+
+        _map_version = _mesh->version();
     }
 
     auto offsets() {return _offsets;}
@@ -302,7 +305,7 @@ class V2V
 
         _level = -1;
 
-        build();
+        rebuild();
     };
 
     ~V2V() {}
@@ -310,7 +313,7 @@ class V2V
     /**
      * Build the V2V map
      */
-    void build()
+    void rebuild()
     {
         // Define the hash map type
         using PairType = std::pair<int, int>;
@@ -408,6 +411,8 @@ class V2V
                     }
                 }
             });
+        Kokkos::fence();
+        _map_version = _mesh->version();
     }
 
     auto offsets() {return _offsets;}
