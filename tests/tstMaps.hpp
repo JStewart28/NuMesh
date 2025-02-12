@@ -166,6 +166,66 @@ class MapsTest : public Mesh2DTest<T>
             }
         }
     }
+
+    void test_v2v()
+    {
+        this->copytoHost();
+        printf("R%d: after copy to host\n", this->rank_);
+    
+        auto v2v = NuMesh::Maps::V2V(this->mesh_);
+        printf("R%d: after create v2v\n", this->rank_);
+        auto offsets_d = v2v.offsets();
+        auto indices_d = v2v.indices();
+        auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
+        auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
+    
+        auto f_gid = Cabana::slice<F_GID>(this->faces);
+        auto f_vid = Cabana::slice<F_VIDS>(this->faces);
+        auto v_gid = Cabana::slice<V_GID>(this->vertices);
+    
+        int total_vertices = this->vertices.size();
+    
+        // Check that offsets are properly increasing
+        for (int v = 0; v < total_vertices-1; v++) {
+            EXPECT_LE(offsets(v), offsets(v + 1)) << "Offsets should be monotonically increasing.";
+        }
+    
+        // Verify the vertex-to-vertex connectivity
+        for (int v = 0; v < total_vertices; v++) {
+            printf("R%d: checking vlid %d\n", this->rank_, v);
+            std::set<int> expected_neighbors;
+    
+            // Iterate over all faces connected to this vertex
+            for (int f = 0; f < (int)this->faces.size(); f++) {
+                bool vertex_in_face = false;
+                for (int j = 0; j < 3; j++) {
+                    if (f_vid(f, j) == v_gid(v)) {
+                        vertex_in_face = true;
+                        break;
+                    }
+                }
+    
+                if (vertex_in_face) {
+                    // Collect all neighboring vertices from this face
+                    for (int j = 0; j < 3; j++) {
+                        if (f_vid(f, j) != v_gid(v)) { // Avoid adding self
+                            expected_neighbors.insert(f_vid(f, j));
+                        }
+                    }
+                }
+            }
+    
+            // Check that the actual neighbors match the expected ones
+            std::set<int> actual_neighbors;
+            for (int i = offsets(v); i < offsets(v + 1); i++) {
+                actual_neighbors.insert(v_gid(indices(i)));
+            }
+    
+            EXPECT_EQ(actual_neighbors, expected_neighbors)
+                << "Vertex " << v_gid(v) << " has incorrect neighbors.";
+        }
+    }
+    
 };
 
 } // end namespace NuMeshTest

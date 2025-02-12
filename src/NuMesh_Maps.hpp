@@ -21,7 +21,7 @@ namespace Maps
   \brief Builds a local CSR-like structure for mapping local and ghosted vertices to local and ghosted edges:
         View<int*> vertex_edge_offsets for the starting index of edges per vertex.
         View<int*> vertex_edge_indices for storing local edge indices in the adjacency list.
-        However, IDs stored are global IDs
+        IDs stored are local IDs
 */
 template <class Mesh>
 class V2E
@@ -146,7 +146,7 @@ class V2E
   \brief Builds a local CSR-like structure for mapping local and ghosted vertices to local and ghosted faces:
         View<int*> offsets for the starting index of faces per vertex.
         View<int*> indices for storing local face indices in the adjacency list.
-        However, IDs stored are global IDs
+        IDs stored are local IDs
 */
 template <class Mesh>
 class V2F
@@ -245,6 +245,147 @@ class V2F
                 }
             });
         Kokkos::fence();
+    }
+
+    auto offsets() {return _offsets;}
+    auto indices() {return _indices;}
+    int version() {return _map_version;}
+
+  private:
+    std::shared_ptr<Mesh> _mesh;
+    MPI_Comm _comm;
+
+    // Mesh version this halo is built from
+    int _map_version;
+
+    int _rank, _comm_size;
+    
+    integer_view _offsets;
+    integer_view _indices;
+    
+};
+
+//---------------------------------------------------------------------------//
+/*!
+  \class V2V
+  \brief Builds a local CSR-like structure for mapping local and ghosted vertices to all local and ghosted
+            vertices they share a face with:
+        View<int*> offsets for the starting index of vertices neigboring vertex v.
+        View<int*> indices for storing local face indices in the adjacency list.
+        IDs stored are local IDs
+*/
+template <class Mesh>
+class V2V
+{
+  public:
+
+    using memory_space = typename Mesh::memory_space;
+    using execution_space = typename Mesh::execution_space;
+    using integer_view = Kokkos::View<int*, memory_space>;
+
+    V2V( std::shared_ptr<Mesh> mesh )
+        : _mesh ( mesh )
+        , _comm ( mesh->comm() )
+        , _map_version ( mesh->version() )
+    {
+        static_assert( is_numesh_mesh<Mesh>::value, "NuMesh::V2V: NuMesh Mesh required" );
+
+        MPI_Comm_rank( _comm, &_rank );
+        MPI_Comm_size( _comm, &_comm_size );
+
+        build();
+    };
+
+    ~V2V() {}
+
+    /**
+     * Build the V2V map
+     */
+    void build()
+    {
+        // Get the number of vertices
+        int num_vertices = _mesh->count(Own(), Vertex());
+
+        // Retrieve the vertex-to-face mapping
+        auto v2f = NuMesh::Maps::V2F(_mesh);
+        auto face_offsets = v2f.offsets();
+        auto face_indices = v2f.indices();
+
+        // Get the face data array
+        auto faces = _mesh->faces();
+        auto vertices = _mesh->vertices();
+        auto f_vid = Cabana::slice<F_VIDS>(faces); // Vertex IDs of each face.
+        auto v_gid = Cabana::slice<V_GID>(vertices);
+
+        // Allocate offsets and indices (first pass to count unique neighbors)
+        Kokkos::View<int*> neighbor_counts("neighbor_counts", num_vertices);
+        printf("Before count_neighbors\n");
+        Kokkos::parallel_for("count_neighbors", Kokkos::RangePolicy<execution_space>(0, num_vertices),
+            KOKKOS_LAMBDA(int vlid) {
+                int offset = face_offsets(vlid);
+                int next_offset = (vlid + 1 < (int)face_offsets.extent(0)) ? face_offsets(vlid + 1) : (int)face_indices.extent(0);
+
+                Kokkos::UnorderedMap<int, int> unique_neighbors(next_offset - offset); 
+                for (int i = offset; i < next_offset; i++)
+                {
+                    int flid = face_indices(i);
+                    // Iterate over face vertices
+                    for (int j = 0; j < 3; j++)
+                    {
+                        int vgid = f_vid(flid, j);
+                        int vlid0 = Utils::get_lid(v_gid, vgid, 0, num_vertices);
+                        if ((vlid0 != vlid) && (vlid0 > -1)) { // Exclude self and vertices not in our AoSoA
+                            unique_neighbors.insert(vlid0);
+                        }
+                    }
+                }
+                neighbor_counts(vlid) = unique_neighbors.size();
+            });
+
+        // Compute offsets using exclusive scan
+        _offsets = integer_view("offsets", num_vertices + 1);
+        auto offsets = _offsets;
+        Kokkos::parallel_scan("compute_offsets", num_vertices, KOKKOS_LAMBDA(int i, int& update, bool final) {
+            if (final) offsets(i) = update;
+            update += neighbor_counts(i);
+        });
+
+        // Allocate indices
+        _indices = integer_view("indices", _offsets(num_vertices));
+        auto indices = _indices;
+
+        // Second pass: Fill indices
+        Kokkos::parallel_for("fill_indices", Kokkos::RangePolicy<execution_space>(0, num_vertices),
+            KOKKOS_LAMBDA(int vlid) {
+                int offset = offsets(vlid);
+                int face_offset = face_offsets(vlid);
+                int next_face_offset = (vlid + 1 < (int)face_offsets.extent(0)) ? face_offsets(vlid + 1) : (int)face_indices.extent(0);
+
+                Kokkos::UnorderedMap<int, int> unique_neighbors(next_face_offset - face_offset);
+
+                for (int i = face_offset; i < next_face_offset; i++)
+                {
+                    int flid = face_indices(i);
+                    // Iterate over face vertices
+                    for (int j = 0; j < 3; j++)
+                    {
+                        int vgid = f_vid(flid, j);
+                        int vlid0 = Utils::get_lid(v_gid, vgid, 0, num_vertices);
+                        if ((vlid0 != vlid) && (vlid0 > -1)) { // Exclude self and vertices not in our AoSoA
+                            unique_neighbors.insert(vlid0);
+                        }
+                    }
+                }
+
+                // Write to indices using valid entries in the map
+                int idx = offset;
+                for (int i = 0; i < (int)unique_neighbors.capacity(); i++)
+                {
+                    if (unique_neighbors.valid_at(i)) {
+                        indices(idx++) = unique_neighbors.key_at(i);
+                    }
+                }
+            });
     }
 
     auto offsets() {return _offsets;}

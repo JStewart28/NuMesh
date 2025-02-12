@@ -128,9 +128,9 @@ class Mesh2DTest : public ::testing::Test
     {
         const int rank = rank_;
 
-        auto vertices_ptr = mesh_->vertices();
-        auto edges_ptr = mesh_->edges();
-        auto faces_ptr = mesh_->faces();
+        auto& vertices_ptr = mesh_->vertices();
+        auto& edges_ptr = mesh_->edges();
+        auto& faces_ptr = mesh_->faces();
 
          // Local counts for each rank
         int local_vef_count[3] = {mesh_->count(NuMesh::Own(), NuMesh::Vertex()),
