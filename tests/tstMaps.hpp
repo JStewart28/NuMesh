@@ -55,9 +55,9 @@ class MapsTest : public Mesh2DTest<T>
         auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
         auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
         
-        auto e_gid = Cabana::slice<E_GID>(*this->edges);
-        auto v_gid = Cabana::slice<V_GID>(*this->vertices);
-        auto e_vid = Cabana::slice<E_VIDS>(*this->edges);
+        auto e_gid = Cabana::slice<E_GID>(this->edges);
+        auto v_gid = Cabana::slice<V_GID>(this->vertices);
+        auto e_vid = Cabana::slice<E_VIDS>(this->edges);
 
         /**
          * For some reason, gatherAndCopyToHost does not update the size of the 
