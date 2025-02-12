@@ -77,7 +77,7 @@ class HaloTest : public Mesh2DTest<T>
         auto f_eids = Cabana::slice<F_EIDS>(faces);
         auto f_cids = Cabana::slice<F_CID>(faces);
 
-        auto v2f = NuMesh::Maps::V2F(this->mesh_);
+        auto v2f = NuMesh::Maps::V2F(this->mesh_, 0);
         auto offsets_d = v2f.offsets();
         auto indices_d = v2f.indices();
         auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);

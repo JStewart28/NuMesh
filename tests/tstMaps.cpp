@@ -42,7 +42,7 @@ TYPED_TEST(MapsTest, test_v2f_no_refinement)
     
     this->init(mesh_size, 1);
 
-    this->test_v2f();
+    this->test_v2f(0);
 }
 
 /**
@@ -58,7 +58,7 @@ TYPED_TEST(MapsTest, test_v2v_no_refinement)
     
     this->init(mesh_size, 1);
 
-    this->test_v2v();
+    this->test_v2v(0);
 }
 
 

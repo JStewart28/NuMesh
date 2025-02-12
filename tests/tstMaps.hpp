@@ -108,11 +108,11 @@ class MapsTest : public Mesh2DTest<T>
      * Tests the V2F by checking that for each face,
      * its local ID appears in the correct spot in the map
      */
-    void test_v2f()
+    void test_v2f(int level)
     {
         this->gatherAndCopyToHost();
 
-        auto v2f = NuMesh::Maps::V2F(this->mesh_);
+        auto v2f = NuMesh::Maps::V2F(this->mesh_, level);
         auto offsets_d = v2f.offsets();
         auto indices_d = v2f.indices();
         auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
@@ -167,12 +167,11 @@ class MapsTest : public Mesh2DTest<T>
         }
     }
 
-    void test_v2v()
+    void test_v2v(int level)
     {
         this->copytoHost();
-        printf("R%d: after copy to host\n", this->rank_);
     
-        auto v2v = NuMesh::Maps::V2V(this->mesh_);
+        auto v2v = NuMesh::Maps::V2V(this->mesh_, level);
         printf("R%d: after create v2v\n", this->rank_);
         auto offsets_d = v2v.offsets();
         auto indices_d = v2v.indices();
