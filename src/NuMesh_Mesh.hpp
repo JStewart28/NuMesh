@@ -965,6 +965,8 @@ class Mesh
         // Create the new faces
         // printFaces(1, 31);
         // printf("New lid start: %d\n", f_new_lid_start);
+        int_d max_tree_level_d("max_tree_level_d"); Kokkos::deep_copy(max_tree_level_d, _max_tree_level);
+        int max_tree_level = _max_tree_level;
         Kokkos::deep_copy(face_counter, 0);
         Kokkos::parallel_for("new internal faces", Kokkos::RangePolicy<execution_space>(0, face_refinements),
             KOKKOS_LAMBDA(int i) {
@@ -972,6 +974,10 @@ class Mesh
             int parent_face_lid = local_face_lids(i);
             int parent_face_gid = parent_face_lid + vef_gid_start(rank, 2);
             int layer = f_layer(parent_face_lid) + 1;
+
+            // If this layer is higher than the max tree level, update it
+            if (layer > max_tree_level) Kokkos::atomic_store(&max_tree_level_d(), layer);
+
             int offset = Kokkos::atomic_fetch_add(&face_counter(), 4);
             int new_face_lid, new_face_gid;
             int num_edges = owned_edges + ghost_edges; // Edge AoSoA size
@@ -1097,6 +1103,8 @@ class Mesh
             f_eid(new_face_lid, 0) = new_eg2; f_eid(new_face_lid, 1) = e_gid(el_outer0); f_eid(new_face_lid, 2) = e_gid(el_outer1);
 
         });
+
+        Kokkos::deep_copy(_max_tree_level, max_tree_level_d);
 
         // if (rank == 0)
         // {
@@ -2181,7 +2189,7 @@ class Mesh
     int halo_level() const {return _halo_level;}
     int halo_depth() const {return _halo_depth;}
 
-    int depth() const {return _max_tree_level;}
+    int max_level() const {return _max_tree_level;}
     int count(Own, Vertex) const {return _owned_vertices;}
     int count(Own, Edge) const {return _owned_edges;}
     int count(Own, Face) const {return _owned_faces;}
