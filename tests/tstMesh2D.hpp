@@ -39,9 +39,9 @@ class Mesh2DTest : public ::testing::Test
     int rank_, comm_size_;
     int periodic_;
     std::shared_ptr<mesh_t> mesh_ = NuMesh::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
-    v_array_type vertices;
-    e_array_type edges;
-    f_array_type faces;
+    std::shared_ptr<v_array_type> vertices;
+    std::shared_ptr<e_array_type> edges;
+    std::shared_ptr<f_array_type> faces;
     // l = local, g = ghost
     int lv = -1, le = -1, lf = -1, gv = -1, ge = -1, gf = -1;
 
@@ -49,6 +49,10 @@ class Mesh2DTest : public ::testing::Test
     {
         MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
         MPI_Comm_size(MPI_COMM_WORLD, &comm_size_);
+
+        vertices = std::make_shared<v_array_type>("vertices", 0);
+        edges = std::make_shared<e_array_type>("edges", 0);
+        faces = std::make_shared<f_array_type>("faces", 0);
     }
 
     void TearDown() override
@@ -112,13 +116,13 @@ class Mesh2DTest : public ::testing::Test
         auto& edges_ptr = mesh_->edges();
         auto& faces_ptr = mesh_->faces();
 
-        vertices.resize(vertices_ptr.size());
-        edges.resize(edges_ptr.size());
-        faces.resize(faces_ptr.size());
+        vertices->resize(vertices_ptr.size());
+        edges->resize(edges_ptr.size());
+        faces->resize(faces_ptr.size());
 
-        Cabana::deep_copy(faces, faces_ptr);
-        Cabana::deep_copy(edges, edges_ptr);
-        Cabana::deep_copy(vertices, vertices_ptr);
+        Cabana::deep_copy(*faces, faces_ptr);
+        Cabana::deep_copy(*edges, edges_ptr);
+        Cabana::deep_copy(*vertices, vertices_ptr);
     }
 
     /**
@@ -161,7 +165,7 @@ class Mesh2DTest : public ::testing::Test
 
         lv = vert_halo.numLocal(); gv = vert_halo.numGhost();
         vertices_ptr.resize(lv + gv);
-        vertices.resize(lv + gv);
+        vertices->resize(lv + gv);
 
         Cabana::gather(vert_halo, vertices_ptr);
 
@@ -194,7 +198,7 @@ class Mesh2DTest : public ::testing::Test
 
         le = edge_halo.numLocal(); ge = edge_halo.numGhost();
         edges_ptr.resize(le + ge);
-        edges.resize(le + ge);
+        edges->resize(le + ge);
 
         Cabana::gather(edge_halo, edges_ptr);
 
@@ -222,15 +226,15 @@ class Mesh2DTest : public ::testing::Test
 
         lf = face_halo.numLocal(); gf = face_halo.numGhost();
         faces_ptr.resize(lf + gf);
-        faces.resize(lf + gf);
+        faces->resize(lf + gf);
 
         Cabana::gather(face_halo, faces_ptr);
 
         // Copy data to host
         // Rank 0 holds the entire mesh
-        Cabana::deep_copy(faces, faces_ptr);
-        Cabana::deep_copy(edges, edges_ptr);
-        Cabana::deep_copy(vertices, vertices_ptr);
+        Cabana::deep_copy(*faces, faces_ptr);
+        Cabana::deep_copy(*edges, edges_ptr);
+        Cabana::deep_copy(*vertices, vertices_ptr);
     }
 
     /**
@@ -255,12 +259,12 @@ class Mesh2DTest : public ::testing::Test
         // The following tests are performed on the entire mesh on Rank 0
         checkGIDSpaceGaps();
 
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto e_owner = Cabana::slice<E_OWNER>(edges);
-        auto f_gid = Cabana::slice<F_GID>(faces);
-        auto e_vid = Cabana::slice<E_VIDS>(edges);
-        auto e_children = Cabana::slice<E_CIDS>(edges);
-        auto e_parent = Cabana::slice<E_PID>(edges);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
+        auto e_owner = Cabana::slice<E_OWNER>(*edges);
+        auto f_gid = Cabana::slice<F_GID>(*faces);
+        auto e_vid = Cabana::slice<E_VIDS>(*edges);
+        auto e_children = Cabana::slice<E_CIDS>(*edges);
+        auto e_parent = Cabana::slice<E_PID>(*edges);
 
         for (int i = 0; i < le+ge; i++)
         {
@@ -284,9 +288,9 @@ class Mesh2DTest : public ::testing::Test
      */
     void checkGIDSpaceBounds()
     {
-        auto v_gid = Cabana::slice<V_GID>(vertices);
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto f_gid = Cabana::slice<F_GID>(faces);
+        auto v_gid = Cabana::slice<V_GID>(*vertices);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
+        auto f_gid = Cabana::slice<F_GID>(*faces);
 
         auto vef_gid_start = mesh_->vef_gid_start();
 
@@ -345,18 +349,18 @@ class Mesh2DTest : public ::testing::Test
     {
         if (rank_ != 0) return;
 
-        auto v_gid = Cabana::slice<V_GID>(vertices);
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto e_owner = Cabana::slice<E_OWNER>(edges);
-        auto f_gid = Cabana::slice<F_GID>(faces);
+        auto v_gid = Cabana::slice<V_GID>(*vertices);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
+        auto e_owner = Cabana::slice<E_OWNER>(*edges);
+        auto f_gid = Cabana::slice<F_GID>(*faces);
 
         // Sort by GID
         auto sort_verts = Cabana::sortByKey( v_gid );
-        Cabana::permute( sort_verts, vertices );
+        Cabana::permute( sort_verts, *vertices );
         auto sort_edges = Cabana::sortByKey( e_gid );
-        Cabana::permute( sort_edges, edges );
+        Cabana::permute( sort_edges, *edges );
         auto sort_faces = Cabana::sortByKey( f_gid );
-        Cabana::permute( sort_faces, faces );
+        Cabana::permute( sort_faces, *faces );
 
         for (int i = 0; i < lv+gv; i++)
         {
@@ -364,9 +368,9 @@ class Mesh2DTest : public ::testing::Test
             ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in vertex GID space\n";
             
         }
-        auto e_vid = Cabana::slice<E_VIDS>(edges);
-        auto e_children = Cabana::slice<E_CIDS>(edges);
-        auto e_parent = Cabana::slice<E_PID>(edges);
+        auto e_vid = Cabana::slice<E_VIDS>(*edges);
+        auto e_children = Cabana::slice<E_CIDS>(*edges);
+        auto e_parent = Cabana::slice<E_PID>(*edges);
         // for (int i = 0; i < mesh_->count(NuMesh::Own(), NuMesh::Edge()); i++)
         // {
            
@@ -403,9 +407,9 @@ class Mesh2DTest : public ::testing::Test
     {
         if (rank_ != 0) return;
 
-        auto v_gid = Cabana::slice<V_GID>(vertices);
-        auto e_vid = Cabana::slice<E_VIDS>(edges);
-        auto e_gid = Cabana::slice<E_GID>(edges);
+        auto v_gid = Cabana::slice<V_GID>(*vertices);
+        auto e_vid = Cabana::slice<E_VIDS>(*edges);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
 
         int num_verts = lv + gv;
         Kokkos::View<int**, Kokkos::HostSpace> v2e("v2e", num_verts, num_verts);
@@ -451,12 +455,12 @@ class Mesh2DTest : public ::testing::Test
      */
     void checkEdgeChildren()
     {
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto e_vid = Cabana::slice<E_VIDS>(edges);
-        auto e_rank = Cabana::slice<E_OWNER>(edges);
-        auto e_cid = Cabana::slice<E_CIDS>(edges);
-        auto e_pid = Cabana::slice<E_PID>(edges);
-        auto e_layer = Cabana::slice<E_LAYER>(edges);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
+        auto e_vid = Cabana::slice<E_VIDS>(*edges);
+        auto e_rank = Cabana::slice<E_OWNER>(*edges);
+        auto e_cid = Cabana::slice<E_CIDS>(*edges);
+        auto e_pid = Cabana::slice<E_PID>(*edges);
+        auto e_layer = Cabana::slice<E_LAYER>(*edges);
 
         for (int i = 0; i < le+ge; i++)
         {
@@ -470,7 +474,7 @@ class Mesh2DTest : public ::testing::Test
             // Child vertices
             int c0v0, c0v1, c1v0, c1v1;
 
-            ce0 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 0), 0, edges.size()); ce1 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 1), 0, edges.size());
+            ce0 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 0), 0, edges->size()); ce1 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 1), 0, edges->size());
             pv0 = e_vid(i, 0); pv1 = e_vid(i, 1); pvm = e_vid(i, 2);
 
             // Check child edge 0
@@ -495,26 +499,26 @@ class Mesh2DTest : public ::testing::Test
     void checkFaceEdges()
     {
         if (rank_ != 0) return;
-        auto f_cid = Cabana::slice<F_CID>(faces);
-        auto f_gid = Cabana::slice<F_GID>(faces);
-        auto f_eid = Cabana::slice<F_EIDS>(faces);
-        auto f_pid = Cabana::slice<F_PID>(faces);
-        auto f_layer = Cabana::slice<F_LAYER>(faces);
-        auto f_owner = Cabana::slice<F_OWNER>(faces);
+        auto f_cid = Cabana::slice<F_CID>(*faces);
+        auto f_gid = Cabana::slice<F_GID>(*faces);
+        auto f_eid = Cabana::slice<F_EIDS>(*faces);
+        auto f_pid = Cabana::slice<F_PID>(*faces);
+        auto f_layer = Cabana::slice<F_LAYER>(*faces);
+        auto f_owner = Cabana::slice<F_OWNER>(*faces);
 
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto e_vid = Cabana::slice<E_VIDS>(edges);
-        auto e_rank = Cabana::slice<E_OWNER>(edges);
-        auto e_cid = Cabana::slice<E_CIDS>(edges);
-        auto e_pid = Cabana::slice<E_PID>(edges);
-        auto e_layer = Cabana::slice<E_LAYER>(edges);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
+        auto e_vid = Cabana::slice<E_VIDS>(*edges);
+        auto e_rank = Cabana::slice<E_OWNER>(*edges);
+        auto e_cid = Cabana::slice<E_CIDS>(*edges);
+        auto e_pid = Cabana::slice<E_PID>(*edges);
+        auto e_layer = Cabana::slice<E_LAYER>(*edges);
 
         for (int i = 0; i < lf+gf; i++)
         {
             int e0, e1, e2;
-            e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), 0, edges.size());
-            e1 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 1), 0, edges.size());
-            e2 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 2), 0, edges.size());
+            e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), 0, edges->size());
+            e1 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 1), 0, edges->size());
+            e2 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 2), 0, edges->size());
             // if (f_gid(i) == 258)
             // {
             //     int egid;

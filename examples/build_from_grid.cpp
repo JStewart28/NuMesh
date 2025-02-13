@@ -126,11 +126,14 @@ int main( int argc, char* argv[] )
     // halo.gather();
     // mesh->printFaces(1, 376);
     // mesh->printFaces(1, 326);
-    // auto v2f = NuMesh::Maps::V2F(mesh);
+    // auto v2f = NuMesh::Maps::V2F(mesh, 0);
     // auto offsets_d = v2f.offsets();
     // auto indices_d = v2f.indices();
     // auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
     // auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
+    // printf("R%d: in build_from_grid: offsets/ind sizes: %d, %d\n", rank, offsets.extent(0), indices.extent(0));
+    printf("******** v2v ********\n");
+    auto v2v = NuMesh::Maps::V2V(mesh, 0);
     // auto& vertices = mesh->vertices();
     // auto& faces = mesh->faces();
     // auto v_owner = Cabana::slice<V_OWNER>(vertices);

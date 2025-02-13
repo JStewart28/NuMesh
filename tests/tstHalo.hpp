@@ -59,23 +59,19 @@ class HaloTest : public Mesh2DTest<T>
         
         this->copytoHost();
 
-        auto vertices = this->vertices;
-        auto edges = this->edges;
-        auto faces = this->faces;
-
-        int total_verts = vertices.size();
-        int total_edges = edges.size();
-        int total_faces = faces.size();
+        int total_verts = this->vertices->size();
+        int total_edges = this->edges->size();
+        int total_faces = this->faces->size();
 
         // Slices for access
-        auto v_gid = Cabana::slice<V_GID>(vertices);
-        auto v_owner = Cabana::slice<V_OWNER>(vertices);
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto e_vids = Cabana::slice<E_VIDS>(edges);
-        auto f_gid = Cabana::slice<F_GID>(faces);
-        auto f_vids = Cabana::slice<F_VIDS>(faces);
-        auto f_eids = Cabana::slice<F_EIDS>(faces);
-        auto f_cids = Cabana::slice<F_CID>(faces);
+        auto v_gid = Cabana::slice<V_GID>(*this->vertices);
+        auto v_owner = Cabana::slice<V_OWNER>(*this->vertices);
+        auto e_gid = Cabana::slice<E_GID>(*this->edges);
+        auto e_vids = Cabana::slice<E_VIDS>(*this->edges);
+        auto f_gid = Cabana::slice<F_GID>(*this->faces);
+        auto f_vids = Cabana::slice<F_VIDS>(*this->faces);
+        auto f_eids = Cabana::slice<F_EIDS>(*this->faces);
+        auto f_cids = Cabana::slice<F_CID>(*this->faces);
 
         auto v2f = NuMesh::Maps::V2F(this->mesh_, 0);
         auto offsets_d = v2f.offsets();
