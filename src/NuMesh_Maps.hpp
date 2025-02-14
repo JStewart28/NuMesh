@@ -228,9 +228,8 @@ class V2F
             KOKKOS_LAMBDA(const int, int& count) {
                 count = offsets(num_vertices - 1) + vertex_face_count(num_vertices - 1);
             }, total_adj_faces);
-        printf("total_adj_faces: %d\n", total_adj_faces);
+
         _indices = integer_view("_indices", total_adj_faces);
-        // printf("R%d total adj edges: %d\n", rank, total_adj_edges);
         auto indices = _indices;
 
         // Step 3: Populate vertex-faces indices.
@@ -340,46 +339,45 @@ class V2V
         int num_vertices = vertices.size();
 
         // At worst, each vert is connected 6*3*(max tree level) verts
-        int max_verts = num_vertices * 6 * 3 * _mesh->max_level();
+        int max_verts = num_vertices * 6 * 3 * (_mesh->max_level() + 1); // Max level could be 0
         MapType vert_vert_map(max_verts);
 
         // Allocate offsets and indices (first pass to count unique neighbors)
         integer_view neighbor_counts("neighbor_counts", num_vertices);
         Kokkos::parallel_for("count_neighbors", Kokkos::RangePolicy<execution_space>(0, num_vertices),
             KOKKOS_LAMBDA(int vlid) {
-                int offset = face_offsets(vlid);
-                // vert 21
-                int next_offset = (vlid + 1 < (int)face_offsets.extent(0)) ? face_offsets(vlid + 1) : (int)face_indices.extent(0);
-                // printf("vlid: %d, offsets: %d, %d\n", vlid, offset, next_offset);
-                int num_neighbors = 0;
-                for (int i = offset; i < next_offset; i++)
+
+            int offset = face_offsets(vlid);
+            // vert 21
+            int next_offset = (vlid + 1 < (int)face_offsets.extent(0)) ? face_offsets(vlid + 1) : (int)face_indices.extent(0);
+            // printf("vlid: %d, offsets: %d, %d\n", vlid, offset, next_offset);
+            int num_neighbors = 0;
+            for (int i = offset; i < next_offset; i++)
+            {
+                int flid = face_indices(i);
+                // Iterate over face vertices
+                for (int j = 0; j < 3; j++)
                 {
-                    int flid = face_indices(i);
-                    // Iterate over face vertices
-                    for (int j = 0; j < 3; j++)
-                    {
-                        int vgid = f_vid(flid, j);
-                        int vlid0 = Utils::get_lid(v_gid, vgid, 0, num_vertices);
-                        // printf("vlid: %d, flid %d, vlid0: %d\n", vlid, flid, vlid0);
-                        if ((vlid0 != vlid) && (vlid0 > -1)) { // Exclude self and vertices not in our AoSoA
-                            auto hash_key = hashFunction(vlid, vlid0);
-                            auto result = vert_vert_map.insert(hash_key, vlid0); // Add (vert, neighbor vert) pair to map
-                            printf("flid: %d, for vlid %d, vlid0 %d, hash: %" PRIu64 ", result: %d\n", flid, vlid, vlid0, hash_key, result.success());
-                            // if (vlid == 21) printf("for vlid %d, vlid0 %d, result: %d\n", vlid, vlid0, result.success());
-                            if (result.success()) 
-                            {
-                                num_neighbors++; // Pair not in map; increment num neigbors                            
-                                if (vlid == 21) printf("for vlid: %d, adding nieghbor: %d\n", vlid, vlid0);
-                            }
+                    int vgid = f_vid(flid, j);
+                    int vlid0 = Utils::get_lid(v_gid, vgid, 0, num_vertices);
+                    // printf("vlid: %d, flid %d, vlid0: %d\n", vlid, flid, vlid0);
+                    if ((vlid0 != vlid) && (vlid0 > -1)) { // Exclude self and vertices not in our AoSoA
+                        auto hash_key = hashFunction(vlid, vlid0);
+                        auto result = vert_vert_map.insert(hash_key, vlid0); // Add (vert, neighbor vert) pair to map
+                        // printf("flid: %d, for vlid %d, vlid0 %d, hash: %" PRIu64 ", result: %d\n", flid, vlid, vlid0, hash_key, result.success());
+                        // if (vlid == 21) printf("for vlid %d, vlid0 %d, result: %d\n", vlid, vlid0, result.success());
+                        if (result.success()) 
+                        {
+                            num_neighbors++; // Pair not in map; increment num neigbors   
                         }
                     }
                 }
-                neighbor_counts(vlid) = num_neighbors;
-                //printf("R%d: vlid: %d, neighs: %d\n", rank, vlid, num_neighbors);
-            });
+            }
+            neighbor_counts(vlid) = num_neighbors;
+        });
 
         // Compute offsets using exclusive scan
-        _offsets = integer_view("offsets", num_vertices + 1);
+        _offsets = integer_view("offsets", num_vertices);
         auto offsets = _offsets;
         Kokkos::parallel_scan("compute_offsets", Kokkos::RangePolicy<execution_space>(0, num_vertices),
             KOKKOS_LAMBDA(int i, int& update, bool final) {
@@ -417,8 +415,11 @@ class V2V
                         if ((vlid0 != vlid) && (vlid0 > -1)) { // Exclude self and vertices not in our AoSoA
                             auto hash_key = hashFunction(vlid, vlid0);
                             auto result = vert_vert_map.insert(hash_key, vlid0); // Add (vert, neighbor vert) pair to map
-                            if (result.success()) indices(idx++) = vlid0; // Pair not in map; add to indices                           
-                        }
+                            if (result.success()) 
+                            {
+                                indices(idx++) = vlid0; // Pair not in map; add to indices                           
+                            }
+                        }    
                     }
                 }
             });

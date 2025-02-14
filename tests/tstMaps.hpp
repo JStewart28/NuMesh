@@ -168,7 +168,6 @@ class MapsTest : public Mesh2DTest<T>
         auto indices_d = v2v.indices();
         auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
         auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
-        // printf("offsets/indices sizes: %d, %d\n", offsets.extent(0), indices.extent(0));
         ASSERT_GT(offsets.extent(0), 0); ASSERT_GT(indices.extent(0), 0);
     
         auto f_gid = Cabana::slice<F_GID>(*this->faces);
@@ -199,7 +198,9 @@ class MapsTest : public Mesh2DTest<T>
                 if (vertex_in_face) {
                     // Collect all neighboring vertices from this face
                     for (int j = 0; j < 3; j++) {
-                        if (f_vid(f, j) != v_gid(v)) { // Avoid adding self
+                        int vgid_face = f_vid(f, j);
+                        int vlid_face = NuMesh::Utils::get_lid(v_gid, vgid_face, 0, total_vertices); 
+                        if ((vlid_face != v) && (vlid_face != -1)) { // Avoid adding self and vertices not owned or ghosted
                             expected_neighbors.insert(f_vid(f, j));
                         }
                     }
@@ -210,7 +211,7 @@ class MapsTest : public Mesh2DTest<T>
             int offset = offsets(v);
             int next_offset = (v + 1 < (int)offsets.extent(0)) ? offsets(v + 1) : (int)indices.extent(0);
             std::set<int> actual_neighbors;
-            for (int i = offsets(v); i < offsets(v + 1); i++) {
+            for (int i = offset; i < next_offset; i++) {
                 actual_neighbors.insert(v_gid(indices(i)));
             }
     
