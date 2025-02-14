@@ -97,19 +97,19 @@ int main( int argc, char* argv[] )
     // NuMesh::gather(halo, positions);
 
     // // Uniform refinement
-    // for (int i = 0; i < 1; i++)
-    // {
-    //     int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
-    //     int face_gid_start = vef_gid_start(rank, 2);
-    //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
-    //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
-    //         KOKKOS_LAMBDA(int i) {
+    for (int i = 0; i < 2; i++)
+    {
+        int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
+        int face_gid_start = vef_gid_start(rank, 2);
+        Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
+            KOKKOS_LAMBDA(int i) {
 
-    //             fin(i) = face_gid_start + i;
+                fin(i) = face_gid_start + i;
 
-    //         });
-    //     mesh->refine(fin);
-    // }
+            });
+        mesh->refine(fin);
+    }
     // positions->update();
     // printf("R%d: after: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
     // mesh->gather(0, 1);
@@ -126,14 +126,14 @@ int main( int argc, char* argv[] )
     // halo.gather();
     // mesh->printFaces(1, 376);
     // mesh->printFaces(1, 326);
-    // auto v2f = NuMesh::Maps::V2F(mesh, 0);
+    auto v2f = NuMesh::Maps::V2F(mesh, 0);
     // auto offsets_d = v2f.offsets();
     // auto indices_d = v2f.indices();
     // auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
     // auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
     // printf("R%d: in build_from_grid: offsets/ind sizes: %d, %d\n", rank, offsets.extent(0), indices.extent(0));
-    printf("******** v2v ********\n");
-    auto v2v = NuMesh::Maps::V2V(mesh, 0);
+    // printf("******** v2v ********\n");
+    // auto v2v = NuMesh::Maps::V2V(mesh, 0);
     // auto& vertices = mesh->vertices();
     // auto& faces = mesh->faces();
     // auto v_owner = Cabana::slice<V_OWNER>(vertices);

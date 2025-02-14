@@ -198,7 +198,8 @@ class V2F
         int vertex_gid_start = vef_gid_start(_rank, 0);
         Kokkos::parallel_for("Count faces per vertex", Kokkos::RangePolicy<execution_space>(0, num_faces),
             KOKKOS_LAMBDA(const int f) {
-                if (level < f_level(f)) return; // Only consider faces at or above this level of the tree
+                //printf("Checking flid %d, f_level %d, level: %d\n", f, f_level(f), level);
+                if (level > f_level(f)) return; // Only consider faces at or above this level of the tree
                 for (int v = 0; v < 3; ++v) {  // Loop over face endpoints.
                     int vgid = f_vid(f, v);
                     int vlid = Utils::get_lid(v_gid, vgid, 0, num_vertices);
@@ -238,14 +239,13 @@ class V2F
 
         Kokkos::parallel_for("Populate adjacency list", Kokkos::RangePolicy<execution_space>(0, num_faces),
             KOKKOS_LAMBDA(const int f) {
-                if (level < f_level(f)) return; // Only consider faces at or above this level of the tree
+                if (level > f_level(f)) return; // Only consider faces at or above this level of the tree
                 for (int v = 0; v < 3; ++v) {  // Loop over face endpoints.
                     int vgid = f_vid(f, v);
                     int vlid = Utils::get_lid(v_gid, vgid, 0, num_vertices);
                     if (vlid > -1)
                     {
                         int insert_idx = Kokkos::atomic_fetch_add(&current_offset(vlid), 1);
-                        // if (rank == 0) printf("R%d flid %d, insert idx: %d, v l/g: %d, %d\n", rank, f, insert_idx, vlid, vgid);
                         indices(insert_idx) = f;  // Store face LID.
                     }
                 }

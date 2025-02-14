@@ -46,10 +46,10 @@ TYPED_TEST(MapsTest, test_v2f_refinement0)
 }
 
 /**
- * Tests that the v2f map is built correctly with one iteration
+ * Tests that the v2f map is built correctly with two iterations
  * of uniform refinement
  */
-TYPED_TEST(MapsTest, test_v2f_refinement1)
+TYPED_TEST(MapsTest, test_v2f_refinement2)
 {
     int mesh_size = this->comm_size_ * 2;
     if (this->comm_size_ == 1)
