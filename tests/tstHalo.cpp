@@ -33,7 +33,7 @@ TYPED_TEST(HaloTest, test_halo_depth_1_no_refinement)
  * Tests that halo of depth 1 works with one layer of
  * uniform refinement
  */
-TYPED_TEST(HaloTest, test_halo_depth_1_uniform_refinement)
+TYPED_TEST(HaloTest, test_halo_depth_1_uniform_refinement1)
 {
     int mesh_size = this->comm_size_ * 2;
     if (this->comm_size_ == 1)
@@ -62,10 +62,10 @@ TYPED_TEST(HaloTest, test_halo_depth_1_uniform_refinement)
 }
 
 /**
- * Tests that halo of depth 2 works with two layers of
+ * Tests that halo of depth 1 works with two layers of
  * uniform refinement
  */
-TYPED_TEST(HaloTest, test_halo_depth_2_uniform_refinement)
+TYPED_TEST(HaloTest, test_halo_depth_1_uniform_refinement2)
 {
     int mesh_size = this->comm_size_ * 2;
     if (this->comm_size_ == 1)

@@ -80,12 +80,13 @@ class HaloTest : public Mesh2DTest<T>
         auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
 
         // Collect all global IDs for owned and ghosted vertices and edges
-        std::vector<int> vertex_gids(total_verts);
-        std::vector<int> edge_gids(total_edges);
-        for (int i = 0; i < total_verts; ++i) vertex_gids[i] = v_gid(i);
-        for (int i = 0; i < total_edges; ++i) edge_gids[i] = e_gid(i);
+        // std::vector<int> vertex_gids(total_verts);
+        // std::vector<int> edge_gids(total_edges);
+        // for (int i = 0; i < total_verts; ++i) vertex_gids[i] = v_gid(i);
+        // for (int i = 0; i < total_edges; ++i) edge_gids[i] = e_gid(i);
 
         // Iterate over all owned vertices
+        printf("total_verts: %d\n", total_verts);
         for (int vlid = 0; vlid < total_verts; vlid++)
         {
             int vowner = v_owner(vlid);
@@ -99,9 +100,10 @@ class HaloTest : public Mesh2DTest<T>
                             offsets(vlid + 1) : 
                             (int)indices.extent(0);
             
-            // Each vert should be connected to at least six faces
+            // Each owned vert should be connected to at least six faces
             // NOTE: This only holds with uniform refinement
             int connected_faces = next_offset - offset;
+            printf("vlid: %d, offsets: %d, %d\n", vlid, offset, next_offset);
             if (check_vert_connectivity)
                 ASSERT_GE(connected_faces, 6) << "VGID " << vgid << " is connected to " << connected_faces << " faces\n";
 
