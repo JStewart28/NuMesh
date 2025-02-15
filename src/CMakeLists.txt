@@ -26,6 +26,7 @@ set(INCLUDES
        
 add_library( numesh INTERFACE ${SOURCES} )
 target_link_libraries( numesh INTERFACE ${DEPENDS_ON} )
+target_link_libraries( numesh INTERFACE ${VTK_LIBRARIES} )
 target_include_directories( numesh INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}
 	  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 	  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}> )
