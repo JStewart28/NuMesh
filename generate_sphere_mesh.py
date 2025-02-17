@@ -29,6 +29,7 @@ def distribute_mesh(points, connectivity, num_procs):
     labels = kmeans.fit_predict(points)  # Cluster points based on spatial proximity
 
     partitions = []
+    ghost_owners = {}  # Map ghost point indices to the rank that owns them
     for i in range(num_procs):
         part_indices = np.where(labels == i)[0]  # Get indices of points in this partition
         part_points = points[part_indices]  # Extract corresponding points
@@ -51,6 +52,7 @@ def distribute_mesh(points, connectivity, num_procs):
                     else:
                         if v not in ghost_points:
                             ghost_points[v] = len(part_points) + len(ghost_points)  # Assign new index
+                            ghost_owners[v] = i  # Mark the owner rank for the ghost point
                         local_cell.append(ghost_points[v])  # Ghost point index
 
                 local_cells.append(local_cell)
@@ -59,11 +61,15 @@ def distribute_mesh(points, connectivity, num_procs):
         ghost_indices = list(ghost_points.keys())
         full_points = np.vstack([part_points, points[ghost_indices]])
 
-        partitions.append((full_points, np.array(local_cells), len(part_points)))
+        # Store ghost point indices for writing to file
+        ghost_flags = np.zeros(len(full_points), dtype=np.uint8)
+        ghost_flags[len(part_points):] = 1  # Mark ghost points
 
-    return partitions
+        partitions.append((full_points, np.array(local_cells), len(part_points), ghost_flags))
 
-def write_vtu(filename, points, connectivity, num_owned):
+    return partitions, ghost_owners
+
+def write_vtu(filename, points, connectivity, num_owned, ghost_flags, ghost_owners):
     """ Write a partitioned mesh to a VTU file, marking ghost points. """
     points_vtk = vtk.vtkPoints()
     for p in points:
@@ -76,12 +82,13 @@ def write_vtu(filename, points, connectivity, num_owned):
             triangle.GetPointIds().SetId(i, int(cell[i]))
         cells_vtk.InsertNextCell(triangle)
 
-    # Create a "ghost points" array (0 = owned, 1 = ghost)
-    ghost_array = np.zeros(len(points), dtype=np.uint8)
-    ghost_array[num_owned:] = 1  # Mark ghost points
-
-    vtk_ghost_array = numpy_to_vtk(ghost_array)
+    # Write the ghost point flag array
+    vtk_ghost_array = numpy_to_vtk(ghost_flags)
     vtk_ghost_array.SetName("ghost_points")
+
+    # Write the ghost owner array
+    vtk_ghost_array = numpy_to_vtk(ghost_owners)
+    vtk_ghost_array.SetName("ghost_owners")
 
     polydata = vtk.vtkUnstructuredGrid()
     polydata.SetPoints(points_vtk)
@@ -109,12 +116,15 @@ def main():
     points = fibonacci_sphere(radius, num_points)
     connectivity = spherical_triangulation(points)
 
-    partitions = distribute_mesh(points, connectivity, num_procs)
+    partitions, ghost_owners = distribute_mesh(points, connectivity, num_procs)
 
-    for rank, (part_points, part_cells, num_owned) in enumerate(partitions):
-        filename = f"mesh_files/mesh_{rank}.vtu"
-        write_vtu(filename, part_points, part_cells, num_owned)
+    for rank, (part_points, part_cells, num_owned, ghost_flags) in enumerate(partitions):
+        filename = f"mesh_{rank}.vtu"
+        write_vtu(filename, part_points, part_cells, num_owned, ghost_flags, ghost_owners)
         print(f"Written {filename} with {len(part_points)} points ({num_owned} owned, {len(part_points) - num_owned} ghosts) and {len(part_cells)} cells")
+
+    # Optionally, print or return the ghost_owners map for debugging or further use
+    # print("Ghost owners map:", ghost_owners)
 
 if __name__ == "__main__":
     main()
