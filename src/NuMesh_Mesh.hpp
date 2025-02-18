@@ -2122,6 +2122,145 @@ class Mesh
         _finalizeInit();
     }
         
+    /**
+     * Initialize a mesh from vectors of vertices, edges, and faces, read from
+     * a collection of VTU files where ghost vertices are marked.
+     * 
+     * Convention for ghost elements: The rank which owns the lowest vertex ID owns the element.
+     * 
+     * Vectors are expected in the following format:
+     * struct Vertex {
+            int lid;
+            int gid;
+            int owner; // Rank which owns this vertex
+            double x, y, z;
+        };
+
+        struct Cell {
+            int id;
+            int v0, v1, v2;  // Vertex IDs forming the triangle
+            bool contains_ghost;  // Flag indicating if the cell contains a ghost point
+        };
+
+        struct Edge {
+            int id;
+            int v0, v1;  // Endpoints of the edge
+        };
+
+     */
+    template <class VerticesVec, class EdgesVec, class FacesVec>
+    void initializeFromVectors(VerticesVec& verts_vec, EdgesVec& edges_vec, FacesVec& faces_vec)
+    {
+        // Owned elements are always at the beginning of the vectors
+        int ghost_vert_count = 0;
+        for (size_t i = 0; i < verts_vec.size(); i++) {
+            if (verts_vec[i].owner != _rank) break;
+            ghost_vert_count++;
+            // printf("R%d: vl/gid: (%d, %d), owner: %d\n", _rank, verts_vec[i].lid, verts_vec[i].gid, verts_vec[i].owner);
+        }
+        
+
+        // Rank which owns the face owns the vertex with the lowest GID in the face
+        int ghost_cells_count = 0;
+        for (size_t i = 0; i < faces_vec.size(); i++) {
+            if (faces_vec[i].contains_ghost) {
+                int lowest_gid = std::min({verts_vec[faces_vec[i].v0].gid, verts_vec[faces_vec[i].v1].gid, verts_vec[faces_vec[i].v2].gid});
+                if (verts_vec[lowest_gid].owner != _rank)
+                {
+                    // printf("R%d: ghost cell %d (owner R%d): v(%d, %d, %d)\n", _rank, (int)i, verts_vec[lowest_gid].owner, faces_vec[i].v0, faces_vec[i].v1, faces_vec[i].v2);
+                    ghost_cells_count++;
+                }
+            }
+        }
+
+        /**
+         * The lowest rank which owns a vertex owns the edge. This keeps things consistent
+         * because rank 0 may own an edges with vertices (5, 38) and rank 1 with (38, 5)
+         * which is in fact the same edge
+         * 
+         * If this rank does not own either vertex (case when the edge is between
+         *  two vertices on a ghosted face), this is also a ghosted edge
+         */
+        int ghost_edges_count = 0;
+        for (size_t i = 0; i < edges_vec.size(); i++) {
+            // v0 is always the vertex with the lower GID
+            int ev0lid = edges_vec[i].v0;
+            int ev1lid = edges_vec[i].v1;
+            int ev0gid = verts_vec[ev0lid].gid;
+            int ev1gid = verts_vec[ev1lid].gid;
+
+            int owner0 = verts_vec[ev0lid].owner;
+            int owner1 = verts_vec[ev1lid].owner;
+
+            // printf("R%d: elid%d: v(%d, %d), owners: %d, %d\n", 
+            //     _rank, (int)i, ev0gid, ev1gid, owner0, owner1);
+
+            // Skip edges where this rank owns neither vertex (fully ghosted edge)
+            if (owner0 != _rank && owner1 != _rank) {
+                ghost_edges_count++;
+                continue;
+            }
+
+            // Determine the edge owner (rank owning the vertex with the lowest owner rank)
+            int edge_owner = std::min(owner0, owner1);
+
+            // If this rank is NOT the edge owner but owns at least one vertex, it's a ghost edge
+            if (_rank != edge_owner) {
+                ghost_edges_count++;
+            }
+        }
+
+        
+        int ov = verts_vec.size() - ghost_vert_count;
+        int oe = edges_vec.size() - ghost_edges_count;
+        int of = faces_vec.size() - ghost_cells_count;
+        printf("R%d: owned/ghost counts: v(%d, %d), e(%d, %d), f(%d, %d)\n", _rank, ov, ghost_vert_count,
+            oe, ghost_edges_count, of, ghost_cells_count);
+        _vertices.resize(ov);
+        _edges.resize(oe);
+        _faces.resize(of);
+        _owned_vertices = ov; _owned_edges = oe; _owned_faces = of;
+
+        _updateGlobalIDs();
+
+        // Create the mesh
+        auto vef_gid_start = _vef_gid_start;
+
+        // We should convert the following loops to a Cabana::simd_parallel_for at some point to get better write behavior
+
+        // Initialize the vertices, edges, and faces
+        auto v_gid = Cabana::slice<V_GID>(_vertices);
+        auto v_owner = Cabana::slice<V_OWNER>(_vertices);
+
+        auto e_vid = Cabana::slice<E_VIDS>(_edges); // VIDs from south to north, west to east vertices
+        auto e_gid = Cabana::slice<E_GID>(_edges);
+        auto e_cids = Cabana::slice<E_CIDS>(_edges);
+        auto e_pid = Cabana::slice<E_PID>(_edges);
+        auto e_owner = Cabana::slice<E_OWNER>(_edges);
+        auto e_layer = Cabana::slice<E_LAYER>(_edges);
+        int rank = _rank;
+        
+        // Initialize vertices
+        Kokkos::parallel_for("init vertices", Kokkos::RangePolicy<execution_space>(0, _vertices.size()),
+            KOKKOS_LAMBDA(int i) {
+
+            v_gid(i) = verts_vec[i].gid;
+            v_owner(i) = verts_vec[i].owner;
+            
+        });
+
+        // Initialize values that are shared for all edges
+        Kokkos::parallel_for("init edge shared values", Kokkos::RangePolicy<execution_space>(0, _edges.size()),
+            KOKKOS_LAMBDA(int i) {
+
+            e_vid(i, 2) = -1; // No edge has been split
+            e_pid(i) = -1;
+            e_cids(i, 0) = -1; e_cids(i, 1) = -1;
+            e_owner(i) = rank;
+            e_layer(i) = 0;
+        });
+
+    }
 
     /**
      * Refine all faces specified in the fids vector 
