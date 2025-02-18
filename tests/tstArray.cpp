@@ -24,7 +24,7 @@ TYPED_TEST(ArrayTest, test_cloneCopy)
     {
         mesh_size = 5;
     }
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto correct = this->populateTripleArray(NuMesh::Vertex(), 847);
     auto test = NuMesh::Array::ArrayOp::cloneCopy(*correct, NuMesh::Own());
@@ -42,7 +42,7 @@ TYPED_TEST(ArrayTest, test_assignDim3)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto three_size = this->populateTripleArray(NuMesh::Vertex(), 938);
 
@@ -72,7 +72,7 @@ TYPED_TEST(ArrayTest, test_assignDim1)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto one_size = this->populateScalarArray(NuMesh::Vertex(), 938);
 
@@ -99,7 +99,7 @@ TYPED_TEST(ArrayTest, test_scaleDim3)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto three_size = this->populateTripleArray(NuMesh::Vertex(), 938);
 
@@ -129,7 +129,7 @@ TYPED_TEST(ArrayTest, test_scaleDim1)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto one_size = this->populateScalarArray(NuMesh::Vertex(), 938);
 
@@ -158,7 +158,7 @@ TYPED_TEST(ArrayTest, test_elementMultiplyDim1)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto three_size = this->populateTripleArray(NuMesh::Vertex(), 938);
     auto one_size = this->populateScalarArray(NuMesh::Vertex(), 235);
@@ -190,7 +190,7 @@ TYPED_TEST(ArrayTest, test_elementMultiplyDim3)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto three_size0 = this->populateTripleArray(NuMesh::Vertex(), 857);
     auto three_size1 = this->populateTripleArray(NuMesh::Vertex(), 286);
@@ -226,7 +226,7 @@ TYPED_TEST(ArrayTest, test_copyDim0)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto double_array = this->populateDoubleArray(NuMesh::Vertex(), 482);
     auto scalar_array = this->populateScalarArray(NuMesh::Vertex(), 915);
@@ -259,7 +259,7 @@ TYPED_TEST(ArrayTest, test_copyDim1)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto double_array = this->populateDoubleArray(NuMesh::Vertex(), 207);
     auto scalar_array = this->populateScalarArray(NuMesh::Vertex(), 374);

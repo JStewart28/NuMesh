@@ -8,7 +8,7 @@
 #include <Kokkos_Core.hpp>
 #include <NuMesh_Core.hpp>
 
-#include "tstMesh2D.hpp"
+#include "tstMesh.hpp"
 
 #include <mpi.h>
 
@@ -16,7 +16,7 @@ namespace NuMeshTest
 {
 
 template <class T>
-class MapsTest : public Mesh2DTest<T>
+class MapsTest : public MeshTest<T>
 {
     using ExecutionSpace = typename T::ExecutionSpace;
     using MemorySpace = typename T::MemorySpace;
@@ -33,12 +33,12 @@ class MapsTest : public Mesh2DTest<T>
 
     void SetUp() override
     {
-        Mesh2DTest<T>::SetUp();
+        MeshTest<T>::SetUp();
     }
 
     void TearDown() override
     { 
-        Mesh2DTest<T>::TearDown();
+        MeshTest<T>::TearDown();
     }
     
     /**

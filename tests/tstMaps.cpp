@@ -24,7 +24,7 @@ TYPED_TEST(MapsTest, test_v2e_refinement0)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     this->test_v2e();
 }
@@ -40,7 +40,7 @@ TYPED_TEST(MapsTest, test_v2f_refinement0)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     this->test_v2f(0);
 }
@@ -57,7 +57,7 @@ TYPED_TEST(MapsTest, test_v2f_refinement2)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto vef_gid_start = this->mesh_->vef_gid_start();
 
@@ -88,7 +88,7 @@ TYPED_TEST(MapsTest, test_v2v_refinement0)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     this->test_v2v(0);
 }
@@ -105,7 +105,7 @@ TYPED_TEST(MapsTest, test_v2v_refinement2)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto vef_gid_start = this->mesh_->vef_gid_start();
 

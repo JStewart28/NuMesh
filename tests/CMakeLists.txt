@@ -1,8 +1,8 @@
 if (ENABLE_TESTS)
 
-    blt_add_executable(NAME tstMesh2D
-                       SOURCES tstMesh2D.cpp 
-                       HEADERS tstMesh2D.hpp
+    blt_add_executable(NAME tstMesh
+                       SOURCES tstMesh.cpp 
+                       HEADERS tstMesh.hpp
                        DEPENDS_ON numesh gtest
                        OUTPUT_DIR ${TEST_OUTPUT_DIRECTORY})
     blt_add_test(NAME MeshTests

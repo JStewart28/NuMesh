@@ -24,7 +24,7 @@ TYPED_TEST(HaloTest, test_halo_depth_1_no_refinement)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     this->test_halo_depth_1(1);
 }
@@ -41,7 +41,7 @@ TYPED_TEST(HaloTest, test_halo_depth_1_uniform_refinement1)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto vef_gid_start = this->mesh_->vef_gid_start();
 
@@ -73,7 +73,7 @@ TYPED_TEST(HaloTest, test_halo_depth_1_uniform_refinement2)
         mesh_size = 5;
     }
     
-    this->init(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
     auto vef_gid_start = this->mesh_->vef_gid_start();
 
