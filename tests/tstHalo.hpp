@@ -56,12 +56,16 @@ class HaloTest : public MeshTest<T>
         const int rank = this->rank_;
 
         this->mesh_->gather(0, 1);
+
+        printf("Mesh verts: %d\n", this->mesh_->count(NuMesh::Own(), NuMesh::Vertex())+this->mesh_->count(NuMesh::Ghost(), NuMesh::Vertex()));
         
         this->copytoHost();
 
         int total_verts = this->vertices->size();
         int total_edges = this->edges->size();
         int total_faces = this->faces->size();
+
+        ASSERT_GT(total_verts, 0); ASSERT_GT(total_edges, 0); ASSERT_GT(total_faces, 0);
 
         // Slices for access
         auto v_gid = Cabana::slice<V_GID>(*this->vertices);
@@ -103,7 +107,7 @@ class HaloTest : public MeshTest<T>
             // Each owned vert should be connected to at least six faces
             // NOTE: This only holds with uniform refinement
             int connected_faces = next_offset - offset;
-            printf("vlid: %d, offsets: %d, %d\n", vlid, offset, next_offset);
+            // printf("vlid: %d, offsets: %d, %d\n", vlid, offset, next_offset);
             if (check_vert_connectivity)
                 ASSERT_GE(connected_faces, 6) << "VGID " << vgid << " is connected to " << connected_faces << " faces\n";
 

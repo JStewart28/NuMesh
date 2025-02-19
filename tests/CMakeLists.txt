@@ -1,7 +1,7 @@
 if (ENABLE_TESTS)
 
     blt_add_executable(NAME tstMesh
-                       SOURCES tstMesh.cpp 
+                       SOURCES tstMesh.cpp
                        HEADERS tstMesh.hpp
                        DEPENDS_ON numesh gtest
                        OUTPUT_DIR ${TEST_OUTPUT_DIRECTORY})

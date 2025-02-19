@@ -2251,11 +2251,14 @@ class Mesh
         /**
          * Initialize faces and edges
          * 
-         * The rank which owns the first vertex owns the edge. For this to work,
+         * The rank which owns the vertex with the lower GID owns the edge. For this to work,
          * edge vertices must be sorted
          * 
          * If we do not own the edge, we need to request the edge's global ID
-         * from its owner
+         * from its owner.BoundaryType
+         * 
+         * There are cases where the owner of the edge does not own any face the edge is a part of.
+         * In this case, the edge is not created until a remote process requests it.
          */
         using int_vector_d = Kokkos::View<int*, memory_space>;
         using distributor_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int[2], int, int>, memory_space, 4>;// (v0, v1), my_rank, to_rank
@@ -2302,11 +2305,11 @@ class Mesh
             // Assign vertex global IDs
             for (int j = 0; j < 3; j++) f_vgids(flid, j) = vertex_gids[j];
 
-            // if (fgid == 61)
-            // printf("R%d: fgid %d: v(%d, %d, %d), o(%d, %d, %d), isGhost: %d, owner: %d\n", rank, fgid,
+            // if (fgid == 166 || fgid == 140)
+            // printf("R%d: fgid %d: v(%d, %d, %d), o(%d, %d, %d), fowner: %d\n", rank, fgid,
             //     vertex_gids[0], vertex_gids[1], vertex_gids[2],
             //     vertex_owners[0], vertex_owners[1], vertex_owners[2],
-            //     f_in_isGhost(i), face_owner);
+            //     face_owner);
 
             // if (rank == 1) printf("R%d: f%d: v(%d, %d, %d)\n", rank, fgid, f_vgids(flid, 0), f_vgids(flid, 1), f_vgids(flid, 2));
 
@@ -2336,9 +2339,9 @@ class Mesh
                 }
                 // Determine edge ownership
                 // We own all edges where we own the first vertex
-                if (edge_v_gids[0] == 15 || edge_v_gids[1] == 15)
-                    printf("BEFORE R%d: fgid %d: edge from (%d, %d), o(%d, %d)\n", rank, fgid,
-                            edge_v_gids[0], edge_v_gids[1], v_edge_owners[0], v_edge_owners[1]);
+                // if (edge_v_gids[0] == 15 && edge_v_gids[1] == 99)
+                //     printf("R%d: fgid %d: edge v(%d, %d), o(%d, %d), eowner: R%d\n", rank, fgid,
+                //             edge_v_gids[0], edge_v_gids[1], v_edge_owners[0], v_edge_owners[1], v_edge_owners[0]);
 
                 // The rank that owns the smaller vertex ID owns the edge
                 int edge_owner = Kokkos::min(v_edge_owners[0], v_edge_owners[1]);
@@ -2346,9 +2349,9 @@ class Mesh
                 KeyType edgekey = hashFunction(edge_v_gids[0], edge_v_gids[1]);
                 if (edge_owner == rank)
                 {
-                    if (edge_v_gids[0] == 15 || edge_v_gids[1] == 15)
-                    printf("AFTER R%d: fgid %d: edge from (%d, %d), o(%d, %d)\n", rank, fgid,
-                            edge_v_gids[0], edge_v_gids[1], v_edge_owners[0], v_edge_owners[1]);
+                    // if (edge_v_gids[0] == 15 || edge_v_gids[1] == 15)
+                    // printf("AFTER R%d: fgid %d: edge from (%d, %d), o(%d, %d)\n", rank, fgid,
+                    //         edge_v_gids[0], edge_v_gids[1], v_edge_owners[0], v_edge_owners[1]);
                     auto result = edges_map.insert(edgekey, 1);
                     if (result.success()) {
                         // If insertion succeeds, edge has not yet been created
@@ -2396,12 +2399,9 @@ class Mesh
                 }
             }
         });
-        Kokkos::deep_copy(_owned_edges, edge_counter);
-        _edges.resize(_owned_edges);
         int distributor_size;
         Kokkos::deep_copy(distributor_size, distributor_idx);
         edge_distributor_export.resize(distributor_size);
-        _updateGlobalIDs(false);
 
         // Update slices after resizing
         edge_distributor_export_verts = Cabana::slice<0>(edge_distributor_export);
@@ -2410,22 +2410,19 @@ class Mesh
         e_gid = Cabana::slice<E_GID>(_edges);
         e_vid = Cabana::slice<E_VIDS>(_edges);
 
-        // Clear edges map so we can use it to store edge global IDs
-        edges_map.clear();
-
-        // Now we can set edge global IDs, and hash edges vertices to global ID for quick lookup
-        Kokkos::parallel_for("set edge GIDs", Kokkos::RangePolicy<execution_space>(0, _edges.size()),
-            KOKKOS_LAMBDA(const int i) {
+        // // Now we can set edge global IDs, and hash edges vertices to global ID for quick lookup
+        // Kokkos::parallel_for("set edge GIDs", Kokkos::RangePolicy<execution_space>(0, _edges.size()),
+        //     KOKKOS_LAMBDA(const int i) {
             
-            int egid = i + vef_gid_start(rank, 1);
-            e_gid(i) = egid;
-            KeyType edgekey = hashFunction(e_vid(i, 0), e_vid(i, 1));
-            edges_map.insert(edgekey, egid);
-            // if (result.success())
-            //     if (rank == 1) printf("Insert: R%d: egid %d, v(%d, %d)\n", rank, egid, e_vid(i, 0), e_vid(i, 1));
+        //     int egid = i + vef_gid_start(rank, 1);
+        //     e_gid(i) = egid;
+        //     KeyType edgekey = hashFunction(e_vid(i, 0), e_vid(i, 1));
+        //     edges_map.insert(edgekey, egid);
+        //     // if (result.success())
+        //     //     if (rank == 1) printf("Insert: R%d: egid %d, v(%d, %d)\n", rank, egid, e_vid(i, 0), e_vid(i, 1));
 
-        });
-        Kokkos::fence();
+        // });
+        // Kokkos::fence();
 
         // for (size_t i = 0; i < edge_distributor_export.size(); i++)
         // {
@@ -2449,7 +2446,63 @@ class Mesh
         auto edge_distributor_export_egid = Cabana::slice<1>(edge_distributor_export);
         edge_distributor_export_torank = Cabana::slice<2>(edge_distributor_export);
 
+        // Iterate over edges recieved. If a remote rank asks requested an edge we don't have,
+        // that means the edge is on a face we do not own, so we need to create the edge
+        Kokkos::parallel_for("edge_distributor_import_to_export", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+        KOKKOS_LAMBDA(const int i) {
+        
+            int v0 = edge_distributor_import_verts(i, 0);
+            int v1 = edge_distributor_import_verts(i, 1);
+            KeyType edgekey = hashFunction(v0, v1);
+            auto result = edges_map.insert(edgekey, 1);
+            if (result.success()) {
+                // If insertion succeeds, edge has not yet been created
+                int elid = Kokkos::atomic_fetch_add(&edge_counter(), 1);
+                assert(elid < edges_size);
 
+                // Create edge
+                e_gid(elid) = -1; // GIDs must be populated once we know total number of edges
+                
+                // Vertex endpoints and midpoint
+                e_vid(elid, 0) = v0;
+                e_vid(elid, 1) = v1;
+                e_vid(elid, 2) = -1;
+
+                // No children or parent edges
+                for (int k = 0; k < 2; k++) e_cids(elid, k) = -1;
+                e_pid(elid) = -1;
+
+                // Layer 0
+                e_layer(elid) = 0;
+
+                // Owner rank
+                e_owner(elid) = rank;
+
+                // printf("R%d: adding edge from v(%d, %d)\n", rank, e_vid(elid, 0), e_vid(elid, 1));
+            }
+        });
+        Kokkos::deep_copy(_owned_edges, edge_counter);
+        _edges.resize(_owned_edges);
+        _updateGlobalIDs(false);
+
+        // Clear edges map so we can use it to store edge global IDs
+        edges_map.clear();
+
+        // Now that all edges have been created, assign global IDs
+        Kokkos::parallel_for("set edge GIDs", Kokkos::RangePolicy<execution_space>(0, _edges.size()),
+            KOKKOS_LAMBDA(const int i) {
+            
+            int egid = i + vef_gid_start(rank, 1);
+            e_gid(i) = egid;
+            KeyType edgekey = hashFunction(e_vid(i, 0), e_vid(i, 1));
+            edges_map.insert(edgekey, egid);
+            // if (result.success())
+            //     if (rank == 1) printf("Insert: R%d: egid %d, v(%d, %d)\n", rank, egid, e_vid(i, 0), e_vid(i, 1));
+
+        });
+        Kokkos::fence();
+
+        // Now iterate over imported data again, populating EGIDs to export
         Kokkos::parallel_for("edge_distributor_import_to_export", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
             KOKKOS_LAMBDA(const int i) {
             
@@ -2468,11 +2521,13 @@ class Mesh
             else
             {
                 // This shouldn't be printed
-                printf("R%d: Rank %d requested unowned edge with vertices (%d, %d)\n",
+                printf("R%d: Rank %d requested uncreated edge with vertices (%d, %d)\n",
                     rank, edge_distributor_import_myrank(i), edge_distributor_import_verts(i, 0), 
                     edge_distributor_import_verts(i, 1));
             }
         });
+        
+
         distributor = Cabana::Distributor<memory_space>(_comm, edge_distributor_export_torank);
         distributor_total_num_import = distributor.totalNumImport();
         // printf("R%d: distributor i/e: %d, %d\n", _rank, distributor_total_num_import, distributor_export_ranks.extent(0));
@@ -2522,6 +2577,7 @@ class Mesh
                 else
                 {
                     f_egids(i, j) = -1;
+                    printf("R%d: fgid %d: missing edge v(%d, %d)\n", rank, i+vef_gid_start(rank, 2), edge_v_gids[0], edge_v_gids[1]);
                 }
                 // if (rank == 1) printf("R%d: fgid %d, egid %d, v(%d, %d)\n", rank, f_gid(i), f_egids(i, j), edge_v_gids[0], edge_v_gids[1]);
             }
@@ -2533,7 +2589,7 @@ class Mesh
         //     _owned_edges, -1, _owned_faces, ghost_cells_count);
 
         // printEdges(3, 1);
-        // if (rank == 1) printFaces(0, 1);
+        // printFaces(0, 1);
 
     }
 

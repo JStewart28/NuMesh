@@ -1,5 +1,5 @@
-#ifndef _TSTMESH2D_HPP_
-#define _TSTMESH2D_HPP_
+#ifndef _TSTMESH_HPP_
+#define _TSTMESH_HPP_
 
 #include <iostream>
 #include <filesystem>
@@ -12,7 +12,14 @@
 #include <Kokkos_Core.hpp>
 #include <NuMesh_Core.hpp>
 
-// #include "TestingUtils.hpp"
+#include <vtkSmartPointer.h>
+#include <vtkXMLUnstructuredGridReader.h>
+#include <vtkUnstructuredGrid.h>
+#include <vtkPoints.h>
+#include <vtkCellArray.h>
+#include <vtkTriangle.h>
+#include <vtkPointData.h>
+#include <vtkDataArray.h>
 
 #include "tstDriver.hpp"
 
@@ -105,6 +112,146 @@ class MeshTest : public ::testing::Test
         int num_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
 
         ASSERT_GT(num_verts, 0); ASSERT_GT(num_edges, 0); ASSERT_GT(num_faces, 0);
+    }
+
+    int init_from_file()
+    {
+        // Host-side AoSoAs for storing VTU data
+        using vertices_d = Cabana::MemberTypes<int,       // Vertex global ID                                 
+                                               int,       // Owning rank
+                                               >;
+        using face_d = Cabana::MemberTypes<int[3],       // Vertex LIDs forming the triangle                                
+                                           bool,         // Flag indicating if the cell contains a ghost point
+                                           >;
+
+        using vert_aosoa = Cabana::AoSoA<vertices_d, Kokkos::HostSpace, 4>;
+        using face_aosoa = Cabana::AoSoA<face_d, Kokkos::HostSpace, 4>;
+
+        std::string filename = "../tests/mesh_files/comm" + std::to_string(comm_size_) + "/mesh_" + std::to_string(rank_) + ".vtu";
+        // std::cout << "Rank " << rank_ << " reading " << filename << std::endl;
+
+        // Read the VTU file
+        vtkSmartPointer<vtkXMLUnstructuredGridReader> reader = vtkSmartPointer<vtkXMLUnstructuredGridReader>::New();
+        reader->SetFileName(filename.c_str());
+        reader->Update();
+
+        vtkSmartPointer<vtkUnstructuredGrid> grid = reader->GetOutput();
+        vtkSmartPointer<vtkPoints> points = grid->GetPoints();
+        
+        if (!points) {
+            std::cerr << "Rank " << rank_ << " failed to read points from " << filename << std::endl;
+            Kokkos::finalize();
+            MPI_Finalize();
+            return 1;
+        }
+
+        int num_points = points->GetNumberOfPoints();
+        int num_cells = grid->GetNumberOfCells();
+
+        // Read ghost point flags
+        vtkSmartPointer<vtkDataArray> ghost_flags_array = grid->GetPointData()->GetArray("ghost_points");
+        if (!ghost_flags_array) {
+            std::cerr << "Rank " << rank_ << " failed to read ghost point flags from " << filename << std::endl;
+            Kokkos::finalize();
+            MPI_Finalize();
+            return 1;
+        }
+
+        vtkSmartPointer<vtkDataArray> vertex_owners_array = grid->GetPointData()->GetArray("vertex_owner");
+        if (!vertex_owners_array) {
+            std::cerr << "Rank " << rank_ << " failed to read vertex owner data from " << filename << std::endl;
+            Kokkos::finalize();
+            MPI_Finalize();
+            return 1;
+        }
+
+        vtkSmartPointer<vtkDataArray> vertex_gids_array = grid->GetPointData()->GetArray("vertex_gids");
+        if (!vertex_gids_array) {
+            std::cerr << "Rank " << rank_ << " failed to read vertex gid data from " << filename << std::endl;
+            Kokkos::finalize();
+            MPI_Finalize();
+            return 1;
+        }
+
+        // Create AoSoAs
+        vert_aosoa vertices_vtu("vertices", num_points);
+        face_aosoa faces_vtu("faces", num_cells);
+        auto v_gid = Cabana::slice<0>(vertices_vtu);
+        auto v_owner = Cabana::slice<1>(vertices_vtu);
+        auto f_vids = Cabana::slice<0>(faces_vtu);
+        auto f_isGhost = Cabana::slice<1>(faces_vtu);
+
+        std::unordered_map<int, bool> is_ghost_point;
+        for (int i = 0; i < num_points; ++i) {
+            int ghost_flag = static_cast<int>(ghost_flags_array->GetComponent(i, 0));
+            is_ghost_point[i] = (ghost_flag == 1);  // Mark as ghost point if flag is 1
+        }
+
+        // Mapping from global VTK point index to local vertex ID
+        std::unordered_map<int, int> global_to_local;
+        // std::vector<Vertex> vertices;
+            
+        int num_ghost_vertices = 0;
+        for (int i = 0; i < num_points; ++i) {
+            // double coords[3];
+            // points->GetPoint(i, coords);
+            global_to_local[i] = i;  // Assign local ID
+            int vertex_owner = static_cast<int>(vertex_owners_array->GetComponent(i, 0));
+            int vertex_gid = static_cast<int>(vertex_gids_array->GetComponent(i, 0));
+            if (is_ghost_point[i]) {
+                num_ghost_vertices++;
+            }
+            v_gid(i) = vertex_gid;
+            v_owner(i) = vertex_owner;
+            // vertices.push_back({i, vertex_gid, vertex_owner, coords[0], coords[1], coords[2]});
+        }
+
+        // Read cells (triangles) and assign local cell IDs
+        for (int i = 0; i < num_cells; ++i) {
+            vtkCell* cell = grid->GetCell(i);
+            if (cell->GetNumberOfPoints() != 3) continue;  // Skip non-triangle cells
+
+            int v0 = cell->GetPointId(0);
+            int v1 = cell->GetPointId(1);
+            int v2 = cell->GetPointId(2);
+
+            // Check if the cell contains a ghost point
+            bool contains_ghost = is_ghost_point[v0] || is_ghost_point[v1] || is_ghost_point[v2];
+
+            f_vids(i, 0) = v0; f_vids(i, 1) = v1; f_vids(i, 2) = v2;
+            f_isGhost(i) = contains_ghost;
+
+        }
+
+        // Output results
+        // std::cout << "Rank " << rank << " processed:\n"
+        //           << "  - " << vertices.size() << " vertices\n"
+        //           << "  - " << cells.size() << " cells\n"
+        //           << "  - " << edges.size() << " edges\n";
+
+        // Output the number of cells containing ghost points
+        // int ghost_cells_count = 0;
+        // for (const auto& cell : cells) {
+        //     if (cell.contains_ghost) {
+        //         ++ghost_cells_count;
+        //     }
+        // }
+
+        // std::cout << "Rank " << rank << " has " << ghost_cells_count << " cells containing ghost points.\n";
+
+        auto mesh = NuMesh::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
+
+        // Copy AoSoAs to deivce, then initialize
+        using vert_aosoa_device = Cabana::AoSoA<vertices_d, MemorySpace, 4>;
+        using face_aosoa_device = Cabana::AoSoA<face_d, MemorySpace, 4>;
+        vert_aosoa_device vertices_device("vertices_device", vertices_vtu.size());
+        face_aosoa_device faces_device("faces_device", faces_vtu.size());
+        Cabana::deep_copy(vertices_device, vertices_vtu);
+        Cabana::deep_copy(faces_device, faces_vtu);
+
+        mesh->initializeFromFile(vertices_device, faces_device);
+
+        return 0;
     }
 
     /**
@@ -529,7 +676,6 @@ class MeshTest : public ::testing::Test
             //     egid = f_eid(i, 2);
             //     printf("egid: %d, endpoints: %d, %d\n", egid, e_vid(e2, 0), e_vid(e2, 1));
             // }
-            
             ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e0, e1)) << "FGID " << f_gid(i) << "\n";
             ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e1, e2)) << "FGID " << f_gid(i) << "\n";
             ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e2, e0)) << "FGID " << f_gid(i) << "\n";
@@ -539,4 +685,4 @@ class MeshTest : public ::testing::Test
 
 } // end namespace NuMeshTest
 
-#endif // _TSTMESH2D_HPP_
+#endif // _TSTMESH_HPP_

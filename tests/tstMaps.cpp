@@ -16,7 +16,7 @@ TYPED_TEST_SUITE(MapsTest, DeviceTypes);
 /**
  * Tests that the v2e map is built correctly without any refinement
  */
-TYPED_TEST(MapsTest, test_v2e_refinement0)
+TYPED_TEST(MapsTest, grid_test_v2e_refinement0)
 {
     int mesh_size = this->comm_size_ * 2;
     if (this->comm_size_ == 1)
@@ -32,7 +32,7 @@ TYPED_TEST(MapsTest, test_v2e_refinement0)
 /**
  * Tests that the v2f map is built correctly without any refinement
  */
-TYPED_TEST(MapsTest, test_v2f_refinement0)
+TYPED_TEST(MapsTest, grid_test_v2f_refinement0)
 {
     int mesh_size = this->comm_size_ * 2;
     if (this->comm_size_ == 1)
@@ -49,7 +49,7 @@ TYPED_TEST(MapsTest, test_v2f_refinement0)
  * Tests that the v2f map is built correctly with two iterations
  * of uniform refinement
  */
-TYPED_TEST(MapsTest, test_v2f_refinement2)
+TYPED_TEST(MapsTest, grid_test_v2f_refinement2)
 {
     int mesh_size = this->comm_size_ * 2;
     if (this->comm_size_ == 1)
@@ -80,7 +80,7 @@ TYPED_TEST(MapsTest, test_v2f_refinement2)
 /**
  * Tests that the v2v map is built correctly without any refinement
  */
-TYPED_TEST(MapsTest, test_v2v_refinement0)
+TYPED_TEST(MapsTest, grid_test_v2v_refinement0)
 {
     int mesh_size = this->comm_size_ * 2;
     if (this->comm_size_ == 1)
@@ -97,7 +97,7 @@ TYPED_TEST(MapsTest, test_v2v_refinement0)
  * Tests that the v2v map is built correctly one two iterations
  * of uniform refinement
  */
-TYPED_TEST(MapsTest, test_v2v_refinement2)
+TYPED_TEST(MapsTest, grid_test_v2v_refinement2)
 {
     int mesh_size = this->comm_size_ * 2;
     if (this->comm_size_ == 1)
@@ -124,5 +124,119 @@ TYPED_TEST(MapsTest, test_v2v_refinement2)
     this->test_v2v(0);
 }
 
+/************************************************************************
+ ************************   Sphere mesh tests   ************************* 
+ ***********************************************************************/
+
+/**
+ * Tests that the v2e map is built correctly without any refinement
+ */
+TYPED_TEST(MapsTest, sphere_test_v2e_refinement0)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
+    
+    this->init_from_grid(mesh_size, 1);
+
+    this->test_v2e();
+}
+
+/**
+ * Tests that the v2f map is built correctly without any refinement
+ */
+TYPED_TEST(MapsTest, sphere_test_v2f_refinement0)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
+    
+    this->init_from_grid(mesh_size, 1);
+
+    this->test_v2f(0);
+}
+
+/**
+ * Tests that the v2f map is built correctly with two iterations
+ * of uniform refinement
+ */
+TYPED_TEST(MapsTest, sphere_test_v2f_refinement2)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
+    
+    this->init_from_grid(mesh_size, 1);
+
+    auto vef_gid_start = this->mesh_->vef_gid_start();
+
+    // Uniform refinement
+    for (int i = 0; i < 2; i++)
+    {
+        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int face_gid_start = vef_gid_start(this->rank_, 2);
+        Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
+        for (int i = 0; i < num_local_faces; i++)
+        {
+            fin(i) = face_gid_start + i;
+        }
+        this->performRefinement(fin);
+    }
+
+    this->test_v2f(0);
+}
+
+/**
+ * Tests that the v2v map is built correctly without any refinement
+ */
+TYPED_TEST(MapsTest, sphere_test_v2v_refinement0)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
+    
+    this->init_from_grid(mesh_size, 1);
+
+    this->test_v2v(0);
+}
+
+/**
+ * Tests that the v2v map is built correctly one two iterations
+ * of uniform refinement
+ */
+TYPED_TEST(MapsTest, sphere_test_v2v_refinement2)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
+    
+    this->init_from_grid(mesh_size, 1);
+
+    auto vef_gid_start = this->mesh_->vef_gid_start();
+
+    // Uniform refinement
+    for (int i = 0; i < 2; i++)
+    {
+        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int face_gid_start = vef_gid_start(this->rank_, 2);
+        Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
+        for (int i = 0; i < num_local_faces; i++)
+        {
+            fin(i) = face_gid_start + i;
+        }
+        this->performRefinement(fin);
+    }
+    this->test_v2v(0);
+}
 
 } // end namespace NuMeshTest

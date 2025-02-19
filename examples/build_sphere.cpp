@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
 
     // Construct filename based on rank
     std::string filename = "mesh_" + std::to_string(rank) + ".vtu";
-    std::cout << "Rank " << rank << " reading " << filename << std::endl;
+    // std::cout << "Rank " << rank << " reading " << filename << std::endl;
 
     // Read the VTU file
     vtkSmartPointer<vtkXMLUnstructuredGridReader> reader = vtkSmartPointer<vtkXMLUnstructuredGridReader>::New();
