@@ -460,7 +460,7 @@ class Mesh
         Kokkos::deep_copy(edge_needrefine, 0);
 
 
-        const int remote_edge_needrefine_size = _owned_edges/5;
+        const int remote_edge_needrefine_size = _owned_edges;
         int_vector_aosoa export_edges_aosoa("remote_edges_send", remote_edge_needrefine_size);
         int_vector_d distributor_export_ranks("distributor_export_ranks", remote_edge_needrefine_size);
         Kokkos::deep_copy(distributor_export_ranks, -1);
@@ -527,6 +527,8 @@ class Mesh
                          * process to refine it
                          */
                         int idx = Kokkos::atomic_fetch_add(&remote_edge_counter(), 1);
+                        // printf("R%d: idx: %d, size: %d\n", rank, idx, remote_edge_needrefine_size);
+                        assert(idx < remote_edge_needrefine_size);
                         remote_edge_slice(idx) = f_eid_slice0(f_lid, j);
                         remote_edge_rank_slice(idx) = rank;
 
@@ -1509,8 +1511,7 @@ class Mesh
         Kokkos::deep_copy(vert_distributor_size, vd_idx);
         Kokkos::deep_copy(edge_distributor_size, ed_idx);
         
-        // printf("R%d: sizes: %d, %d; actual: %d, %d\n", rank, vert_distributor_size, edge_distributor_size,
-        //     vert_distributor_export.size(), edge_distributor_export.size());
+        printf("R%d: sizes: %d, %d\n", rank, vert_distributor_size, edge_distributor_size);
 
         vert_distributor_export.resize(vert_distributor_size);
         edge_distributor_export.resize(edge_distributor_size);
