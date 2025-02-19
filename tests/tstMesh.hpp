@@ -239,8 +239,6 @@ class MeshTest : public ::testing::Test
 
         // std::cout << "Rank " << rank << " has " << ghost_cells_count << " cells containing ghost points.\n";
 
-        auto mesh = NuMesh::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
-
         // Copy AoSoAs to deivce, then initialize
         using vert_aosoa_device = Cabana::AoSoA<vertices_d, MemorySpace, 4>;
         using face_aosoa_device = Cabana::AoSoA<face_d, MemorySpace, 4>;
@@ -249,7 +247,7 @@ class MeshTest : public ::testing::Test
         Cabana::deep_copy(vertices_device, vertices_vtu);
         Cabana::deep_copy(faces_device, faces_vtu);
 
-        mesh->initializeFromFile(vertices_device, faces_device);
+        this->mesh_->initializeFromFile(vertices_device, faces_device);
 
         return 0;
     }
