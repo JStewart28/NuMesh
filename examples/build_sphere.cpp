@@ -21,6 +21,20 @@ struct pair_hash {
     }
 };
 
+// Host-side AoSoAs for storing VTU data
+using vertices_d = Cabana::MemberTypes<int,       // Vertex global ID                                 
+                                       int,       // Owning rank
+                                       >;
+using face_d = Cabana::MemberTypes<int[3],       // Vertex LIDs forming the triangle                                
+                                   bool,         // Flag indicating if the cell contains a ghost point
+                                   >;
+using edge_d = Cabana::MemberTypes<int[2]>;       // Vertex LIDs forming the edge
+
+using vert_aosoa = Cabana::AoSoA<vertices_d, Kokkos::HostSpace, 4>;
+using face_aosoa = Cabana::AoSoA<face_d, Kokkos::HostSpace, 4>;
+using edge_aosoa = Cabana::AoSoA<edge_d, Kokkos::HostSpace, 4>;
+
+
 struct Vertex {
     int lid;
     int gid;
@@ -107,6 +121,16 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
+    // Create AoSoAs
+    vert_aosoa vertices("vertices", num_points);
+    edge_aosoa edges("edges", num_cells*3);
+    face_aosoa faces("faces", num_cells);
+    auto v_gid = Cabana::slice<0>(vertices);
+    auto v_owner = Cabana::slice<1>(vertices);
+    auto e_vids = Cabana::slice<0>(edges);
+    auto f_vids = Cabana::slice<0>(faces);
+    auto f_isGhost = Cabana::slice<1>(faces);
+
     std::unordered_map<int, bool> is_ghost_point;
     for (int i = 0; i < num_points; ++i) {
         int ghost_flag = static_cast<int>(ghost_flags_array->GetComponent(i, 0));
@@ -115,24 +139,26 @@ int main(int argc, char** argv) {
 
     // Mapping from global VTK point index to local vertex ID
     std::unordered_map<int, int> global_to_local;
-    std::vector<Vertex> vertices;
+    // std::vector<Vertex> vertices;
         
     int num_ghost_vertices = 0;
     for (int i = 0; i < num_points; ++i) {
-        double coords[3];
-        points->GetPoint(i, coords);
+        // double coords[3];
+        // points->GetPoint(i, coords);
         global_to_local[i] = i;  // Assign local ID
         int vertex_owner = static_cast<int>(vertex_owners_array->GetComponent(i, 0));
         int vertex_gid = static_cast<int>(vertex_gids_array->GetComponent(i, 0));
         if (is_ghost_point[i]) {
             num_ghost_vertices++;
         }
-        vertices.push_back({i, vertex_gid, vertex_owner, coords[0], coords[1], coords[2]});
+        v_gid(i) = vertex_gid;
+        v_owner(i) = vertex_owner;
+        // vertices.push_back({i, vertex_gid, vertex_owner, coords[0], coords[1], coords[2]});
     }
 
-    std::vector<Cell> cells;
+    // std::vector<Cell> cells;
     std::unordered_map<std::pair<int, int>, int, pair_hash> edge_map;
-    std::vector<Edge> edges;
+    // std::vector<Edge> edges;
 
     // Read cells (triangles) and assign local cell IDs
     for (int i = 0; i < num_cells; ++i) {
@@ -146,17 +172,23 @@ int main(int argc, char** argv) {
         // Check if the cell contains a ghost point
         bool contains_ghost = is_ghost_point[v0] || is_ghost_point[v1] || is_ghost_point[v2];
 
-        cells.push_back({i, v0, v1, v2, contains_ghost});
+        f_vids(i, 0) = v0; f_vids(i, 1) = v1; f_vids(i, 2) = v2;
+        f_isGhost(i) = contains_ghost;
+
+        // cells.push_back({i, v0, v1, v2, contains_ghost});
 
         // Create edges
         for (const auto& edge : {make_sorted_edge(v0, v1), make_sorted_edge(v1, v2), make_sorted_edge(v0, v2)}) {
             if (edge_map.find(edge) == edge_map.end()) {
                 int edge_id = edge_map.size();
                 edge_map[edge] = edge_id;
-                edges.push_back({edge_id, edge.first, edge.second});
+                e_vids(edge_id, 0) = edge.first;
+                e_vids(edge_id, 1) = edge.second;
+                // edges.push_back({edge_id, edge.first, edge.second});
             }
         }
     }
+    edges.resize(edge_map.size());
 
     // Output results
     // std::cout << "Rank " << rank << " processed:\n"
@@ -165,17 +197,29 @@ int main(int argc, char** argv) {
     //           << "  - " << edges.size() << " edges\n";
 
     // Output the number of cells containing ghost points
-    int ghost_cells_count = 0;
-    for (const auto& cell : cells) {
-        if (cell.contains_ghost) {
-            ++ghost_cells_count;
-        }
-    }
+    // int ghost_cells_count = 0;
+    // for (const auto& cell : cells) {
+    //     if (cell.contains_ghost) {
+    //         ++ghost_cells_count;
+    //     }
+    // }
 
     // std::cout << "Rank " << rank << " has " << ghost_cells_count << " cells containing ghost points.\n";
 
     auto mesh = NuMesh::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
-    mesh->initializeFromVectors(vertices, edges, cells);
+
+    // Copy AoSoAs to deivce, then initialize
+    using vert_aosoa_device = Cabana::AoSoA<vertices_d, memory_space, 4>;
+    using face_aosoa_device = Cabana::AoSoA<face_d, memory_space, 4>;
+    using edge_aosoa_device = Cabana::AoSoA<edge_d, memory_space, 4>;
+    vert_aosoa_device vertices_device("vertices_device", vertices.size());
+    edge_aosoa_device edges_device("edges_device", edges.size());
+    face_aosoa_device faces_device("faces_device", faces.size());
+    Cabana::deep_copy(vertices_device, vertices);
+    Cabana::deep_copy(edges_device, edges);
+    Cabana::deep_copy(faces_device, faces);
+
+    mesh->initializeFromFile(vertices_device, faces_device);
 
     } // Scope guard
 

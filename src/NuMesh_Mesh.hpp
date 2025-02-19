@@ -672,7 +672,7 @@ class Mesh
         // so we know how to fix our ghosted edge IDs
         Kokkos::View<int*[3], memory_space> vef_gid_start_old_d("vef_gid_start_old_d", _comm_size);
         Kokkos::deep_copy(vef_gid_start_old_d, vef_gid_start);
-        _updateGlobalIDs();
+        _updateGlobalIDs(true);
         
         // printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, face_refinements*4);
         // printf("R%d new VGID space: %d to %d\n", rank, _vef_gid_start(_rank, 0), _vef_gid_start(_rank, 0)+_owned_vertices);
@@ -1117,7 +1117,7 @@ class Mesh
 
     }
   
-    void _updateGlobalIDs()
+    void _updateGlobalIDs(bool remap_aosoa_ids)
     {
         // Update mesh version
         _version++;
@@ -1147,7 +1147,7 @@ class Mesh
         vef_gid_start_h(0, 1) = 0;
         vef_gid_start_h(0, 2) = 0;
 
-        if (old_vef_start(0, 0) == -1)
+        if (!remap_aosoa_ids)
         {
             // Don't update global IDs when the mesh is initially formed
             return;
@@ -1882,7 +1882,7 @@ class Mesh
         _faces.resize(of);
         _owned_vertices = ov; _owned_edges = oe; _owned_faces = of;
 
-        _updateGlobalIDs();
+        _updateGlobalIDs(false);
 
         auto vef_gid_start = _vef_gid_start;
 
@@ -2128,105 +2128,97 @@ class Mesh
      * 
      * Convention for ghost elements: The rank which owns the lowest vertex ID owns the element.
      * 
-     * Vectors are expected in the following format:
-     * struct Vertex {
-            int lid;
-            int gid;
-            int owner; // Rank which owns this vertex
-            double x, y, z;
-        };
+     * Inputs are AoSoAs expected in the following format:
+     *  using vertices_d = Cabana::MemberTypes<int,       // Vertex global ID                                 
+                                               int,       // Owning rank
+                                               >;
+        using cell_d = Cabana::MemberTypes<int[3],       // Vertex IDs forming the triangle                                
+                                           bool,         // Flag indicating if the cell contains a ghost point
+                                           >;
 
-        struct Cell {
-            int id;
-            int v0, v1, v2;  // Vertex IDs forming the triangle
-            bool contains_ghost;  // Flag indicating if the cell contains a ghost point
-        };
-
-        struct Edge {
-            int id;
-            int v0, v1;  // Endpoints of the edge
-        };
+        using vert_aosoa = Cabana::AoSoA<vertices_d, Kokkos::HostSpace, 4>;
+        using cell_aosoa = Cabana::AoSoA<cell_d, Kokkos::HostSpace, 4>;
 
      */
-    template <class VerticesVec, class EdgesVec, class FacesVec>
-    void initializeFromVectors(VerticesVec& verts_vec, EdgesVec& edges_vec, FacesVec& faces_vec)
+    template <class VerticesAoSoA, class FacesAoSoA>
+    void initializeFromFile(VerticesAoSoA& verts_in, FacesAoSoA& faces_in)
     {
-        // Owned elements are always at the beginning of the vectors
-        int ghost_vert_count = 0;
-        for (size_t i = 0; i < verts_vec.size(); i++) {
-            if (verts_vec[i].owner != _rank) break;
-            ghost_vert_count++;
-            // printf("R%d: vl/gid: (%d, %d), owner: %d\n", _rank, verts_vec[i].lid, verts_vec[i].gid, verts_vec[i].owner);
-        }
-        
+        const int rank = _rank;
 
-        // Rank which owns the face owns the vertex with the lowest GID in the face
-        int ghost_cells_count = 0;
-        for (size_t i = 0; i < faces_vec.size(); i++) {
-            if (faces_vec[i].contains_ghost) {
-                int lowest_gid = std::min({verts_vec[faces_vec[i].v0].gid, verts_vec[faces_vec[i].v1].gid, verts_vec[faces_vec[i].v2].gid});
-                if (verts_vec[lowest_gid].owner != _rank)
+        auto v_in_gid = Cabana::slice<0>(verts_in);
+        auto v_in_owner = Cabana::slice<1>(verts_in);
+        auto f_in_vids = Cabana::slice<0>(faces_in);
+        auto f_in_isGhost = Cabana::slice<1>(faces_in);
+
+        // Hash function to determine ownership of a face
+        auto faceHash = KOKKOS_LAMBDA(int v0, int v1, int v2) -> int {
+            return v0 + v1 * 31 + v2 * 97;
+        };
+
+        using KeyType = uint64_t;  // Hashable key
+        using MapType = Kokkos::UnorderedMap<KeyType, int, memory_space>;
+
+        // Hash function to combine two integers into a single key, independent of order
+        auto hashFunction = KOKKOS_LAMBDA(int first, int second) -> KeyType {
+            int min_val = first < second ? first : second;
+            int max_val = first > second ? first : second;
+            return (static_cast<KeyType>(max_val) << 32) | (static_cast<KeyType>(min_val) & 0xFFFFFFFF);
+        };
+
+        MapType edges_map(faces_in.size()*3);
+
+        using int_d = Kokkos::View<int, memory_space>;
+
+        // Owned elements are always at the beginning of the vectors
+        int_d counter_d("counter_d");
+        Kokkos::deep_copy(counter_d, 0);
+        Kokkos::parallel_for("count ghost vertices", Kokkos::RangePolicy<execution_space>(0, verts_in.size()),
+            KOKKOS_LAMBDA(int i) {
+
+            if (v_in_owner(i) != rank) Kokkos::atomic_increment(&counter_d());
+            
+        });
+        int ghost_vert_count;
+        Kokkos::deep_copy(ghost_vert_count, counter_d);
+
+        // The rank which owns the face owns the vertex with the lowest GID in the face
+        Kokkos::deep_copy(counter_d, 0);
+        Kokkos::parallel_for("count ghost faces", Kokkos::RangePolicy<execution_space>(0, faces_in.size()),
+            KOKKOS_LAMBDA(int i) {
+
+            if (f_in_isGhost(i))
+            {
+                int vlid0 = f_in_vids(i, 0);
+                int vlid1 = f_in_vids(i, 1);
+                int vlid2 = f_in_vids(i, 2);
+
+                int vertex_gids[3] = {v_in_gid(vlid0), v_in_gid(vlid1), v_in_gid(vlid2)};
+                int vertex_owners[3] = {v_in_owner(vlid0), v_in_owner(vlid1), v_in_owner(vlid2)};
+
+                int hash = faceHash(vertex_gids[0], vertex_gids[1], vertex_gids[2]);
+                int owner_rank = vertex_owners[hash % 3];
+                // Find the vertex with the lowest GID
+                if (owner_rank != rank)
                 {
                     // printf("R%d: ghost cell %d (owner R%d): v(%d, %d, %d)\n", _rank, (int)i, verts_vec[lowest_gid].owner, faces_vec[i].v0, faces_vec[i].v1, faces_vec[i].v2);
-                    ghost_cells_count++;
+                    Kokkos::atomic_increment(&counter_d());
                 }
             }
-        }
+        });
+        int ghost_cells_count;
+        Kokkos::deep_copy(ghost_cells_count, counter_d);
 
-        /**
-         * The lowest rank which owns a vertex owns the edge. This keeps things consistent
-         * because rank 0 may own an edges with vertices (5, 38) and rank 1 with (38, 5)
-         * which is in fact the same edge
-         * 
-         * If this rank does not own either vertex (case when the edge is between
-         *  two vertices on a ghosted face), this is also a ghosted edge
-         */
-        int ghost_edges_count = 0;
-        for (size_t i = 0; i < edges_vec.size(); i++) {
-            // v0 is always the vertex with the lower GID
-            int ev0lid = edges_vec[i].v0;
-            int ev1lid = edges_vec[i].v1;
-            int ev0gid = verts_vec[ev0lid].gid;
-            int ev1gid = verts_vec[ev1lid].gid;
+        _owned_vertices = verts_in.size() - ghost_vert_count;
+        _owned_edges = faces_in.size()*3;
+        _owned_faces = faces_in.size() - ghost_cells_count;
+        _vertices.resize(_owned_vertices);
+        _edges.resize(_owned_edges);
+        _faces.resize(_owned_faces);
 
-            int owner0 = verts_vec[ev0lid].owner;
-            int owner1 = verts_vec[ev1lid].owner;
-
-            // printf("R%d: elid%d: v(%d, %d), owners: %d, %d\n", 
-            //     _rank, (int)i, ev0gid, ev1gid, owner0, owner1);
-
-            // Skip edges where this rank owns neither vertex (fully ghosted edge)
-            if (owner0 != _rank && owner1 != _rank) {
-                ghost_edges_count++;
-                continue;
-            }
-
-            // Determine the edge owner (rank owning the vertex with the lowest owner rank)
-            int edge_owner = std::min(owner0, owner1);
-
-            // If this rank is NOT the edge owner but owns at least one vertex, it's a ghost edge
-            if (_rank != edge_owner) {
-                ghost_edges_count++;
-            }
-        }
-
-        
-        int ov = verts_vec.size() - ghost_vert_count;
-        int oe = edges_vec.size() - ghost_edges_count;
-        int of = faces_vec.size() - ghost_cells_count;
-        printf("R%d: owned/ghost counts: v(%d, %d), e(%d, %d), f(%d, %d)\n", _rank, ov, ghost_vert_count,
-            oe, ghost_edges_count, of, ghost_cells_count);
-        _vertices.resize(ov);
-        _edges.resize(oe);
-        _faces.resize(of);
-        _owned_vertices = ov; _owned_edges = oe; _owned_faces = of;
-
-        _updateGlobalIDs();
+        _updateGlobalIDs(false); // False because we are still building the mesh
 
         // Create the mesh
         auto vef_gid_start = _vef_gid_start;
-
-        // We should convert the following loops to a Cabana::simd_parallel_for at some point to get better write behavior
 
         // Initialize the vertices, edges, and faces
         auto v_gid = Cabana::slice<V_GID>(_vertices);
@@ -2238,27 +2230,310 @@ class Mesh
         auto e_pid = Cabana::slice<E_PID>(_edges);
         auto e_owner = Cabana::slice<E_OWNER>(_edges);
         auto e_layer = Cabana::slice<E_LAYER>(_edges);
-        int rank = _rank;
+
+        auto f_egids = Cabana::slice<F_EIDS>(_faces);
+        auto f_vgids = Cabana::slice<F_VIDS>(_faces);
+        auto f_gid = Cabana::slice<F_GID>(_faces);
+        auto f_parent = Cabana::slice<F_PID>(_faces);
+        auto f_child = Cabana::slice<F_CID>(_faces);
+        auto f_owner = Cabana::slice<F_OWNER>(_faces);
+        auto f_layer = Cabana::slice<F_LAYER>(_faces);
         
         // Initialize vertices
         Kokkos::parallel_for("init vertices", Kokkos::RangePolicy<execution_space>(0, _vertices.size()),
             KOKKOS_LAMBDA(int i) {
 
-            v_gid(i) = verts_vec[i].gid;
-            v_owner(i) = verts_vec[i].owner;
+            v_gid(i) = v_in_gid(i);
+            v_owner(i) = v_in_owner(i);
             
         });
 
-        // Initialize values that are shared for all edges
-        Kokkos::parallel_for("init edge shared values", Kokkos::RangePolicy<execution_space>(0, _edges.size()),
-            KOKKOS_LAMBDA(int i) {
+        /**
+         * Initialize faces and edges
+         * 
+         * The rank which owns the first vertex owns the edge. For this to work,
+         * edge vertices must be sorted
+         * 
+         * If we do not own the edge, we need to request the edge's global ID
+         * from its owner
+         */
+        using int_vector_d = Kokkos::View<int*, memory_space>;
+        using distributor_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int[2], int, int>, memory_space, 4>;// (v0, v1), my_rank, to_rank
+        // printf("R%d: vert/edge dist sizes: %d, %d\n", rank, vert_distributor_size, edge_distributor_size);
+        int edge_distributor_export_size = _faces.size();
+        distributor_aosoa edge_distributor_export("edge_distributor_export", edge_distributor_export_size);
+        auto edge_distributor_export_verts = Cabana::slice<0>(edge_distributor_export);
+        auto edge_distributor_export_myrank = Cabana::slice<1>(edge_distributor_export);
+        auto edge_distributor_export_torank = Cabana::slice<2>(edge_distributor_export);
 
-            e_vid(i, 2) = -1; // No edge has been split
-            e_pid(i) = -1;
-            e_cids(i, 0) = -1; e_cids(i, 1) = -1;
-            e_owner(i) = rank;
-            e_layer(i) = 0;
+        int_d distributor_idx("distributor_idx");
+        Kokkos::deep_copy(distributor_idx, 0); 
+        int_d edge_counter("edge_counter"); // Edge local ID counter
+        Kokkos::deep_copy(edge_counter, 0); 
+        Kokkos::deep_copy(counter_d, 0); // Counter for local ID of face
+        int edges_size = _edges.size();
+        Kokkos::parallel_for("init faces 1", Kokkos::RangePolicy<execution_space>(0, faces_in.size()),
+            KOKKOS_LAMBDA(const int i) {
+            
+            // Determine face ownership
+            int vertex_lids[3] = {f_in_vids(i, 0), f_in_vids(i, 1), f_in_vids(i, 2)};
+            int vertex_gids[3] = {v_in_gid(vertex_lids[0]), v_in_gid(vertex_lids[1]), v_in_gid(vertex_lids[2])};
+            int vertex_owners[3] = {v_in_owner(vertex_lids[0]), v_in_owner(vertex_lids[1]), v_in_owner(vertex_lids[2])};
+            int hash = faceHash(vertex_gids[0], vertex_gids[1], vertex_gids[2]);
+            int face_owner = vertex_owners[hash % 3];
+            if (f_in_isGhost(i) && (face_owner != rank)) return; // We do not own this face
+
+            int flid = Kokkos::atomic_fetch_add(&counter_d(), 1);
+
+            // Assign face global ID
+            int fgid = flid + vef_gid_start(rank, 2);
+            f_gid(flid) = fgid;
+
+            // All faces have no children and no parents
+            for (int j = 0; j < 4; j++) f_child(flid, j) = -1;
+            f_parent(flid) = -1;
+
+            // All faces on layer 0 of the tree
+            f_layer(flid) = 0;
+
+            // We own this face
+            f_owner(flid) = rank;
+
+            // Assign vertex global IDs
+            for (int j = 0; j < 3; j++) f_vgids(flid, j) = vertex_gids[j];
+
+            // if (fgid == 61)
+            // printf("R%d: fgid %d: v(%d, %d, %d), o(%d, %d, %d), isGhost: %d, owner: %d\n", rank, fgid,
+            //     vertex_gids[0], vertex_gids[1], vertex_gids[2],
+            //     vertex_owners[0], vertex_owners[1], vertex_owners[2],
+            //     f_in_isGhost(i), face_owner);
+
+            // if (rank == 1) printf("R%d: f%d: v(%d, %d, %d)\n", rank, fgid, f_vgids(flid, 0), f_vgids(flid, 1), f_vgids(flid, 2));
+
+            /**
+             * Create edges:
+             *  v0, v1
+             *  v1, v2
+             *  v2, v0
+             */
+            for (int j = 0; j < 3; j++)
+            {
+                int j2 = j < 2 ? j+1 : 0;
+                int edge_v_gids[2] = {vertex_gids[j], vertex_gids[j2]};
+                int v_edge_owners[2] = {vertex_owners[j], vertex_owners[j2]};
+                // Ensure edge_v_gids is sorted and maintain mapping with v_edge_owners
+                if (edge_v_gids[0] > edge_v_gids[1])
+                {
+                    // Swap edge_v_gids
+                    int temp_gid = edge_v_gids[0];
+                    edge_v_gids[0] = edge_v_gids[1];
+                    edge_v_gids[1] = temp_gid;
+
+                    // Swap v_edge_owners
+                    int temp_owner = v_edge_owners[0];
+                    v_edge_owners[0] = v_edge_owners[1];
+                    v_edge_owners[1] = temp_owner;
+                }
+                // Determine edge ownership
+                // We own all edges where we own the first vertex
+                if (edge_v_gids[0] == 15 || edge_v_gids[1] == 15)
+                    printf("BEFORE R%d: fgid %d: edge from (%d, %d), o(%d, %d)\n", rank, fgid,
+                            edge_v_gids[0], edge_v_gids[1], v_edge_owners[0], v_edge_owners[1]);
+
+                // The rank that owns the smaller vertex ID owns the edge
+                int edge_owner = Kokkos::min(v_edge_owners[0], v_edge_owners[1]);
+                        
+                KeyType edgekey = hashFunction(edge_v_gids[0], edge_v_gids[1]);
+                if (edge_owner == rank)
+                {
+                    if (edge_v_gids[0] == 15 || edge_v_gids[1] == 15)
+                    printf("AFTER R%d: fgid %d: edge from (%d, %d), o(%d, %d)\n", rank, fgid,
+                            edge_v_gids[0], edge_v_gids[1], v_edge_owners[0], v_edge_owners[1]);
+                    auto result = edges_map.insert(edgekey, 1);
+                    if (result.success()) {
+                        // If insertion succeeds, edge has not yet been created
+                        int elid = Kokkos::atomic_fetch_add(&edge_counter(), 1);
+                        assert(elid < edges_size);
+
+                        // Create edge
+                        e_gid(elid) = -1; // GIDs must be populated once we know total number of edges
+                        
+                        // Vertex endpoints and midpoint
+                        e_vid(elid, 0) = edge_v_gids[0];
+                        e_vid(elid, 1) = edge_v_gids[1];
+                        e_vid(elid, 2) = -1;
+
+                        // No children or parent edges
+                        for (int k = 0; k < 2; k++) e_cids(elid, k) = -1;
+                        e_pid(elid) = -1;
+
+                        // Layer 0
+                        e_layer(elid) = 0;
+
+                        // Owner rank
+                        e_owner(elid) = rank;
+
+                        //if (fgid == 123) printf("R%d: adding edge from v(%d, %d)\n", rank, e_vid(elid, 0), e_vid(elid, 1));
+                    }
+                }
+                else
+                {
+                    auto result = edges_map.insert(edgekey, 1);
+                    if (result.success()) {
+                        // printf("Not owned: R%d: fgid %d: edge from (%d, %d), o(%d, %d)\n", rank, fgid,
+                        //     edge_v_gids[0], edge_v_gids[1], v_edge_owners[0], v_edge_owners[1]);
+
+                        // Ensure we don't request the same edge twice
+                        int idx = Kokkos::atomic_fetch_add(&distributor_idx(), 1);
+                        assert(idx < edge_distributor_export_size);
+                        edge_distributor_export_verts(idx, 0) = edge_v_gids[0];
+                        edge_distributor_export_verts(idx, 1) = edge_v_gids[1];
+                        edge_distributor_export_myrank(idx) = rank;
+                        edge_distributor_export_torank(idx) = v_edge_owners[0];
+                        // printf("R%d: v(%d, %d) to R%d, from R%d\n", rank, edge_distributor_export_verts(idx, 1), 
+                        //     edge_distributor_export_verts(idx, 2), edge_distributor_export_torank(idx), edge_distributor_export_myrank(idx));
+                    }
+                }
+            }
         });
+        Kokkos::deep_copy(_owned_edges, edge_counter);
+        _edges.resize(_owned_edges);
+        int distributor_size;
+        Kokkos::deep_copy(distributor_size, distributor_idx);
+        edge_distributor_export.resize(distributor_size);
+        _updateGlobalIDs(false);
+
+        // Update slices after resizing
+        edge_distributor_export_verts = Cabana::slice<0>(edge_distributor_export);
+        edge_distributor_export_myrank = Cabana::slice<1>(edge_distributor_export);
+        edge_distributor_export_torank = Cabana::slice<2>(edge_distributor_export);
+        e_gid = Cabana::slice<E_GID>(_edges);
+        e_vid = Cabana::slice<E_VIDS>(_edges);
+
+        // Clear edges map so we can use it to store edge global IDs
+        edges_map.clear();
+
+        // Now we can set edge global IDs, and hash edges vertices to global ID for quick lookup
+        Kokkos::parallel_for("set edge GIDs", Kokkos::RangePolicy<execution_space>(0, _edges.size()),
+            KOKKOS_LAMBDA(const int i) {
+            
+            int egid = i + vef_gid_start(rank, 1);
+            e_gid(i) = egid;
+            KeyType edgekey = hashFunction(e_vid(i, 0), e_vid(i, 1));
+            edges_map.insert(edgekey, egid);
+            // if (result.success())
+            //     if (rank == 1) printf("Insert: R%d: egid %d, v(%d, %d)\n", rank, egid, e_vid(i, 0), e_vid(i, 1));
+
+        });
+        Kokkos::fence();
+
+        // for (size_t i = 0; i < edge_distributor_export.size(); i++)
+        // {
+        //     printf("R%d: v(%d, %d) to R%d, from R%d\n", rank, edge_distributor_export_verts(i, 1), 
+        //         edge_distributor_export_verts(i, 2), edge_distributor_export_torank(i), edge_distributor_export_myrank(i));
+        // }
+
+        // Now tell other ranks we need edge GIDs we do not have
+        auto distributor = Cabana::Distributor<memory_space>(_comm, edge_distributor_export_torank);
+        int distributor_total_num_import = distributor.totalNumImport();
+        // printf("R%d: distributor i/e: %d, %d\n", _rank, distributor_total_num_import, distributor_export_ranks.extent(0));
+        distributor_aosoa edge_distributor_import("edge_distributor_import", distributor_total_num_import);
+        Cabana::migrate(distributor, edge_distributor_export, edge_distributor_import);
+        auto edge_distributor_import_verts = Cabana::slice<0>(edge_distributor_import);
+        auto edge_distributor_import_myrank = Cabana::slice<1>(edge_distributor_import);
+        auto edge_distributor_import_torank = Cabana::slice<2>(edge_distributor_import);
+
+        // Create another distributor to send EGIDs back to the requesting rank
+        edge_distributor_export.resize(distributor_total_num_import);
+        edge_distributor_export_verts = Cabana::slice<0>(edge_distributor_export);
+        auto edge_distributor_export_egid = Cabana::slice<1>(edge_distributor_export);
+        edge_distributor_export_torank = Cabana::slice<2>(edge_distributor_export);
+
+
+        Kokkos::parallel_for("edge_distributor_import_to_export", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+            KOKKOS_LAMBDA(const int i) {
+            
+            int v0 = edge_distributor_import_verts(i, 0);
+            int v1 = edge_distributor_import_verts(i, 1);
+            KeyType edgekey = hashFunction(v0, v1);
+            auto index = edges_map.find(edgekey);
+            if (index < edges_map.capacity())
+            {
+                int egid = edges_map.value_at(index);
+                edge_distributor_export_verts(i, 0) = v0;
+                edge_distributor_export_verts(i, 1) = v1;
+                edge_distributor_export_egid(i) = egid;
+                edge_distributor_export_torank(i) = edge_distributor_import_myrank(i);
+            }
+            else
+            {
+                // This shouldn't be printed
+                printf("R%d: Rank %d requested unowned edge with vertices (%d, %d)\n",
+                    rank, edge_distributor_import_myrank(i), edge_distributor_import_verts(i, 0), 
+                    edge_distributor_import_verts(i, 1));
+            }
+        });
+        distributor = Cabana::Distributor<memory_space>(_comm, edge_distributor_export_torank);
+        distributor_total_num_import = distributor.totalNumImport();
+        // printf("R%d: distributor i/e: %d, %d\n", _rank, distributor_total_num_import, distributor_export_ranks.extent(0));
+        edge_distributor_import.resize(distributor_total_num_import);
+        Cabana::migrate(distributor, edge_distributor_export, edge_distributor_import);
+        edge_distributor_import_verts = Cabana::slice<0>(edge_distributor_import);
+        auto edge_distributor_import_egid = Cabana::slice<1>(edge_distributor_import);
+        edge_distributor_import_torank = Cabana::slice<2>(edge_distributor_import);
+
+        // Hash recieved edges and GIDs into edges map
+        Kokkos::parallel_for("edge_distributor_import_to_export", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+            KOKKOS_LAMBDA(const int i) {
+            
+            int v0 = edge_distributor_import_verts(i, 0);
+            int v1 = edge_distributor_import_verts(i, 1);
+            int egid = edge_distributor_import_egid(i);
+            KeyType edgekey = hashFunction(v0, v1);
+            edges_map.insert(edgekey, egid);
+
+        });
+
+
+        // Assign edges to faces
+        Kokkos::parallel_for("set edges for faces", Kokkos::RangePolicy<execution_space>(0, _faces.size()),
+            KOKKOS_LAMBDA(const int i) {
+
+            int vertex_gids[3] = {f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2)};
+            // if (rank == 1) printf("R%d: f%d: v(%d, %d, %d)\n", rank, f_gid(i), f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2));
+
+             /**
+             * Find edges:
+             *  v0, v1
+             *  v1, v2
+             *  v2, v0
+             */
+            for (int j = 0; j < 3; j++)
+            {
+                int j2 = j < 2 ? j+1 : 0;
+                int edge_v_gids[2] = {vertex_gids[j], vertex_gids[j2]};
+                KeyType edgekey = hashFunction(edge_v_gids[0], edge_v_gids[1]);
+                auto index = edges_map.find(edgekey);
+                if (index < edges_map.capacity())
+                {
+                    int egid = edges_map.value_at(index);
+                    f_egids(i, j) = egid;   
+                }
+                else
+                {
+                    f_egids(i, j) = -1;
+                }
+                // if (rank == 1) printf("R%d: fgid %d, egid %d, v(%d, %d)\n", rank, f_gid(i), f_egids(i, j), edge_v_gids[0], edge_v_gids[1]);
+            }
+    
+        });
+       
+
+        // printf("R%d: owned/ghost counts: v(%d, %d), e(%d, %d), f(%d, %d)\n", _rank, _owned_vertices, ghost_vert_count,
+        //     _owned_edges, -1, _owned_faces, ghost_cells_count);
+
+        // printEdges(3, 1);
+        // if (rank == 1) printFaces(0, 1);
 
     }
 
