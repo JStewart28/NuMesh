@@ -133,13 +133,19 @@ TYPED_TEST(MapsTest, grid_test_v2v_refinement2)
  */
 TYPED_TEST(MapsTest, sphere_test_v2e_refinement0)
 {
-    int mesh_size = this->comm_size_ * 2;
-    if (this->comm_size_ == 1)
+    if (this->comm_size_ != 4)
     {
-        mesh_size = 5;
+        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        return;
     }
     
-    this->init_from_grid(mesh_size, 1);
+    int result = this->init_from_file();
+
+    if (result)
+    {
+        printf("sphere_test0_refinement: Initialization error.\n");
+        return;
+    }
 
     this->test_v2e();
 }
@@ -149,13 +155,19 @@ TYPED_TEST(MapsTest, sphere_test_v2e_refinement0)
  */
 TYPED_TEST(MapsTest, sphere_test_v2f_refinement0)
 {
-    int mesh_size = this->comm_size_ * 2;
-    if (this->comm_size_ == 1)
+    if (this->comm_size_ != 4)
     {
-        mesh_size = 5;
+        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        return;
     }
     
-    this->init_from_grid(mesh_size, 1);
+    int result = this->init_from_file();
+
+    if (result)
+    {
+        printf("sphere_test0_refinement: Initialization error.\n");
+        return;
+    }
 
     this->test_v2f(0);
 }
@@ -166,13 +178,19 @@ TYPED_TEST(MapsTest, sphere_test_v2f_refinement0)
  */
 TYPED_TEST(MapsTest, sphere_test_v2f_refinement2)
 {
-    int mesh_size = this->comm_size_ * 2;
-    if (this->comm_size_ == 1)
+    if (this->comm_size_ != 4)
     {
-        mesh_size = 5;
+        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        return;
     }
     
-    this->init_from_grid(mesh_size, 1);
+    int result = this->init_from_file();
+
+    if (result)
+    {
+        printf("sphere_test0_refinement: Initialization error.\n");
+        return;
+    }
 
     auto vef_gid_start = this->mesh_->vef_gid_start();
 
@@ -197,13 +215,19 @@ TYPED_TEST(MapsTest, sphere_test_v2f_refinement2)
  */
 TYPED_TEST(MapsTest, sphere_test_v2v_refinement0)
 {
-    int mesh_size = this->comm_size_ * 2;
-    if (this->comm_size_ == 1)
+    if (this->comm_size_ != 4)
     {
-        mesh_size = 5;
+        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        return;
     }
     
-    this->init_from_grid(mesh_size, 1);
+    int result = this->init_from_file();
+
+    if (result)
+    {
+        printf("sphere_test0_refinement: Initialization error.\n");
+        return;
+    }
 
     this->test_v2v(0);
 }
@@ -214,13 +238,19 @@ TYPED_TEST(MapsTest, sphere_test_v2v_refinement0)
  */
 TYPED_TEST(MapsTest, sphere_test_v2v_refinement2)
 {
-    int mesh_size = this->comm_size_ * 2;
-    if (this->comm_size_ == 1)
+    if (this->comm_size_ != 4)
     {
-        mesh_size = 5;
+        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        return;
     }
     
-    this->init_from_grid(mesh_size, 1);
+    int result = this->init_from_file();
+
+    if (result)
+    {
+        printf("sphere_test0_refinement: Initialization error.\n");
+        return;
+    }
 
     auto vef_gid_start = this->mesh_->vef_gid_start();
 
