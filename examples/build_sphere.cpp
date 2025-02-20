@@ -237,9 +237,9 @@ int main(int argc, char** argv) {
         mesh->refine(fin);
     }
 
-    //mesh->gather(0, 1);
+    mesh->gather(0, 1);
 
-    mesh->printFaces(0, 0);
+    // mesh->printFaces(0, 0);
     // mesh->printFaces(1, 976);
     // mesh->printFaces(1, 791);
 

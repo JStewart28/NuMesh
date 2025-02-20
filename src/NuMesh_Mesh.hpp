@@ -1303,7 +1303,7 @@ class Mesh
         halo_aosoa edge_halo_export("edge_halo_export", ehalo_size);
         halo_aosoa face_halo_export("face_halo_export", fhalo_size);
 
-        // Hash tables - used to keep duplicate entries from the distributor and halo data structures
+        // Hash maps - used to keep duplicate entries from the distributor and halo data structures
         MapType vert_distributor_map(vert_distributor_size);
         MapType edge_distributor_map(edge_distributor_size);
         MapType vert_halo_map(vhalo_size);
@@ -1469,7 +1469,7 @@ class Mesh
                                 vert_halo_export_ranks(vdx) = vert_owner;
                             }
                             
-                            // if (rank == 1) printf("R%d: sending vgid %d to %d\n", rank, vgid1, vert_owner);
+                            if (fgid == 976) printf("R%d: from FGID %d: sending vgid %d to %d\n", rank, fgid, vgid1, vert_owner);
                         }
 
                         // Enqueue child faces to be send to vert_owner rank
@@ -1483,8 +1483,8 @@ class Mesh
 
                                 // Handle queue overflow (optional, if queue size is too small)
                                 assert(back != front);
-                                // if (fgid_parent == 326) printf("R%d: from fgid_parent %d, adding child %d\n",
-                                //     rank, fgid_parent, fcgid);
+                                if (fgid == 791) printf("R%d: from fgid %d, adding child %d\n",
+                                    rank, fgid_parent, fcgid);
                             }
                         }
                     }
