@@ -197,8 +197,6 @@ class Mesh
         Kokkos::parallel_for("find", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
             KOKKOS_LAMBDA(int i) {
 
-            // if (rank == 0) printf("R%d: checking fgid %d, level %d\n", rank, f_gid(i), f_level(i));
-
             for (int v = 0; v < 3; v++)
             {
                 int vgid = f_vids(i, v);
@@ -207,6 +205,7 @@ class Mesh
                 if (vertex_owner != rank)
                 {
                     Kokkos::atomic_store(&is_b_face(i), true);
+                    // printf("R%d: flid %d is boundary face\n", rank, i);
 
                     // Once we know this is a boundary face we don't need to check other vertices
                     break;
@@ -393,20 +392,6 @@ class Mesh
     }
 
     /**
-     * After the vertex and edge connectivity has been set and
-     * global IDs assigned, create faces from the edges and vertices.
-     *  1. Create the faces
-     *  2. Update the edges to reflect which faces they are part of
-     *  3. Gather face global IDs from remotely owned faces to the edges
-     */
-    void _finalizeInit()
-    {
-        _createFaces();
-        // _sort_by_layer();
-        _populate_boundary_elements();
-    }
-
-        /**
      * Refines faces
      * 
      * @param fid: Kokkos view holding the global IDs
@@ -1311,9 +1296,9 @@ class Mesh
 
         // Halo data
         // (global ID, to_rank) tuples
-        size_t vhalo_size = num_boundary_faces*(tree_depth+1)*4; // Slight buffer for faces that must be sent to >1 processes
-        size_t ehalo_size = num_boundary_faces*(tree_depth+1)*4; // and for refinements along boundaries
-        size_t fhalo_size = num_boundary_faces*(tree_depth+1)*4;
+        size_t vhalo_size = num_boundary_faces*(tree_depth+1)*6; // Slight buffer for faces that must be sent to >1 processes
+        size_t ehalo_size = num_boundary_faces*(tree_depth+1)*6; // and for refinements along boundaries
+        size_t fhalo_size = num_boundary_faces*(tree_depth+1)*6;
         halo_aosoa vert_halo_export("vert_halo_export", vhalo_size);
         halo_aosoa edge_halo_export("edge_halo_export", ehalo_size);
         halo_aosoa face_halo_export("face_halo_export", fhalo_size);
@@ -1511,8 +1496,6 @@ class Mesh
         Kokkos::deep_copy(vert_distributor_size, vd_idx);
         Kokkos::deep_copy(edge_distributor_size, ed_idx);
         
-        printf("R%d: sizes: %d, %d\n", rank, vert_distributor_size, edge_distributor_size);
-
         vert_distributor_export.resize(vert_distributor_size);
         edge_distributor_export.resize(edge_distributor_size);
 
@@ -2120,7 +2103,9 @@ class Mesh
         // All initialized faces are on the same level
         _max_tree_level = 0;
 
-        _finalizeInit();
+        _createFaces();
+        // _sort_by_layer();
+        _populate_boundary_elements();
     }
         
     /**
@@ -2592,6 +2577,8 @@ class Mesh
         // printEdges(3, 1);
         // printFaces(0, 1);
 
+        // Finally, populate which elements are on MPI boundaries
+        _populate_boundary_elements();
     }
 
     /**

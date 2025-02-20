@@ -221,6 +221,30 @@ int main(int argc, char** argv) {
 
     mesh->initializeFromFile(vertices_device, faces_device);
 
+    // Uniform refinement
+    for (int i = 0; i < 1; i++)
+    {
+        int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
+        auto vef_gid_start = mesh->vef_gid_start();
+        int face_gid_start = vef_gid_start(rank, 2);
+        Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
+            KOKKOS_LAMBDA(int i) {
+
+                fin(i) = face_gid_start + i;
+
+            });
+        mesh->refine(fin);
+    }
+
+    //mesh->gather(0, 1);
+
+    mesh->printFaces(0, 0);
+    // mesh->printFaces(1, 976);
+    // mesh->printFaces(1, 791);
+
+    // auto v2e = NuMesh::Maps::V2E(mesh);
+
     } // Scope guard
 
     Kokkos::finalize(); // Finalize Kokkos

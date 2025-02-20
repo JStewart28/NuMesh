@@ -397,8 +397,22 @@ class MeshTest : public ::testing::Test
     /**
      * Verify the faces in fin were refined corrrectly
      */
-    void verifyRefinement()
+    void verifyRefinement(int expected_verts, int expected_edges, int expected_faces)
     {
+        // Check that the correct number of new vertices, edges, and faces were created
+        int vcount = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
+        int ecount = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
+        int fcount = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int actual_verts, actual_edges, actual_faces;
+        MPI_Allreduce(&vcount, &actual_verts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&ecount, &actual_edges, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&fcount, &actual_faces, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        printf("e/a: v(%d, %d), e(%d, %d), f(%d, %d)\n", expected_verts, actual_verts,
+            expected_edges, actual_edges, expected_faces, actual_faces);
+        ASSERT_EQ(expected_verts, actual_verts);
+        ASSERT_EQ(expected_edges, actual_edges);
+        ASSERT_EQ(expected_faces, actual_faces);
+
         gatherAndCopyToHost();
 
         // The following tests are performed on the entire mesh on Rank 0

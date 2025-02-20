@@ -49,15 +49,16 @@ class HaloTest : public MeshTest<T>
      * 
      * @param check_vert_connectivity 1 if should check if
      *  all vertices are connected to at least 6 faces.
-     *  Only is true with uniform refinement.
+     *  Only is true with uniform refinement and if the 
+     *  mesh was created from a structured grid.
      */
-    void test_halo_depth_1(int check_vert_connectivity)
+    void test_halo_depth_1(bool check_vert_connectivity)
     {
         const int rank = this->rank_;
 
         this->mesh_->gather(0, 1);
 
-        printf("Mesh verts: %d\n", this->mesh_->count(NuMesh::Own(), NuMesh::Vertex())+this->mesh_->count(NuMesh::Ghost(), NuMesh::Vertex()));
+        // printf("Mesh verts: %d\n", this->mesh_->count(NuMesh::Own(), NuMesh::Vertex())+this->mesh_->count(NuMesh::Ghost(), NuMesh::Vertex()));
         
         this->copytoHost();
 
@@ -90,7 +91,7 @@ class HaloTest : public MeshTest<T>
         // for (int i = 0; i < total_edges; ++i) edge_gids[i] = e_gid(i);
 
         // Iterate over all owned vertices
-        printf("total_verts: %d\n", total_verts);
+        // printf("total_verts: %d\n", total_verts);
         for (int vlid = 0; vlid < total_verts; vlid++)
         {
             int vowner = v_owner(vlid);

@@ -96,7 +96,7 @@ int main( int argc, char* argv[] )
     // positions->update();
     // NuMesh::gather(halo, positions);
 
-    // // Uniform refinement
+    // Uniform refinement
     for (int i = 0; i < 2; i++)
     {
         int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
@@ -110,6 +110,7 @@ int main( int argc, char* argv[] )
             });
         mesh->refine(fin);
     }
+    mesh->printFaces(0, 376);
     // positions->update();
     // printf("R%d: after: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
     // mesh->gather(0, 1);
@@ -126,7 +127,7 @@ int main( int argc, char* argv[] )
     // halo.gather();
     // mesh->printFaces(1, 376);
     // mesh->printFaces(1, 326);
-    auto v2f = NuMesh::Maps::V2F(mesh, 0);
+    // auto v2f = NuMesh::Maps::V2F(mesh, 0);
     // auto offsets_d = v2f.offsets();
     // auto indices_d = v2f.indices();
     // auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
