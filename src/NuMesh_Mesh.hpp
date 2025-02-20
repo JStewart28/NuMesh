@@ -1354,7 +1354,7 @@ class Mesh
             // if (rank == 2) printf("R%d: boundary face gid: %d, level: %d\n", rank, fgid_parent, face_level);
             if (face_level != level) return; // Only consider elements at our level and their children
 
-            // if (fgid_parent == 791) printf("R%d: processing parent FGID %d\n",
+            // if (fgid_parent == 30 || fgid_parent == 31) printf("R%d: processing parent FGID %d\n",
             //     rank, fgid_parent);
 
             // Consider each vertex of this face
@@ -1371,7 +1371,18 @@ class Mesh
                     // but first check that it is not already present
                     // "If we do not own this vert, we need to tell the owner to send it to us"
                     auto hash_key = hashFunction(vgid_parent, vert_owner);
+                    if (   hash_key == 120259084289) continue;
+                        
+                        // || hash_key == 141733920770) continue;
+                        // || hash_key == 137438953474) continue;
+                        // || hash_key == 150323855362) continue;
+                        // || hash_key == 103079215105) continue
+
+                        // || hash_key == 120259084289) continue; // this one breaks it
                     auto result = vert_distributor_map.insert(hash_key, 1);
+                    if ((hash_key == 206158430211 || hash_key == 120259084289) && rank == 0)
+                        printf("R%d: parent fgid %d: vgid_parent %d, vowner: %d, result: %d key: %" PRIu64 "\n", rank,
+                                fgid_parent, vgid_parent, vert_owner, result.success(), hash_key);
                     if (result.success()) {
                         // If insertion succeeds; tuple not present; add to AoSoA
                         int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
@@ -1379,8 +1390,20 @@ class Mesh
                         vert_distributor_export_gids(dvdx) = vgid_parent;
                         vert_distributor_export_from_ranks(dvdx) = rank;
                         vert_distributor_export_to_ranks(dvdx) = vert_owner;
-                        // if (vgid_parent == 100 || vgid_parent == 193) printf("R%d: adding (to R%d, vgid %d) to distributor\n", rank, vert_owner, vgid_parent);
+                        // if (fgid_parent == 30 || fgid_parent == 31)
+                        if (rank == 0) printf("R%d: adding (to R%d, vgid %d) to distributor, key: %" PRIu64 "\n",
+                            rank, vert_owner, vgid_parent, hash_key);
                     }
+                    // if (rank == 0)
+                    // {
+                    //     hash_key = 120259084289;
+                    //     result = vert_distributor_map.insert(hash_key, 1);
+                    //     if ((hash_key == 206158430211 || hash_key == 120259084289) && rank == 0)
+                    //     printf("R%d: parent fgid %d: vgid_parent %d, vowner: %d, result: %d key: %" PRIu64 "\n", rank,
+                    //             fgid_parent, vgid_parent, vert_owner, result.success(), hash_key);    
+                    // }
+
+
 
                     // Queue for children (local per thread), that will all go to the remote rank
                     const int capacity = 86;
@@ -1522,6 +1545,17 @@ class Mesh
                     }
                 }
             }
+        });
+        Kokkos::fence();
+        if (rank == 0)
+        Kokkos::parallel_for("boundary face iteration", Kokkos::RangePolicy<execution_space>(0, 1),
+            KOKKOS_LAMBDA(int face_idx) {
+
+            KeyType hash_key = 120259084289;
+
+            auto result = vert_distributor_map.insert(hash_key, 1);
+            printf("R%d: result: %d key: %" PRIu64 "\n", rank, result.success(), hash_key);    
+
         });
                 
         // Resize distributor data to correct sizes
