@@ -407,8 +407,6 @@ class MeshTest : public ::testing::Test
         MPI_Allreduce(&vcount, &actual_verts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&ecount, &actual_edges, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&fcount, &actual_faces, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        printf("e/a: v(%d, %d), e(%d, %d), f(%d, %d)\n", expected_verts, actual_verts,
-            expected_edges, actual_edges, expected_faces, actual_faces);
         ASSERT_EQ(expected_verts, actual_verts);
         ASSERT_EQ(expected_edges, actual_edges);
         ASSERT_EQ(expected_faces, actual_faces);
