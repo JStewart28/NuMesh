@@ -97,7 +97,7 @@ int main( int argc, char* argv[] )
     // NuMesh::gather(halo, positions);
 
     // Uniform refinement
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 1; i++)
     {
         int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
         int face_gid_start = vef_gid_start(rank, 2);
@@ -110,7 +110,8 @@ int main( int argc, char* argv[] )
             });
         mesh->refine(fin);
     }
-    mesh->printFaces(0, 376);
+    mesh->gather(0, 1);
+    // mesh->printFaces(0, 376);
     // positions->update();
     // printf("R%d: after: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
     // mesh->gather(0, 1);

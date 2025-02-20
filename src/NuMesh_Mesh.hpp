@@ -1354,6 +1354,9 @@ class Mesh
             // if (rank == 2) printf("R%d: boundary face gid: %d, level: %d\n", rank, fgid_parent, face_level);
             if (face_level != level) return; // Only consider elements at our level and their children
 
+            // if (fgid_parent == 791) printf("R%d: processing parent FGID %d\n",
+            //     rank, fgid_parent);
+
             // Consider each vertex of this face
             for (int i = 0; i < 3; i++)
             {
@@ -1364,8 +1367,9 @@ class Mesh
                 // send to vert_owner
                 if (vert_owner != rank)
                 {
-                    // Add this vert to the distributor
+                    // Add this vert to the distributor to tell the owner rank we need this vertex data
                     // but first check that it is not already present
+                    // "If we do not own this vert, we need to tell the owner to send it to us"
                     auto hash_key = hashFunction(vgid_parent, vert_owner);
                     auto result = vert_distributor_map.insert(hash_key, 1);
                     if (result.success()) {
@@ -1375,7 +1379,7 @@ class Mesh
                         vert_distributor_export_gids(dvdx) = vgid_parent;
                         vert_distributor_export_from_ranks(dvdx) = rank;
                         vert_distributor_export_to_ranks(dvdx) = vert_owner;
-                        // if (fgid_parent == 376) printf("R%d: adding (R%d, vgid %d) to distributor\n", rank, vert_owner, vgid_parent);
+                        // if (vgid_parent == 100 || vgid_parent == 193) printf("R%d: adding (to R%d, vgid %d) to distributor\n", rank, vert_owner, vgid_parent);
                     }
 
                     // Queue for children (local per thread), that will all go to the remote rank
@@ -1392,6 +1396,7 @@ class Mesh
                     {
                         // Dequeue
                         int fgid = queue[front];
+                        // if (fgid == 976) printf("R%d: processing fgid %d\n", rank, fgid);
                         front = (front + 1) % capacity;
                         
                         int flid = fgid - vef_gid_start(rank, 2);
@@ -1410,7 +1415,7 @@ class Mesh
                             assert(fdx < fhalo_size);
                             face_halo_export_lids(fdx) = flid;
                             face_halo_export_ranks(fdx) = vert_owner;
-                            // if (fgid == 376) printf("R%d: adding fgid %d to halo to R%d\n", rank, fgid, vert_owner);
+                            // if (fgid == 976) printf("R%d: adding fgid %d to halo to R%d\n", rank, fgid, vert_owner);
                         }
                                                 
                         // Add owned edges
@@ -1418,7 +1423,7 @@ class Mesh
                         {
                             int egid = f_eid(flid, j);
                             int edge_owner = Utils::owner_rank(Edge(), egid, vef_gid_start);
-                            // if (fgid == 38) printf("R%d: edge %d from face %d, owner R%d\n", rank, egid, fgid, edge_owner);
+                            // if (fgid == 976) printf("R%d: edge %d from face %d, eowner R%d\n", rank, egid, fgid, edge_owner);
                             if (edge_owner != rank)
                             {
                                 // We reference this edge but do not own it; add to AoSoA
@@ -1432,7 +1437,7 @@ class Mesh
                                     edge_distributor_export_from_ranks(dedx) = rank;
                                     edge_distributor_export_to_ranks(dedx) = edge_owner;
                                 }
-                                // fgid 102, edge 98 
+                                // fgid 976
                                 // if (rank == 3) printf("R%d: from face %d: edge_dist(%d): %d to rank %d\n", rank, fgid, dedx, egid, edge_owner);
                                 continue; 
                             }
@@ -1457,7 +1462,22 @@ class Mesh
                         {
                             int vgid1 = f_vid(flid, k);
                             int vowner = Utils::owner_rank(Vertex(), vgid1, vef_gid_start);
-                            if (vowner != rank) continue; // Can't export verts we don't own
+                            // if (fgid == 976 || vgid1 == 193) printf("R%d: vertex %d from face %d, vowner: R%d\n", rank, vgid1, fgid, vowner);
+                            if (vowner != rank)
+                            {
+                                if (fgid == 976 || fgid == 977) printf("R%d: from fgid %d: unowned vgid %d (would send to R%d), vowner: %d\n",
+                                    rank, fgid, vgid1, vert_owner, vowner);
+                                /**
+                                 * Most of the time, vowner is the same rank as vertex_owner.
+                                 * BUT sometimes it is not. If not, we need to 
+                                 * 
+                                 * We own this face, so if a rank other than the owner of the
+                                 * current vertex we are considering in this loop owns one of these vertices,
+                                 * we need to add this vertex to the distributor.
+                                 * BUT, here we are telling the 
+                                 */
+                                continue; // Can't export verts we don't own
+                            }
                             hash_key = hashFunction(vgid1, vert_owner);
                             result = vert_halo_map.insert(hash_key, 1);
                             if (result.success()) {
@@ -1469,7 +1489,7 @@ class Mesh
                                 vert_halo_export_ranks(vdx) = vert_owner;
                             }
                             
-                            if (fgid == 976) printf("R%d: from FGID %d: sending vgid %d to %d\n", rank, fgid, vgid1, vert_owner);
+                            // if (fgid == 976) printf("R%d: from FGID %d: sending vgid %d to %d\n", rank, fgid, vgid1, vert_owner);
                         }
 
                         // Enqueue child faces to be send to vert_owner rank
@@ -1483,8 +1503,8 @@ class Mesh
 
                                 // Handle queue overflow (optional, if queue size is too small)
                                 assert(back != front);
-                                if (fgid == 791) printf("R%d: from fgid %d, adding child %d\n",
-                                    rank, fgid_parent, fcgid);
+                                // if (fgid == 791) printf("R%d: from fgid %d, unowned vert %d, adding child %d\n",
+                                //     rank, fgid_parent, fgid, fcgid);
                             }
                         }
                     }

@@ -143,7 +143,7 @@ class HaloTest : public MeshTest<T>
                     {
                         int vid = f_vids(flid, i);
                         int vlid = NuMesh::Utils::get_lid(v_gid, vid, 0, total_verts);
-                        ASSERT_NE(vlid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
+                        EXPECT_NE(vlid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
                     }
 
                     // Check edges of this face
@@ -151,7 +151,7 @@ class HaloTest : public MeshTest<T>
                     {
                         int eid = f_eids(flid, i);
                         int elid = NuMesh::Utils::get_lid(e_gid, eid, 0, total_edges);
-                        ASSERT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing egid " << eid << std::endl;
+                        EXPECT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing egid " << eid << std::endl;
                     }     
 
                     // Check for children faces
