@@ -1465,17 +1465,29 @@ class Mesh
                             // if (fgid == 976 || vgid1 == 193) printf("R%d: vertex %d from face %d, vowner: R%d\n", rank, vgid1, fgid, vowner);
                             if (vowner != rank)
                             {
-                                if (fgid == 976 || fgid == 977) printf("R%d: from fgid %d: unowned vgid %d (would send to R%d), vowner: %d\n",
-                                    rank, fgid, vgid1, vert_owner, vowner);
+                                // 30, 94, 126, 63
+                                // if (fgid == 30 || fgid == 94 || fgid == 126 || fgid == 63)
+                                //     printf("R%d: from fgid %d: unowned vgid %d (would send to R%d), vowner: %d\n",
+                                //         rank, fgid, vgid1, vert_owner, vowner);
                                 /**
                                  * Most of the time, vowner is the same rank as vertex_owner.
-                                 * BUT sometimes it is not. If not, we need to 
-                                 * 
-                                 * We own this face, so if a rank other than the owner of the
-                                 * current vertex we are considering in this loop owns one of these vertices,
-                                 * we need to add this vertex to the distributor.
-                                 * BUT, here we are telling the 
+                                 * BUT sometimes it is not. If not, we need to tell vowner
+                                 * rank to send this vgid data to vert_owner
                                  */
+                                if (vowner != vert_owner)
+                                {
+                                    hash_key = hashFunction(vgid1, vowner);
+                                    result = vert_distributor_map.insert(hash_key, 1);
+                                    if (result.success()) {
+                                        // If insertion succeeds; tuple not present; add to AoSoA
+                                        int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
+                                        assert(dvdx < vert_distributor_size);
+                                        vert_distributor_export_gids(dvdx) = vgid1;
+                                        vert_distributor_export_from_ranks(dvdx) = vert_owner; // Reciving rank uses this as rank to send back to
+                                        vert_distributor_export_to_ranks(dvdx) = vowner;
+                                        // if (vgid_parent == 100 || vgid_parent == 193) printf("R%d: adding (to R%d, vgid %d) to distributor\n", rank, vert_owner, vgid_parent);
+                                    }
+                                }
                                 continue; // Can't export verts we don't own
                             }
                             hash_key = hashFunction(vgid1, vert_owner);
