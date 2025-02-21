@@ -145,7 +145,7 @@ class HaloTest : public MeshTest<T>
                         int vlid = NuMesh::Utils::get_lid(v_gid, vid, 0, total_verts);
                         EXPECT_NE(vlid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
                     }
-
+                    
                     // Check edges of this face
                     for (int i = 0; i < 3; ++i)
                     {

@@ -1251,8 +1251,18 @@ class Mesh
         using MapType = Kokkos::UnorderedMap<KeyType, int, memory_space>;
 
         // Hash function to combine two integers into a single key
-        auto hashFunction = KOKKOS_LAMBDA(int first, int second) -> KeyType {
-            return (static_cast<KeyType>(first) << 32) | (static_cast<KeyType>(second) & 0xFFFFFFFF);
+        // auto hashFunction = KOKKOS_LAMBDA(int first, int second) -> KeyType {
+        //     return (static_cast<KeyType>(first) << 32) | (static_cast<KeyType>(second) & 0xFFFFFFFF);
+        // };
+        // Hash function to combine three integers into a single key
+        auto hashFunction = KOKKOS_LAMBDA(int a, int b, int c) -> KeyType {
+            constexpr KeyType P1 = 73856093;  // Large prime number
+            constexpr KeyType P2 = 19349663;  // Another large prime
+            constexpr KeyType P3 = 83492791;  // Yet another large prime
+        
+            return (static_cast<KeyType>(a) * P1) ^ 
+                   (static_cast<KeyType>(b) * P2) ^ 
+                   (static_cast<KeyType>(c) * P3);
         };
 
         auto boundary_faces = _boundary_faces;
@@ -1370,19 +1380,14 @@ class Mesh
                     // Add this vert to the distributor to tell the owner rank we need this vertex data
                     // but first check that it is not already present
                     // "If we do not own this vert, we need to tell the owner to send it to us"
-                    auto hash_key = hashFunction(vgid_parent, vert_owner);
-                    if (   hash_key == 120259084289) continue;
-                        
-                        // || hash_key == 141733920770) continue;
-                        // || hash_key == 137438953474) continue;
-                        // || hash_key == 150323855362) continue;
-                        // || hash_key == 103079215105) continue
-
-                        // || hash_key == 120259084289) continue; // this one breaks it
+                    auto hash_key = hashFunction(vgid_parent, vert_owner, rank);
+                    /**
+                     * For some reason keys 120259084289 and 206158430211 conflict on grid mesh
+                     */
                     auto result = vert_distributor_map.insert(hash_key, 1);
-                    if ((hash_key == 206158430211 || hash_key == 120259084289) && rank == 0)
-                        printf("R%d: parent fgid %d: vgid_parent %d, vowner: %d, result: %d key: %" PRIu64 "\n", rank,
-                                fgid_parent, vgid_parent, vert_owner, result.success(), hash_key);
+                    // if (rank == 0)
+                    //     printf("R%d: vgid_parent %d, vowner: %d, result: %d key: %" PRIu64 "\n", rank,
+                    //         vgid_parent, vert_owner, result.success(), hash_key);
                     if (result.success()) {
                         // If insertion succeeds; tuple not present; add to AoSoA
                         int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
@@ -1391,19 +1396,9 @@ class Mesh
                         vert_distributor_export_from_ranks(dvdx) = rank;
                         vert_distributor_export_to_ranks(dvdx) = vert_owner;
                         // if (fgid_parent == 30 || fgid_parent == 31)
-                        if (rank == 0) printf("R%d: adding (to R%d, vgid %d) to distributor, key: %" PRIu64 "\n",
-                            rank, vert_owner, vgid_parent, hash_key);
+                        // if (rank == 0) printf("Step 1: R%d: adding (vgid %d, to R%d) key: %" PRIu64 "\n",
+                        //     rank, vgid_parent, vert_owner, hash_key);
                     }
-                    // if (rank == 0)
-                    // {
-                    //     hash_key = 120259084289;
-                    //     result = vert_distributor_map.insert(hash_key, 1);
-                    //     if ((hash_key == 206158430211 || hash_key == 120259084289) && rank == 0)
-                    //     printf("R%d: parent fgid %d: vgid_parent %d, vowner: %d, result: %d key: %" PRIu64 "\n", rank,
-                    //             fgid_parent, vgid_parent, vert_owner, result.success(), hash_key);    
-                    // }
-
-
 
                     // Queue for children (local per thread), that will all go to the remote rank
                     const int capacity = 86;
@@ -1430,7 +1425,7 @@ class Mesh
                          ***********************/
                         
                         // Add this face to the halo to send to the given vertex owner
-                        hash_key = hashFunction(fgid, vert_owner);
+                        hash_key = hashFunction(fgid, vert_owner, rank);
                         result = face_halo_map.insert(hash_key, vert_owner);
                         if (result.success()) {
                             // If insertion succeeds; tuple not present; add to AoSoA
@@ -1450,7 +1445,7 @@ class Mesh
                             if (edge_owner != rank)
                             {
                                 // We reference this edge but do not own it; add to AoSoA
-                                hash_key = hashFunction(egid, edge_owner);
+                                hash_key = hashFunction(egid, edge_owner, rank);
                                 result = edge_distributor_map.insert(hash_key, 1);
                                 if (result.success()) {
                                     // If insertion succeeds; tuple not present; add to AoSoA
@@ -1466,7 +1461,7 @@ class Mesh
                             }
 
                             // Otherwise we own the edge and need to add it to the halo
-                            hash_key = hashFunction(egid, edge_owner);
+                            hash_key = hashFunction(egid, edge_owner, rank);
                             result = edge_halo_map.insert(hash_key, 1);
                             if (result.success()) {
                                 // If insertion succeeds; tuple not present; add to AoSoA
@@ -1499,8 +1494,11 @@ class Mesh
                                  */
                                 if (vowner != vert_owner)
                                 {
-                                    hash_key = hashFunction(vgid1, vowner);
+                                    hash_key = hashFunction(vgid1, vowner, vert_owner);
                                     result = vert_distributor_map.insert(hash_key, 1);
+                                    // if ((hash_key == 206158430211 || hash_key == 120259084289) && rank == 0)
+                                    //     printf("R%d: parent fgid %d: vgid_parent %d, vowner: %d, result: %d key: %" PRIu64 "\n", rank,
+                                    //             fgid, vgid1, vowner, result.success(), hash_key);
                                     if (result.success()) {
                                         // If insertion succeeds; tuple not present; add to AoSoA
                                         int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
@@ -1508,12 +1506,13 @@ class Mesh
                                         vert_distributor_export_gids(dvdx) = vgid1;
                                         vert_distributor_export_from_ranks(dvdx) = vert_owner; // Reciving rank uses this as rank to send back to
                                         vert_distributor_export_to_ranks(dvdx) = vowner;
-                                        // if (vgid_parent == 100 || vgid_parent == 193) printf("R%d: adding (to R%d, vgid %d) to distributor\n", rank, vert_owner, vgid_parent);
+                                        // if (rank == 0) printf("Step 2: R%d: adding (vgid %d, to R%d) key: %" PRIu64 "\n",
+                                        //     rank, vgid1, vowner, hash_key);
                                     }
                                 }
                                 continue; // Can't export verts we don't own
                             }
-                            hash_key = hashFunction(vgid1, vert_owner);
+                            hash_key = hashFunction(vgid1, vert_owner, rank);
                             result = vert_halo_map.insert(hash_key, 1);
                             if (result.success()) {
                                 // If insertion succeeds; tuple not present; add to AoSoA
@@ -1547,20 +1546,21 @@ class Mesh
             }
         });
         Kokkos::fence();
-        if (rank == 0)
-        Kokkos::parallel_for("boundary face iteration", Kokkos::RangePolicy<execution_space>(0, 1),
-            KOKKOS_LAMBDA(int face_idx) {
 
-            KeyType hash_key = 120259084289;
-
-            auto result = vert_distributor_map.insert(hash_key, 1);
-            printf("R%d: result: %d key: %" PRIu64 "\n", rank, result.success(), hash_key);    
-
-        });
-                
         // Resize distributor data to correct sizes
         Kokkos::deep_copy(vert_distributor_size, vd_idx);
         Kokkos::deep_copy(edge_distributor_size, ed_idx);
+
+        // Kokkos::parallel_for("vert dist stuff", Kokkos::RangePolicy<execution_space>(0, vert_distributor_size),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     if (rank == 0) printf("R%d: gid/to/from: vdistr(%d): (%d, %d, %d)\n", rank, i,
+        //         vert_distributor_export_gids(i),
+        //         vert_distributor_export_to_ranks(i),
+        //         vert_distributor_export_from_ranks(i)
+        //     );
+
+        // });
         
         vert_distributor_export.resize(vert_distributor_size);
         edge_distributor_export.resize(edge_distributor_size);
@@ -1632,7 +1632,7 @@ class Mesh
             int from_rank = vert_distributor_import_from_ranks(i);
 
             // Add to vert halo
-            KeyType hash_key = hashFunction(vgid, from_rank);
+            KeyType hash_key = hashFunction(vgid, from_rank, rank);
             auto result = vert_halo_map.insert(hash_key, 1);
             if (result.success()) {
                 // If insertion succeeds; tuple not present; add to AoSoA
@@ -1673,7 +1673,7 @@ class Mesh
                 assert(elid > -1);
                 
                 // Add this edge to the halo to send to from_rank
-                KeyType hash_key = hashFunction(egid, from_rank);
+                KeyType hash_key = hashFunction(egid, from_rank, rank);
                 auto result = edge_halo_map.insert(hash_key, 1);
                 if (result.success()) {
                     // If insertion succeeds; tuple not present; add to AoSoA
@@ -1689,7 +1689,7 @@ class Mesh
                     int vgid = e_vid(elid, i);
                     int vowner = Utils::owner_rank(Vertex(), vgid, vef_gid_start);
                     if (vowner != rank) continue; // Can't export verts we don't own
-                    hash_key = hashFunction(vgid, from_rank);
+                    hash_key = hashFunction(vgid, from_rank, rank);
                     result = vert_halo_map.insert(hash_key, 1);
                     if (result.success()) {
                         // If insertion succeeds; tuple not present; add to AoSoA

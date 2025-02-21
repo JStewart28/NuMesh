@@ -112,24 +112,6 @@ int main( int argc, char* argv[] )
     // }
     mesh->gather(0, 1);
 
-    // Define the hash map type
-    using PairType = std::pair<int, int>;
-    using KeyType = uint64_t;  // Hashable key
-    using MapType = Kokkos::UnorderedMap<KeyType, int, memory_space>;
-    MapType vert_distributor_map(10);
-    Kokkos::parallel_for("boundary face iteration", Kokkos::RangePolicy<execution_space>(0, 1),
-            KOKKOS_LAMBDA(int face_idx) {
-            
-            KeyType hash_key1 = 120259084289;
-            KeyType hash_key2 = 206158430211;
-            
-            auto result1 = vert_distributor_map.insert(hash_key1, 1);
-            auto result2 = vert_distributor_map.insert(hash_key2, 1);
-
-            printf("Result 1: %d, result 2: %d\n", result1.success(), result2.success());
-                    
-        });
-
     } // Scope guard
 
     Kokkos::finalize(); // Finalize Kokkos
