@@ -5,6 +5,9 @@ from vtk.util.numpy_support import numpy_to_vtk
 from scipy.spatial import ConvexHull
 from sklearn.cluster import KMeans
 
+# Ian's code starts with an icosohedran (20 faces yes, 12 vertices?), then refines and throws away more coarse levels
+# Do this: 162 verts then refine uniformly 5 more times (~160,000 verts?) all on a unit sphere
+
 def fibonacci_sphere(radius, num_points):
     """ Generate `num_points` nearly uniform points on a sphere of given `radius` using the Fibonacci lattice. """
     indices = np.arange(0, num_points, dtype=float) + 0.5
