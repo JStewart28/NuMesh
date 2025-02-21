@@ -97,157 +97,20 @@ int main( int argc, char* argv[] )
     // NuMesh::gather(halo, positions);
 
     // Uniform refinement
-    for (int i = 0; i < 1; i++)
-    {
-        int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
-        int face_gid_start = vef_gid_start(rank, 2);
-        Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
-        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
-            KOKKOS_LAMBDA(int i) {
+    // for (int i = 0; i < 1; i++)
+    // {
+    //     int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
+    //     int face_gid_start = vef_gid_start(rank, 2);
+    //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+    //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
+    //         KOKKOS_LAMBDA(int i) {
 
-                fin(i) = face_gid_start + i;
+    //             fin(i) = face_gid_start + i;
 
-            });
-        mesh->refine(fin);
-    }
+    //         });
+    //     mesh->refine(fin);
+    // }
     mesh->gather(0, 1);
-    // mesh->printFaces(0, 376);
-    // positions->update();
-    // printf("R%d: after: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
-    // mesh->gather(0, 1);
-    // positions->update();
-    // printf("R%d: gather: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
-    // auto positions2 = NuMesh::Array::ArrayOp::cloneCopy(*positions, NuMesh::Own());
-    // auto positions3 = NuMesh::Array::ArrayOp::cloneCopy(*positions, NuMesh::Ghost());
-
-    // auto halo = createHalo(mesh, 0, 1);
-    // NuMesh::gather(halo, positions);
-
-    // if (rank == 0) mesh->printFaces(0, 258);
-    // auto halo = NuMesh::createHalo(mesh, 0, 1);
-    // halo.gather();
-    // mesh->printFaces(1, 376);
-    // mesh->printFaces(1, 326);
-    // auto v2f = NuMesh::Maps::V2F(mesh, 0);
-    // auto offsets_d = v2f.offsets();
-    // auto indices_d = v2f.indices();
-    // auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
-    // auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
-    // printf("R%d: in build_from_grid: offsets/ind sizes: %d, %d\n", rank, offsets.extent(0), indices.extent(0));
-    // printf("******** v2v ********\n");
-    // auto v2v = NuMesh::Maps::V2V(mesh, 0);
-    // auto& vertices = mesh->vertices();
-    // auto& faces = mesh->faces();
-    // auto v_owner = Cabana::slice<V_OWNER>(vertices);
-    // auto v_gid = Cabana::slice<V_GID>(vertices);
-    // auto f_gid = Cabana::slice<F_GID>(faces);
-    // printf("R%d: verts size: %d\n", rank, vertices.size());
-    // printf("R%d: num faces: %d\n", rank, faces.size());
-    // // Iterate over all owned vertices
-    // for (int vlid = 0; vlid < (int) vertices.size(); vlid++)
-    // {
-    //     int vowner = v_owner(vlid);
-    //     if (vowner != rank) continue;
-    //     int vgid = v_gid(vlid);
-
-    //     int offset = offsets(vlid);
-
-    //     // Handle the last vertex case
-    //     int next_offset = (vlid + 1 < (int)offsets.extent(0)) ? 
-    //                     offsets(vlid + 1) : 
-    //                     (int)indices.extent(0);
-        
-    //     // Each vert should be connected to at least six faces
-    //     // NOTE: This only holds with uniform refinement
-    //     int connected_faces = next_offset - offset;
-    //     if (connected_faces < 6)
-    //     {
-    //         for (int i = offset; i < next_offset; i++)
-    //         {
-    //             int parent_face_lid = indices(i);
-    //             int fgid_parent = f_gid(parent_face_lid);
-    //             if (vgid == 0) printf("R%d: vgid %d: connected face %d\n", rank, vgid, fgid_parent);
-    //         }
-    //     }
-    // }
-
-
-    // mesh->printFaces(1, 261);
-    // mesh->printFaces(1, 52);
-    // mesh->printFaces(1, 0);
-
-    // // Face 0
-    // mesh->printEdges(1, 0);
-    // mesh->printEdges(1, 5);
-    // mesh->printEdges(1, 1);
-
-    // // Face 52
-    // mesh->printEdges(1, 226);
-    // mesh->printEdges(1, 86);
-    // mesh->printEdges(1, 78);
-
-    // // Face 258
-    // mesh->printEdges(1, 677);
-    // mesh->printEdges(1, 983);
-    
-    /**
-     * Face 258 has issue. Parent face is 52
-     * Parent face of 52 is 0.
-     */
-    
-    
-    // mesh->printFaces(1, 258);
-    // mesh->printEdges(1, 677);
-    // mesh->printEdges(1, 983);
-    // mesh->printEdges(1, 0);
-
-    // auto halo = NuMesh::createHalo(mesh, 0, 1);
-    // halo.gather();
-    // printf("R%d: finished no refinement gather\n", rank);
-
-    // Single refinement
-    // int sizerefine = 1;
-    // Kokkos::View<int*, memory_space> fin("fin", sizerefine);
-    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, sizerefine),
-    //     KOKKOS_LAMBDA(int i) {
-
-    //         fin(i) = 94;
-
-    //     });
-    // mesh->refine(fin);
-    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, sizerefine),
-    //     KOKKOS_LAMBDA(int i) {
-
-    //         fin(i) = 96;
-
-    //     });
-    // mesh->refine(fin);
-    // mesh->printFaces(1, 94);
-    // Test haloing
-    // auto v2e = NuMesh::Maps::V2E(mesh);
-    // auto v2f = NuMesh::Maps::V2F(mesh);
-    
-
-    // printf("R%d: finished gather 1\n", rank);
-
-    // halo.gather();
-
-    // mesh->printFaces(0, 0);
-
-    // size_t vsize = 1;
-    // Kokkos::View<int*, memory_space> verts("verts", vsize);
-    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, vsize),
-    //     KOKKOS_LAMBDA(int i) {
-
-    //         verts(i) = i;
-
-    //     });
-    
-
-    // for (size_t i = 0; i < halo_verts.extent(0); i++)
-    // {
-    //     printf("R%d: vert %d added\n", rank, halo_verts(i));
-    // }
 
     } // Scope guard
 

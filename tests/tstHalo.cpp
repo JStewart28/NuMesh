@@ -33,65 +33,65 @@ TYPED_TEST(HaloTest, grid_test_halo_depth_1_no_refinement)
  * Tests that halo of depth 1 works with one layer of
  * uniform refinement
  */
-// TYPED_TEST(HaloTest, grid_test_halo_depth_1_uniform_refinement1)
-// {
-//     int mesh_size = this->comm_size_ * 2;
-//     if (this->comm_size_ == 1)
-//     {
-//         mesh_size = 5;
-//     }
+TYPED_TEST(HaloTest, grid_test_halo_depth_1_uniform_refinement1)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
     
-//     this->init_from_grid(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
-//     auto vef_gid_start = this->mesh_->vef_gid_start();
+    auto vef_gid_start = this->mesh_->vef_gid_start();
 
-//     // Uniform refinement
-//     for (int i = 0; i < 1; i++)
-//     {
-//         int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
-//         int face_gid_start = vef_gid_start(this->rank_, 2);
-//         Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
-//         for (int i = 0; i < num_local_faces; i++)
-//         {
-//             fin(i) = face_gid_start + i;
-//         }
-//         this->performRefinement(fin);
-//     }
+    // Uniform refinement
+    for (int i = 0; i < 1; i++)
+    {
+        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int face_gid_start = vef_gid_start(this->rank_, 2);
+        Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
+        for (int i = 0; i < num_local_faces; i++)
+        {
+            fin(i) = face_gid_start + i;
+        }
+        this->performRefinement(fin);
+    }
 
-//     this->test_halo_depth_1(true);
-// }
+    this->test_halo_depth_1(true);
+}
 
-// /**
-//  * Tests that halo of depth 1 works with two layers of
-//  * uniform refinement
-//  */
-// TYPED_TEST(HaloTest, grid_test_halo_depth_1_uniform_refinement2)
-// {
-//     int mesh_size = this->comm_size_ * 2;
-//     if (this->comm_size_ == 1)
-//     {
-//         mesh_size = 5;
-//     }
+/**
+ * Tests that halo of depth 1 works with two layers of
+ * uniform refinement
+ */
+TYPED_TEST(HaloTest, grid_test_halo_depth_1_uniform_refinement2)
+{
+    int mesh_size = this->comm_size_ * 2;
+    if (this->comm_size_ == 1)
+    {
+        mesh_size = 5;
+    }
     
-//     this->init_from_grid(mesh_size, 1);
+    this->init_from_grid(mesh_size, 1);
 
-//     auto vef_gid_start = this->mesh_->vef_gid_start();
+    auto vef_gid_start = this->mesh_->vef_gid_start();
 
-//     // Uniform refinement
-//     for (int i = 0; i < 2; i++)
-//     {
-//         int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
-//         int face_gid_start = vef_gid_start(this->rank_, 2);
-//         Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
-//         for (int i = 0; i < num_local_faces; i++)
-//         {
-//             fin(i) = face_gid_start + i;
-//         }
-//         this->performRefinement(fin);
-//     }
+    // Uniform refinement
+    for (int i = 0; i < 2; i++)
+    {
+        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int face_gid_start = vef_gid_start(this->rank_, 2);
+        Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
+        for (int i = 0; i < num_local_faces; i++)
+        {
+            fin(i) = face_gid_start + i;
+        }
+        this->performRefinement(fin);
+    }
 
-//     this->test_halo_depth_1(true);
-// }
+    this->test_halo_depth_1(true);
+}
 
 /************************************************************************
  ************************   Sphere mesh tests   ************************* 
@@ -100,100 +100,100 @@ TYPED_TEST(HaloTest, grid_test_halo_depth_1_no_refinement)
 /**
  * Tests that halo of depth 1 works without any refinement
  */
-// TYPED_TEST(HaloTest, sphere_test_halo_depth_1_no_refinement)
-// {
-//     if (this->comm_size_ != 4)
-//     {
-//         printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
-//         return;
-//     }
+TYPED_TEST(HaloTest, sphere_test_halo_depth_1_no_refinement)
+{
+    if (this->comm_size_ != 4)
+    {
+        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        return;
+    }
     
-//     int result = this->init_from_file();
+    int result = this->init_from_file();
 
-//     if (result)
-//     {
-//         printf("sphere_test0_refinement: Initialization error.\n");
-//         return;
-//     }
+    if (result)
+    {
+        printf("sphere_test0_refinement: Initialization error.\n");
+        return;
+    }
 
-//     this->test_halo_depth_1(false);
-// }
+    this->test_halo_depth_1(false);
+}
 
 /**
  * Tests that halo of depth 1 works with one layer of
  * uniform refinement
  */
-// TYPED_TEST(HaloTest, sphere_test_halo_depth_1_uniform_refinement1)
-// {
-//     if (this->comm_size_ != 4)
-//     {
-//         printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
-//         return;
-//     }
+TYPED_TEST(HaloTest, sphere_test_halo_depth_1_uniform_refinement1)
+{
+    if (this->comm_size_ != 4)
+    {
+        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        return;
+    }
     
-//     int result = this->init_from_file();
+    int result = this->init_from_file();
 
-//     if (result)
-//     {
-//         printf("sphere_test0_refinement: Initialization error.\n");
-//         return;
-//     }
+    if (result)
+    {
+        printf("sphere_test0_refinement: Initialization error.\n");
+        return;
+    }
 
-//     auto vef_gid_start = this->mesh_->vef_gid_start();
+    auto vef_gid_start = this->mesh_->vef_gid_start();
 
-//     // Uniform refinement
-//     for (int i = 0; i < 1; i++)
-//     {
-//         int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
-//         int face_gid_start = vef_gid_start(this->rank_, 2);
-//         Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
-//         for (int i = 0; i < num_local_faces; i++)
-//         {
-//             fin(i) = face_gid_start + i;
-//         }
-//         this->performRefinement(fin);
-//     }
+    // Uniform refinement
+    for (int i = 0; i < 1; i++)
+    {
+        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int face_gid_start = vef_gid_start(this->rank_, 2);
+        Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
+        for (int i = 0; i < num_local_faces; i++)
+        {
+            fin(i) = face_gid_start + i;
+        }
+        this->performRefinement(fin);
+    }
 
-//     this->test_halo_depth_1(false);
-// }
+    this->test_halo_depth_1(false);
+}
 
 /**
  * Tests that halo of depth 1 works with two layers of
  * uniform refinement
  */
-// TYPED_TEST(HaloTest, sphere_test_halo_depth_1_uniform_refinement2)
-// {
-//     if (this->comm_size_ != 4)
-//     {
-//         printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
-//         return;
-//     }
+TYPED_TEST(HaloTest, sphere_test_halo_depth_1_uniform_refinement2)
+{
+    if (this->comm_size_ != 4)
+    {
+        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        return;
+    }
     
-//     int result = this->init_from_file();
+    int result = this->init_from_file();
 
-//     if (result)
-//     {
-//         printf("sphere_test0_refinement: Initialization error.\n");
-//         return;
-//     }
+    if (result)
+    {
+        printf("sphere_test0_refinement: Initialization error.\n");
+        return;
+    }
 
-//     auto vef_gid_start = this->mesh_->vef_gid_start();
+    auto vef_gid_start = this->mesh_->vef_gid_start();
 
-//     // Uniform refinement
-//     for (int i = 0; i < 2; i++)
-//     {
-//         int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
-//         int face_gid_start = vef_gid_start(this->rank_, 2);
-//         Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
-//         for (int i = 0; i < num_local_faces; i++)
-//         {
-//             fin(i) = face_gid_start + i;
-//         }
-//         this->performRefinement(fin);
-//     }
+    // Uniform refinement
+    for (int i = 0; i < 2; i++)
+    {
+        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int face_gid_start = vef_gid_start(this->rank_, 2);
+        Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
+        for (int i = 0; i < num_local_faces; i++)
+        {
+            fin(i) = face_gid_start + i;
+        }
+        this->performRefinement(fin);
+    }
 
-//     this->test_halo_depth_1(1);
-// }
+    this->test_halo_depth_1(1);
+}
 
  
 } // end namespace NuMeshTest
