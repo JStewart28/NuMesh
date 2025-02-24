@@ -247,7 +247,7 @@ class MeshTest : public ::testing::Test
         Cabana::deep_copy(vertices_device, vertices_vtu);
         Cabana::deep_copy(faces_device, faces_vtu);
 
-        this->mesh_->initializeFromFile(vertices_device, faces_device);
+        this->mesh_->initializeFromConnectivity(vertices_device, faces_device);
 
         return 0;
     }
