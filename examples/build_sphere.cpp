@@ -219,7 +219,7 @@ int main(int argc, char** argv) {
     Cabana::deep_copy(edges_device, edges);
     Cabana::deep_copy(faces_device, faces);
 
-    mesh->initializeFromFile(vertices_device, faces_device);
+    mesh->initializeFromConnectivity(vertices_device, faces_device);
 
     // Uniform refinement
     for (int i = 0; i < 1; i++)

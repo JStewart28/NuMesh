@@ -2193,7 +2193,7 @@ class Mesh
 
      */
     template <class VerticesAoSoA, class FacesAoSoA>
-    void initializeFromFile(VerticesAoSoA& verts_in, FacesAoSoA& faces_in)
+    void initializeFromConnectivity(VerticesAoSoA& verts_in, FacesAoSoA& faces_in)
     {
         const int rank = _rank;
 
