@@ -28,11 +28,11 @@ using vertices_d = Cabana::MemberTypes<int,       // Vertex global ID
 using face_d = Cabana::MemberTypes<int[3],       // Vertex LIDs forming the triangle                                
                                    bool,         // Flag indicating if the cell contains a ghost point
                                    >;
-using edge_d = Cabana::MemberTypes<int[2]>;       // Vertex LIDs forming the edge
+using triple_d = Cabana::MemberTypes<double[3]>; // Vertex positions
 
 using vert_aosoa = Cabana::AoSoA<vertices_d, Kokkos::HostSpace, 4>;
 using face_aosoa = Cabana::AoSoA<face_d, Kokkos::HostSpace, 4>;
-using edge_aosoa = Cabana::AoSoA<edge_d, Kokkos::HostSpace, 4>;
+using triple_aosoa = Cabana::AoSoA<triple_d, Kokkos::HostSpace, 4>;
 
 
 struct Vertex {
@@ -123,13 +123,13 @@ int main(int argc, char** argv) {
 
     // Create AoSoAs
     vert_aosoa vertices("vertices", num_points);
-    edge_aosoa edges("edges", num_cells*3);
     face_aosoa faces("faces", num_cells);
+    triple_aosoa positions_h("positions_h", num_cells);
     auto v_gid = Cabana::slice<0>(vertices);
     auto v_owner = Cabana::slice<1>(vertices);
-    auto e_vids = Cabana::slice<0>(edges);
     auto f_vids = Cabana::slice<0>(faces);
     auto f_isGhost = Cabana::slice<1>(faces);
+    auto p_xyz = Cabana::slice<0>(positions_h);
 
     std::unordered_map<int, bool> is_ghost_point;
     for (int i = 0; i < num_points; ++i) {
@@ -143,8 +143,6 @@ int main(int argc, char** argv) {
         
     int num_ghost_vertices = 0;
     for (int i = 0; i < num_points; ++i) {
-        // double coords[3];
-        // points->GetPoint(i, coords);
         global_to_local[i] = i;  // Assign local ID
         int vertex_owner = static_cast<int>(vertex_owners_array->GetComponent(i, 0));
         int vertex_gid = static_cast<int>(vertex_gids_array->GetComponent(i, 0));
@@ -153,6 +151,11 @@ int main(int argc, char** argv) {
         }
         v_gid(i) = vertex_gid;
         v_owner(i) = vertex_owner;
+
+        // Populate coordinates
+        double coords[3];
+        points->GetPoint(i, coords);
+        for (int j = 0; j < 3; j++) p_xyz(i, j) = coords[j];
         // vertices.push_back({i, vertex_gid, vertex_owner, coords[0], coords[1], coords[2]});
     }
 
@@ -182,13 +185,10 @@ int main(int argc, char** argv) {
             if (edge_map.find(edge) == edge_map.end()) {
                 int edge_id = edge_map.size();
                 edge_map[edge] = edge_id;
-                e_vids(edge_id, 0) = edge.first;
-                e_vids(edge_id, 1) = edge.second;
                 // edges.push_back({edge_id, edge.first, edge.second});
             }
         }
     }
-    edges.resize(edge_map.size());
 
     // Output results
     // std::cout << "Rank " << rank << " processed:\n"
@@ -211,13 +211,13 @@ int main(int argc, char** argv) {
     // Copy AoSoAs to deivce, then initialize
     using vert_aosoa_device = Cabana::AoSoA<vertices_d, memory_space, 4>;
     using face_aosoa_device = Cabana::AoSoA<face_d, memory_space, 4>;
-    using edge_aosoa_device = Cabana::AoSoA<edge_d, memory_space, 4>;
+    using triple_aosoa = Cabana::AoSoA<triple_d, memory_space, 4>;
     vert_aosoa_device vertices_device("vertices_device", vertices.size());
-    edge_aosoa_device edges_device("edges_device", edges.size());
     face_aosoa_device faces_device("faces_device", faces.size());
+    triple_aosoa positions_device("positions_device", positions_h.size());
     Cabana::deep_copy(vertices_device, vertices);
-    Cabana::deep_copy(edges_device, edges);
     Cabana::deep_copy(faces_device, faces);
+    Cabana::deep_copy(positions_device, positions_h);
 
     mesh->initializeFromConnectivity(vertices_device, faces_device);
 
