@@ -2741,16 +2741,31 @@ class Mesh
     auto boundary_edges() {return _boundary_edges;}
     auto boundary_faces() {return _boundary_faces;}
 
-    void printVertices()
+    /**
+     * opt: 0 = all verts, 1 = specific vert
+     */
+    void printVertices(int opt, int vgid)
     {
         auto v_gid = Cabana::slice<V_GID>(_vertices);
         auto v_owner = Cabana::slice<V_OWNER>(_vertices);
-        for (int i = 0; i < (int) _vertices.size(); i++)
+        if (opt == 0)
         {
-            printf("R%d: %d, %d\n", _rank,
-                v_gid(i), 
-                v_owner(i));
+            for (int i = 0; i < (int) _vertices.size(); i++)
+            {
+                printf("R%d: v%d, owner%d\n", _rank,
+                    v_gid(i), 
+                    v_owner(i));
+            }
         }
+        else if (opt == 1)
+        {
+            int vlid = vgid - _vef_gid_start(_rank, 0);
+            if ((vlid >= 0) && (vlid < _owned_vertices))
+            printf("R%d: v%d, or%d\n", _rank,
+                v_gid(vlid), 
+                v_owner(vlid));
+        }
+        
     }
     /**
      * opt: 1 = specific edge, 2 = owned, 3 = own+ghost
@@ -2776,7 +2791,7 @@ class Mesh
             if ((elid >= 0) && (elid < owned_edges))
             {
             int i = elid;
-            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
+            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, or%d, R%d\n", i,
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
                 e_children(i, 0), e_children(i, 1),
@@ -2792,7 +2807,7 @@ class Mesh
         Kokkos::parallel_for("print edges", Kokkos::RangePolicy<execution_space>(start, end),
             KOKKOS_LAMBDA(int i) {
             
-            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
+            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, or%d, R%d\n", i,
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
                 e_children(i, 0), e_children(i, 1),
@@ -2820,7 +2835,7 @@ class Mesh
             // Print all faces
             for (int i = 0; i < (int) _faces.size(); i++)
             {
-                printf("R%d: i%d, f%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), L%d, %d\n", _rank, i,
+                printf("R%d: i%d, f%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), L%d, or%d\n", _rank, i,
                     f_gid(i),
                     f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2),
                     f_egids(i, 0), f_egids(i, 1), f_egids(i, 2),

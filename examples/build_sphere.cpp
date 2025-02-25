@@ -229,14 +229,14 @@ int main(int argc, char** argv) {
     auto numesh_halo = NuMesh::createHalo(mesh, 0, 1, NuMesh::Vertex());
     positions->update();
     NuMesh::gather(numesh_halo, positions);
-    printf("After gather / before refine: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
+    // printf("After gather / before refine: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
 
 
-    Kokkos::View<int[4], memory_space> fin("fin");
+    Kokkos::View<int[1], memory_space> fin("fin");
     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, fin.extent(0)),
     KOKKOS_LAMBDA(int i) {
 
-        fin(i) = i;
+        fin(i) = 15;
 
     });
     
@@ -244,7 +244,7 @@ int main(int argc, char** argv) {
     // printf("Before update: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
 
     positions->update();
-    printf("After refine and update: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
+    // printf("After refine and update: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
 
     // Uniform refinement
     // for (int i = 0; i < 1; i++)
@@ -266,9 +266,19 @@ int main(int argc, char** argv) {
     positions->update();
     // printf("After gather/update: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
 
-    // mesh->printFaces(0, 0);
-    // mesh->printFaces(1, 976);
-    // mesh->printFaces(1, 791);
+    mesh->printFaces(1, 15);
+    mesh->printEdges(1, 31);
+    mesh->printEdges(1, 203);
+    mesh->printEdges(1, 32);
+    mesh->printVertices(1, 24);
+    mesh->printVertices(1, 25);
+    mesh->printVertices(1, 77);
+    mesh->printFaces(1, 45);
+    mesh->printFaces(1, 46);
+    mesh->printFaces(1, 47);
+    mesh->printFaces(1, 48);
+
+
 
     // auto v2e = NuMesh::Maps::V2E(mesh);
 
