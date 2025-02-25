@@ -126,13 +126,13 @@ void gather(std::shared_ptr<HaloType>& halo, std::shared_ptr<ArrayType> data)
     size_t num_local = halo->numLocal();
     size_t num_ghost = halo->numGhost();
     auto aosoa = data->aosoa();
-    if (aosoa.size() != (num_local+num_ghost))
+    if (aosoa->size() != (num_local+num_ghost))
     {
         throw std::runtime_error(
                     "NuMesh::gather: Array extents not large enough for gather");
     }
     auto cabana_halo = halo->cabana_halo();
-    Cabana::gather(*cabana_halo, aosoa);
+    Cabana::gather(*cabana_halo, *aosoa);
 }
 
 } // end namespce NuMesh
