@@ -68,8 +68,8 @@ class ArrayTest : public MeshTest<T>
         auto layout = NuMesh::Array::createArrayLayout<triple_tuple_type>(this->mesh_, tuple_size, EntityType());
         auto array = NuMesh::Array::createArray<Kokkos::HostSpace>("array", layout);
         auto aosoa = array->aosoa();
-        auto slice = Cabana::slice<0>(aosoa);
-        int max0 = aosoa.size();
+        auto slice = Cabana::slice<0>(*aosoa);
+        int max0 = aosoa->size();
         int max1 = tuple_size;
 
         for (int i = 0; i < max0; i++)
@@ -84,7 +84,7 @@ class ArrayTest : public MeshTest<T>
         // Copy to device memory
         auto array_d = NuMesh::Array::createArray<MemorySpace>("array_d", layout);
         auto aosoa_d = array_d->aosoa();
-        Cabana::deep_copy(aosoa_d, aosoa);
+        Cabana::deep_copy(*aosoa_d, *aosoa);
 
         return array_d;
     }
@@ -96,8 +96,8 @@ class ArrayTest : public MeshTest<T>
         auto layout = NuMesh::Array::createArrayLayout<double_tuple_type>(this->mesh_, tuple_size, EntityType());
         auto array = NuMesh::Array::createArray<Kokkos::HostSpace>("array", layout);
         auto aosoa = array->aosoa();
-        auto slice = Cabana::slice<0>(aosoa);
-        int max0 = aosoa.size();
+        auto slice = Cabana::slice<0>(*aosoa);
+        int max0 = aosoa->size();
         int max1 = tuple_size;
 
         for (int i = 0; i < max0; i++)
@@ -111,7 +111,7 @@ class ArrayTest : public MeshTest<T>
         // Copy to device memory
         auto array_d = NuMesh::Array::createArray<MemorySpace>("array_d", layout);
         auto aosoa_d = array_d->aosoa();
-        Cabana::deep_copy(aosoa_d, aosoa);
+        Cabana::deep_copy(*aosoa_d, *aosoa);
 
         return array_d;
     }
@@ -123,8 +123,8 @@ class ArrayTest : public MeshTest<T>
         auto layout = NuMesh::Array::createArrayLayout<scalar_tuple_type>(this->mesh_, tuple_size, EntityType());
         auto array = NuMesh::Array::createArray<Kokkos::HostSpace>("array", layout);
         auto aosoa = array->aosoa();
-        auto slice = Cabana::slice<0>(aosoa);
-        int max0 = aosoa.size();
+        auto slice = Cabana::slice<0>(*aosoa);
+        int max0 = aosoa->size();
 
         for (int i = 0; i < max0; i++)
         {
@@ -134,7 +134,7 @@ class ArrayTest : public MeshTest<T>
         // Copy to device memory
         auto array_d = NuMesh::Array::createArray<MemorySpace>("array_d", layout);
         auto aosoa_d = array_d->aosoa();
-        Cabana::deep_copy(aosoa_d, aosoa);
+        Cabana::deep_copy(*aosoa_d, *aosoa);
 
         return array_d;
     }
@@ -162,11 +162,11 @@ class ArrayTest : public MeshTest<T>
         // Check dimensions
         auto a_aosoa = a.aosoa();
         auto b_aosoa = b.aosoa();
-        auto a_slice = Cabana::slice<0>(a_aosoa);
-        auto b_slice = Cabana::slice<0>(b_aosoa);
+        auto a_slice = Cabana::slice<0>(*a_aosoa);
+        auto b_slice = Cabana::slice<0>(*b_aosoa);
 
-        const int amax0 = a_aosoa.size();
-        const int bmax0 = b_aosoa.size();
+        const int amax0 = a_aosoa->size();
+        const int bmax0 = b_aosoa->size();
         constexpr int amax1 = NuMesh::ExtractArraySize<a_tuple_type>::value;
         constexpr int bmax1 = NuMesh::ExtractArraySize<b_tuple_type>::value;
 
@@ -176,8 +176,8 @@ class ArrayTest : public MeshTest<T>
         // Copy data to host memory
         Cabana::AoSoA<a_tuple_type, Kokkos::HostSpace> ahost("ahost", amax0);
         Cabana::AoSoA<b_tuple_type, Kokkos::HostSpace> bhost("bhost", bmax0);
-        Cabana::deep_copy(ahost, a_aosoa);
-        Cabana::deep_copy(bhost, b_aosoa);
+        Cabana::deep_copy(ahost, *a_aosoa);
+        Cabana::deep_copy(bhost, *b_aosoa);
         auto ah_slice = Cabana::slice<0>(ahost);
         auto bh_slice = Cabana::slice<0>(bhost);
 

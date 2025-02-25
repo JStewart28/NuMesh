@@ -48,8 +48,8 @@ TYPED_TEST(ArrayTest, test_assignDim3)
 
     // Manually assign
     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*three_size, NuMesh::Own());
-    auto slice_c = Cabana::slice<0>(correct->aosoa());
-    for (size_t i = 0; i < three_size->aosoa().size(); i++)
+    auto slice_c = Cabana::slice<0>(*correct->aosoa());
+    for (size_t i = 0; i < three_size->aosoa()->size(); i++)
     {
         for (size_t j = 0; j < 3; j++)
         {
@@ -78,8 +78,8 @@ TYPED_TEST(ArrayTest, test_assignDim1)
 
     // Manually assign
     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*one_size, NuMesh::Own());
-    auto slice_c = Cabana::slice<0>(correct->aosoa());
-    for (size_t i = 0; i < one_size->aosoa().size(); i++)
+    auto slice_c = Cabana::slice<0>(*correct->aosoa());
+    for (size_t i = 0; i < one_size->aosoa()->size(); i++)
     {
         slice_c(i) = 8.8;
     }
@@ -105,8 +105,8 @@ TYPED_TEST(ArrayTest, test_scaleDim3)
 
     // Manually scale
     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*three_size, NuMesh::Own());
-    auto slice_c = Cabana::slice<0>(correct->aosoa());
-    for (size_t i = 0; i < three_size->aosoa().size(); i++)
+    auto slice_c = Cabana::slice<0>(*correct->aosoa());
+    for (size_t i = 0; i < three_size->aosoa()->size(); i++)
     {
         for (size_t j = 0; j < 3; j++)
         {
@@ -135,8 +135,8 @@ TYPED_TEST(ArrayTest, test_scaleDim1)
 
     // Manually scale
     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*one_size, NuMesh::Own());
-    auto slice_c = Cabana::slice<0>(correct->aosoa());
-    for (size_t i = 0; i < one_size->aosoa().size(); i++)
+    auto slice_c = Cabana::slice<0>(*correct->aosoa());
+    for (size_t i = 0; i < one_size->aosoa()->size(); i++)
     {
         slice_c(i) *= 8.8;
     }
@@ -165,9 +165,9 @@ TYPED_TEST(ArrayTest, test_elementMultiplyDim1)
 
     // Manually multiply the first dimension of three_size into one_size
     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*one_size, NuMesh::Own());
-    auto slice3 = Cabana::slice<0>(three_size->aosoa());
-    auto slice1 = Cabana::slice<0>(correct->aosoa());
-    for (size_t i = 0; i < three_size->aosoa().size(); i++)
+    auto slice3 = Cabana::slice<0>(*three_size->aosoa());
+    auto slice1 = Cabana::slice<0>(*correct->aosoa());
+    for (size_t i = 0; i < three_size->aosoa()->size(); i++)
     {
         double tmp = slice1(i);
         slice1(i) = slice1(i) * slice3(i, 0);
@@ -197,9 +197,9 @@ TYPED_TEST(ArrayTest, test_elementMultiplyDim3)
 
     // Manually multiply the first dimension of three_size into one_size
     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*three_size0, NuMesh::Own());
-    auto slice0 = Cabana::slice<0>(three_size1->aosoa());
-    auto slice_c = Cabana::slice<0>(correct->aosoa());
-    for (size_t i = 0; i < three_size0->aosoa().size(); i++)
+    auto slice0 = Cabana::slice<0>(*three_size1->aosoa());
+    auto slice_c = Cabana::slice<0>(*correct->aosoa());
+    for (size_t i = 0; i < three_size0->aosoa()->size(); i++)
     {
         for (size_t j = 0; j < 3; j++)
         {
@@ -233,9 +233,9 @@ TYPED_TEST(ArrayTest, test_copyDim0)
 
     // Manually copy the first dimension of B in to the first dim of A
     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*double_array, NuMesh::Own());
-    auto slice_s = Cabana::slice<0>(scalar_array->aosoa());
-    auto slice_d = Cabana::slice<0>(correct->aosoa());
-    for (size_t i = 0; i < double_array->aosoa().size(); i++)
+    auto slice_s = Cabana::slice<0>(*scalar_array->aosoa());
+    auto slice_d = Cabana::slice<0>(*correct->aosoa());
+    for (size_t i = 0; i < double_array->aosoa()->size(); i++)
     {
         slice_d(i, 0) = slice_s(i);
     }
@@ -266,9 +266,9 @@ TYPED_TEST(ArrayTest, test_copyDim1)
 
     // Manually copy the first dimension of B in to the first dim of A
     auto correct = NuMesh::Array::ArrayOp::cloneCopy(*double_array, NuMesh::Own());
-    auto slice_s = Cabana::slice<0>(scalar_array->aosoa());
-    auto slice_d = Cabana::slice<0>(correct->aosoa());
-    for (size_t i = 0; i < double_array->aosoa().size(); i++)
+    auto slice_s = Cabana::slice<0>(*scalar_array->aosoa());
+    auto slice_d = Cabana::slice<0>(*correct->aosoa());
+    for (size_t i = 0; i < double_array->aosoa()->size(); i++)
     {
         slice_d(i, 1) = slice_s(i);
     }

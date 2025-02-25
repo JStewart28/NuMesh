@@ -387,7 +387,7 @@ class Array
     std::shared_ptr<aosoa_type> aosoa() const { return _data; }
 
     //! Get the aosoa label.
-    std::string label() const { return _data.label(); }
+    std::string label() const { return _data->label(); }
 
     //! Get the version of the array
     int version() { return _version; }
@@ -497,8 +497,8 @@ void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
     // printf("aspace: (%d, %d), (%d, %d), bspace: (%d, %d), (%d, %d)\n",
     //     a_space.min(0), a_space.max(0), a_space.min(1), a_space.max(1),
     //     b_space.min(0), b_space.max(0), b_space.min(1), b_space.max(1));
-    auto a_data = Cabana::slice<0>(a.aosoa());
-    auto b_data = Cabana::slice<0>(b.aosoa());
+    auto a_data = Cabana::slice<0>(*a.aosoa());
+    auto b_data = Cabana::slice<0>(*b.aosoa());
 
     constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
 
@@ -568,11 +568,11 @@ std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
     auto layout = NuMesh::Array::createArrayLayout<new_tuple_type>( a.layout(), 1, entity_type() );
     auto out = NuMesh::Array::createArray<memory_space>("copyDim_out", layout);
     auto out_aosoa = out->aosoa();
-    auto out_slice = Cabana::slice<0>(out_aosoa);
+    auto out_slice = Cabana::slice<0>(*out_aosoa);
 
     // Check dimensions
     auto a_aosoa = a.aosoa();
-    auto a_slice = Cabana::slice<0>(a_aosoa);
+    auto a_slice = Cabana::slice<0>(*a_aosoa);
     constexpr int aw = ExtractArraySize<original_tuple_type>::value;
 
     if (dimA >= aw) {
@@ -619,11 +619,11 @@ void copyDim( A_t& a, int dimA, B_t& b, int dimB, DecompositionTag tag )
     // Check dimensions
     auto a_aosoa = a.aosoa();
     auto b_aosoa = b.aosoa();
-    auto a_slice = Cabana::slice<0>(a_aosoa);
-    auto b_slice = Cabana::slice<0>(b_aosoa);
+    auto a_slice = Cabana::slice<0>(*a_aosoa);
+    auto b_slice = Cabana::slice<0>(*b_aosoa);
 
-    const int an = a_aosoa.size();
-    const int bn = b_aosoa.size();
+    const int an = a_aosoa->size();
+    const int bn = b_aosoa->size();
     constexpr int am = ExtractArraySize<a_tuple_type>::value;
     constexpr int bm = ExtractArraySize<b_tuple_type>::value;
     
@@ -701,7 +701,7 @@ void assign( Array_t& array, typename Array_t::value_type alpha,
     using tuple_type = typename Array_t::tuple_type;
     
     auto aosoa = array.aosoa();
-    auto slice = Cabana::slice<0>(aosoa);
+    auto slice = Cabana::slice<0>(*aosoa);
     constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
     if constexpr(tuple_size > 1)
     {
@@ -748,7 +748,7 @@ scale( Array_t& array, const typename Array_t::value_type alpha,
     using tuple_type = typename Array_t::tuple_type;
     using execution_space = typename Array_t::execution_space;
     auto aosoa = array.aosoa();
-    auto slice = Cabana::slice<0>(aosoa);
+    auto slice = Cabana::slice<0>(*aosoa);
     constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
     if constexpr(tuple_size > 1)
     {
@@ -793,7 +793,7 @@ apply( Array_t& array, Function& function, DecompositionTag tag )
     using entity_t = typename Array_t::entity_type;
     using execution_space = typename Array_t::execution_space;
     auto aosoa = array.aosoa();
-    auto slice = Cabana::slice<0>(aosoa);
+    auto slice = Cabana::slice<0>(*aosoa);
     constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
     if constexpr(tuple_size > 1)
     {
@@ -841,8 +841,8 @@ update( Array_t& a, const typename Array_t::tuple_type alpha,
     using tuple_type = typename Array_t::tuple_type;
     auto a_aosoa = a.aosoa();
     auto b_aosoa = b.aosoa();
-    auto a_slice = Cabana::slice<0>(a_aosoa);
-    auto b_slice = Cabana::slice<0>(b_aosoa);
+    auto a_slice = Cabana::slice<0>(*a_aosoa);
+    auto b_slice = Cabana::slice<0>(*b_aosoa);
     constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
     if constexpr(tuple_size > 1)
     {
@@ -894,9 +894,9 @@ update( Array_t& a, const typename Array_t::tuple_type alpha,
     auto a_aosoa = a.aosoa();
     auto b_aosoa = b.aosoa();
     auto c_aosoa = c.aosoa();
-    auto a_slice = Cabana::slice<0>(a_aosoa);
-    auto b_slice = Cabana::slice<0>(b_aosoa);
-    auto c_slice = Cabana::slice<0>(c_aosoa);
+    auto a_slice = Cabana::slice<0>(*a_aosoa);
+    auto b_slice = Cabana::slice<0>(*b_aosoa);
+    auto c_slice = Cabana::slice<0>(*c_aosoa);
     constexpr int tuple_size = ExtractArraySize<tuple_type>::value;
     if constexpr(tuple_size > 1)
     {
@@ -952,16 +952,16 @@ std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, Decompositio
     auto scalar_layout = NuMesh::Array::createArrayLayout<scalar_tuple_type>(a.layout()->mesh(), 1, entity_type());
     auto dot = NuMesh::Array::createArray<memory_space>("dot", scalar_layout);
     auto dot_aosoa = dot->aosoa();
-    auto dot_slice = Cabana::slice<0>(dot_aosoa);
+    auto dot_slice = Cabana::slice<0>(*dot_aosoa);
 
     // Check dimensions
     auto a_aosoa = a.aosoa();
     auto b_aosoa = b.aosoa();
-    auto a_slice = Cabana::slice<0>(a_aosoa);
-    auto b_slice = Cabana::slice<0>(b_aosoa);
+    auto a_slice = Cabana::slice<0>(*a_aosoa);
+    auto b_slice = Cabana::slice<0>(*b_aosoa);
 
-    const int an = a_aosoa.size();
-    const int bn = b_aosoa.size();
+    const int an = a_aosoa->size();
+    const int bn = b_aosoa->size();
     constexpr int am = ExtractArraySize<original_tuple_type>::value;
 
     // Ensure the second dimension is 3 for 3D vectors
@@ -1003,16 +1003,16 @@ std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, Decomposit
     auto layout = NuMesh::Array::createArrayLayout<tuple_type>(a.layout()->mesh(), 3, entity_type());
     auto cross = NuMesh::Array::createArray<memory_space>("cross", layout);
     auto cross_aosoa = cross->aosoa();
-    auto cross_slice = Cabana::slice<0>(cross_aosoa);
+    auto cross_slice = Cabana::slice<0>(*cross_aosoa);
 
     // Check dimensions
     auto a_aosoa = a.aosoa();
     auto b_aosoa = b.aosoa();
-    auto a_slice = Cabana::slice<0>(a_aosoa);
-    auto b_slice = Cabana::slice<0>(b_aosoa);
+    auto a_slice = Cabana::slice<0>(*a_aosoa);
+    auto b_slice = Cabana::slice<0>(*b_aosoa);
 
-    const int an = a_aosoa.size();
-    const int bn = b_aosoa.size();
+    const int an = a_aosoa->size();
+    const int bn = b_aosoa->size();
     constexpr int am = ExtractArraySize<tuple_type>::value;
 
     // Ensure the third dimension is 3 for 3D vectors
@@ -1075,16 +1075,16 @@ std::shared_ptr<A_t> element_multiply( A_t& a, const B_t& b, DecompositionTag ta
 
     auto out = clone(a);
     auto out_aosoa = out->aosoa();
-    auto out_slice = Cabana::slice<0>(out_aosoa);
+    auto out_slice = Cabana::slice<0>(*out_aosoa);
 
     // Check dimensions
     auto a_aosoa = a.aosoa();
     auto b_aosoa = b.aosoa();
-    auto a_slice = Cabana::slice<0>(a_aosoa);
-    auto b_slice = Cabana::slice<0>(b_aosoa);
+    auto a_slice = Cabana::slice<0>(*a_aosoa);
+    auto b_slice = Cabana::slice<0>(*b_aosoa);
 
-    const int an = a_aosoa.size();
-    const int bn = b_aosoa.size();
+    const int an = a_aosoa->size();
+    const int bn = b_aosoa->size();
     constexpr int am = ExtractArraySize<a_tuple_type>::value;
     constexpr int bm = ExtractArraySize<b_tuple_type>::value;
 
