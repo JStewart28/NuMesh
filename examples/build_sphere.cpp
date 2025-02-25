@@ -141,16 +141,14 @@ int main(int argc, char** argv) {
     std::unordered_map<int, int> global_to_local;
     // std::vector<Vertex> vertices;
         
-    int num_ghost_vertices = 0;
+    int owned_verts = 0;
     for (int i = 0; i < num_points; ++i) {
         global_to_local[i] = i;  // Assign local ID
         int vertex_owner = static_cast<int>(vertex_owners_array->GetComponent(i, 0));
         int vertex_gid = static_cast<int>(vertex_gids_array->GetComponent(i, 0));
-        if (is_ghost_point[i]) {
-            num_ghost_vertices++;
-        }
         v_gid(i) = vertex_gid;
         v_owner(i) = vertex_owner;
+        if (vertex_owner == rank) owned_verts++;
 
         // Populate coordinates
         double coords[3];
@@ -158,6 +156,7 @@ int main(int argc, char** argv) {
         for (int j = 0; j < 3; j++) p_xyz(i, j) = coords[j];
         // vertices.push_back({i, vertex_gid, vertex_owner, coords[0], coords[1], coords[2]});
     }
+    positions_h.resize(owned_verts);
 
     // std::vector<Cell> cells;
     std::unordered_map<std::pair<int, int>, int, pair_hash> edge_map;
@@ -221,23 +220,44 @@ int main(int argc, char** argv) {
 
     mesh->initializeFromConnectivity(vertices_device, faces_device);
 
+    // Create positions array
+    using tuple_type = Cabana::MemberTypes<double[3]>;
+    auto vertex_triple_layout = NuMesh::Array::createArrayLayout<tuple_type>(mesh, 3, NuMesh::Vertex());
+    auto positions = NuMesh::Array::createArray<memory_space>("positions", vertex_triple_layout);
+    auto paosoa = positions->aosoa();
+    Kokkos::View<int[4], memory_space> fin("fin");
+    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, fin.extent(0)),
+    KOKKOS_LAMBDA(int i) {
+
+        fin(i) = i;
+
+    });
+    // printf("Before refine: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
+    mesh->refine(fin);
+    // printf("Before update: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
+
+    positions->update();
+    // printf("Before gather: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
+
     // Uniform refinement
-    for (int i = 0; i < 1; i++)
-    {
-        int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
-        auto vef_gid_start = mesh->vef_gid_start();
-        int face_gid_start = vef_gid_start(rank, 2);
-        Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
-        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
-            KOKKOS_LAMBDA(int i) {
+    // for (int i = 0; i < 1; i++)
+    // {
+    //     int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
+    //     auto vef_gid_start = mesh->vef_gid_start();
+    //     int face_gid_start = vef_gid_start(rank, 2);
+    //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+    //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
+    //         KOKKOS_LAMBDA(int i) {
 
-                fin(i) = face_gid_start + i;
+    //             fin(i) = face_gid_start + i;
 
-            });
-        mesh->refine(fin);
-    }
+    //         });
+    //     mesh->refine(fin);
+    // }
 
     mesh->gather(0, 1);
+    positions->update();
+    // printf("After gather/update: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
 
     // mesh->printFaces(0, 0);
     // mesh->printFaces(1, 976);

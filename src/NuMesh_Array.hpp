@@ -354,10 +354,11 @@ class Array
     Array( const std::string& label,
            const std::shared_ptr<LayoutType>& layout )
         : _layout( layout )
-        , _data( Cabana::AoSoA<tuple_type, memory_space, 4>(
-              label, layout->indexSpace( Ghost(), entity_type(), Local(), Element() ).extent(0) ) )
         , _vef_gid_start( layout->mesh()->vef_gid_start())
     {
+        _data = std::make_shared<aosoa_type>(
+            Cabana::AoSoA<tuple_type, memory_space, 4>(
+                label, layout->indexSpace( Ghost(), entity_type(), Local(), Element() ).extent(0)));
         _version = _layout->mesh()->version();
     }
 
@@ -368,8 +369,9 @@ class Array
 
         // Resize the array
         size_t new_size = _layout->indexSpace(Ghost(), entity_type(), Local(), Element()).extent(0);
-        // printf("Updating size: %d -> %d\n", _data.extent(0), new_size);
-        _data.resize(new_size);
+        // printf("Updating size: %d -> %d\n", _data->size(), new_size);
+        _data->resize(new_size);
+        // printf("New size: %d\n", _data->size());
 
         // Update global ID starts
         _vef_gid_start = _layout->mesh()->vef_gid_start();
@@ -382,7 +384,7 @@ class Array
     std::shared_ptr<LayoutType> layout() const { return _layout; }
 
     //! Get the aosoa of the array data.
-    aosoa_type aosoa() const { return _data; }
+    std::shared_ptr<aosoa_type> aosoa() const { return _data; }
 
     //! Get the aosoa label.
     std::string label() const { return _data.label(); }
@@ -392,7 +394,7 @@ class Array
 
   private:
     std::shared_ptr<LayoutType> _layout;
-    aosoa_type _data;
+    std::shared_ptr<aosoa_type> _data;
 
     // The ArrayLayout version, which points to the mesh version, this array is sized for
     int _version;

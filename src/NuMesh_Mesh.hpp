@@ -2230,8 +2230,7 @@ class Mesh
             if (v_in_owner(i) != rank) Kokkos::atomic_increment(&counter_d());
             
         });
-        int ghost_vert_count;
-        Kokkos::deep_copy(ghost_vert_count, counter_d);
+        Kokkos::deep_copy(_ghost_vertices, counter_d);
 
         // The rank which owns the face owns the vertex with the lowest GID in the face
         Kokkos::deep_copy(counter_d, 0);
@@ -2257,15 +2256,16 @@ class Mesh
                 }
             }
         });
-        int ghost_cells_count;
-        Kokkos::deep_copy(ghost_cells_count, counter_d);
-
-        _owned_vertices = verts_in.size() - ghost_vert_count;
+        Kokkos::deep_copy(_ghost_faces, counter_d);
+        _owned_vertices = verts_in.size() - _ghost_vertices;
         _owned_edges = faces_in.size()*3;
-        _owned_faces = faces_in.size() - ghost_cells_count;
+        _owned_faces = faces_in.size() - _ghost_faces;
         _vertices.resize(_owned_vertices);
         _edges.resize(_owned_edges);
         _faces.resize(_owned_faces);
+
+        // Set ghost counts to zero because nothing is ghosted
+        _ghost_vertices = 0; _ghost_edges = 0; _ghost_faces = 0;
 
         _updateGlobalIDs(false); // False because we are still building the mesh
 
@@ -2645,6 +2645,10 @@ class Mesh
 
         // Finally, populate which elements are on MPI boundaries
         _populate_boundary_elements();
+        // printf("R%d: end of init: owned/ghost/actual: v(%d, %d, %d), e(%d, %d, %d), f(%d, %d, %d)\n", _rank,
+        //     _owned_vertices, _ghost_vertices, (int)_vertices.size(),
+        //     _owned_edges, _ghost_edges, (int)_edges.size(),
+        //     _owned_faces, _ghost_faces, (int)_faces.size());
     }
 
     /**
