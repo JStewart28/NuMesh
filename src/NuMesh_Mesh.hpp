@@ -1093,6 +1093,13 @@ class Mesh
 
         Kokkos::deep_copy(_max_tree_level, max_tree_level_d);
 
+        // Clear ghosted edges that were needed to complete refinement.
+        // We do this to remain consistent, so only a call to gather()
+        // maintains persistent ghosting
+        _vertices.resize(_owned_vertices); _ghost_vertices = 0;
+        _edges.resize(_owned_edges); _ghost_edges = 0;
+        _faces.resize(_owned_faces); _ghost_faces = 0;
+
         // if (rank == 0)
         // {
         //     printf("***************AFTER***************\n");
