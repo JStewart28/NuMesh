@@ -55,23 +55,25 @@ class V2E
         auto vertices = _mesh->vertices();
         auto edges = _mesh->edges();
 
-        // Number of local vertices and edges.
-        int num_vertices = vertices.size();
-        int num_edges = edges.size();
+        // Number of local vertices and edges
+        int owned_vertices = _mesh->count(Own(), Vertex());
+        int owned_edges = _mesh->count(Own(), Edge());
+        int total_vertices = vertices.size();
+        int total_edges = edges.size();
 
         // Allocate vertex-edge count and offsets.
-        integer_view vertex_edge_count("vertex_edge_count", num_vertices);
+        integer_view vertex_edge_count("vertex_edge_count", total_vertices);
         auto e_vid = Cabana::slice<E_VIDS>(edges); // Vertex IDs of each edge.
         auto v_gid = Cabana::slice<V_GID>(vertices);
 
         // Step 1: Count edges per vertex.
         auto vef_gid_start = _mesh->vef_gid_start();
         int vertex_gid_start = vef_gid_start(_rank, 0);
-        Kokkos::parallel_for("Count edges per vertex", Kokkos::RangePolicy<execution_space>(0, num_edges),
+        Kokkos::parallel_for("Count edges per vertex", Kokkos::RangePolicy<execution_space>(0, total_edges),
             KOKKOS_LAMBDA(const int e) {
                 for (int v = 0; v < 2; ++v) {  // Loop over edge endpoints.
                     int vgid = e_vid(e, v);
-                    int vlid = Utils::get_lid(v_gid, vgid, 0, num_vertices);
+                    int vlid = Utils::get_lid(v_gid, vgid, owned_vertices, total_vertices);
                     if (vlid > -1)
                         Kokkos::atomic_increment(&vertex_edge_count(vlid));
                 }
@@ -79,9 +81,9 @@ class V2E
         Kokkos::fence();
         
         // Step 2: Create vertex-edge offsets using prefix sum.
-        _offsets = integer_view("_offsets", num_vertices);
+        _offsets = integer_view("_offsets", total_vertices);
         auto offsets = _offsets;
-        Kokkos::parallel_scan("Prefix sum for vertex offsets", Kokkos::RangePolicy<execution_space>(0, num_vertices),
+        Kokkos::parallel_scan("Prefix sum for vertex offsets", Kokkos::RangePolicy<execution_space>(0, total_vertices),
             KOKKOS_LAMBDA(const int i, int& update, const bool final) {
                 int count = vertex_edge_count(i);
                 if (final) {
@@ -95,7 +97,7 @@ class V2E
         int total_adj_edges = 0;
         Kokkos::parallel_reduce("Calculate total adjacency edges", Kokkos::RangePolicy<execution_space>(0, 1),
             KOKKOS_LAMBDA(const int, int& count) {
-                count = offsets(num_vertices - 1) + vertex_edge_count(num_vertices - 1);
+                count = offsets(total_vertices - 1) + vertex_edge_count(total_vertices - 1);
             }, total_adj_edges);
 
         _indices = integer_view("vertex_edge_indices", total_adj_edges);
@@ -103,14 +105,14 @@ class V2E
         auto indices = _indices;
 
         // Step 3: Populate vertex-edge indices.
-        integer_view current_offset("current_offset", num_vertices);
+        integer_view current_offset("current_offset", total_vertices);
         Kokkos::deep_copy(current_offset, offsets);  // Copy offsets for modification.
 
-        Kokkos::parallel_for("Populate adjacency list", Kokkos::RangePolicy<execution_space>(0, num_edges),
+        Kokkos::parallel_for("Populate adjacency list", Kokkos::RangePolicy<execution_space>(0, total_edges),
             KOKKOS_LAMBDA(const int e) {
                 for (int v = 0; v < 2; ++v) {  // Loop over edge endpoints.
                     int vgid = e_vid(e, v);
-                    int vlid = Utils::get_lid(v_gid, vgid, 0, num_vertices);
+                    int vlid = Utils::get_lid(v_gid, vgid, owned_vertices, total_vertices);
                     if (vlid > -1)
                     {
                         int insert_idx = Kokkos::atomic_fetch_add(&current_offset(vlid), 1);
@@ -182,12 +184,14 @@ class V2F
         auto vertices = _mesh->vertices();
         auto faces = _mesh->faces();
 
-        // Number of local vertices and faces.
-        int num_vertices = vertices.size();
-        int num_faces = faces.size();
+        // Number of local vertices and faces
+        int owned_vertices = _mesh->count(Own(), Vertex());
+        int owned_edges = _mesh->count(Own(), Edge());
+        int total_vertices = vertices.size();
+        int total_faces = faces.size();
 
         // Allocate vertex-face count and offsets.
-        integer_view vertex_face_count("vertex_face_count", num_vertices);
+        integer_view vertex_face_count("vertex_face_count", total_vertices);
         auto f_vid = Cabana::slice<F_VIDS>(faces); // Vertex IDs of each face
         auto f_level = Cabana::slice<F_LAYER>(faces);
         auto v_gid = Cabana::slice<V_GID>(vertices);
@@ -196,13 +200,13 @@ class V2F
         int level = _level;
         auto vef_gid_start = _mesh->vef_gid_start();
         int vertex_gid_start = vef_gid_start(_rank, 0);
-        Kokkos::parallel_for("Count faces per vertex", Kokkos::RangePolicy<execution_space>(0, num_faces),
+        Kokkos::parallel_for("Count faces per vertex", Kokkos::RangePolicy<execution_space>(0, total_faces),
             KOKKOS_LAMBDA(const int f) {
                 //printf("Checking flid %d, f_level %d, level: %d\n", f, f_level(f), level);
                 if (level > f_level(f)) return; // Only consider faces at or above this level of the tree
                 for (int v = 0; v < 3; ++v) {  // Loop over face endpoints.
                     int vgid = f_vid(f, v);
-                    int vlid = Utils::get_lid(v_gid, vgid, 0, num_vertices);
+                    int vlid = Utils::get_lid(v_gid, vgid, owned_vertices, total_vertices);
                     if (vlid > -1)
                         Kokkos::atomic_increment(&vertex_face_count(vlid));
                 }
@@ -210,9 +214,9 @@ class V2F
         Kokkos::fence();
         
         // Step 2: Create vertex-face offsets using prefix sum.
-        _offsets = integer_view("offsets", num_vertices);
+        _offsets = integer_view("offsets", total_vertices);
         auto offsets = _offsets;
-        Kokkos::parallel_scan("Prefix sum for vertex offsets", Kokkos::RangePolicy<execution_space>(0, num_vertices),
+        Kokkos::parallel_scan("Prefix sum for vertex offsets", Kokkos::RangePolicy<execution_space>(0, total_vertices),
             KOKKOS_LAMBDA(const int i, int& update, const bool final) {
                 int count = vertex_face_count(i);
                 if (final) {
@@ -227,22 +231,22 @@ class V2F
         int total_adj_faces = 0;
         Kokkos::parallel_reduce("Calculate total adjacency faces", Kokkos::RangePolicy<execution_space>(0, 1),
             KOKKOS_LAMBDA(const int, int& count) {
-                count = offsets(num_vertices - 1) + vertex_face_count(num_vertices - 1);
+                count = offsets(total_vertices - 1) + vertex_face_count(total_vertices - 1);
             }, total_adj_faces);
 
         _indices = integer_view("_indices", total_adj_faces);
         auto indices = _indices;
 
         // Step 3: Populate vertex-faces indices.
-        integer_view current_offset("current_offset", num_vertices);
+        integer_view current_offset("current_offset", total_vertices);
         Kokkos::deep_copy(current_offset, offsets);  // Copy offsets for modification.
 
-        Kokkos::parallel_for("Populate adjacency list", Kokkos::RangePolicy<execution_space>(0, num_faces),
+        Kokkos::parallel_for("Populate adjacency list", Kokkos::RangePolicy<execution_space>(0, total_faces),
             KOKKOS_LAMBDA(const int f) {
                 if (level > f_level(f)) return; // Only consider faces at or above this level of the tree
                 for (int v = 0; v < 3; ++v) {  // Loop over face endpoints.
                     int vgid = f_vid(f, v);
-                    int vlid = Utils::get_lid(v_gid, vgid, 0, num_vertices);
+                    int vlid = Utils::get_lid(v_gid, vgid, owned_vertices, total_vertices);
                     if (vlid > -1)
                     {
                         int insert_idx = Kokkos::atomic_fetch_add(&current_offset(vlid), 1);
@@ -336,15 +340,16 @@ class V2V
         auto v_gid = Cabana::slice<V_GID>(vertices);
 
         // Get the number of vertices
-        int num_vertices = vertices.size();
+        int owned_vertices = _mesh->count(Own(), Vertex());
+        int total_vertices = vertices.size();
 
         // At worst, each vert is connected 6*3*(max tree level) verts
-        int max_verts = num_vertices * 6 * 3 * (_mesh->max_level() + 1); // Max level could be 0
+        int max_verts = total_vertices * 6 * 3 * (_mesh->max_level() + 1); // Max level could be 0
         MapType vert_vert_map(max_verts);
 
         // Allocate offsets and indices (first pass to count unique neighbors)
-        integer_view neighbor_counts("neighbor_counts", num_vertices);
-        Kokkos::parallel_for("count_neighbors", Kokkos::RangePolicy<execution_space>(0, num_vertices),
+        integer_view neighbor_counts("neighbor_counts", total_vertices);
+        Kokkos::parallel_for("count_neighbors", Kokkos::RangePolicy<execution_space>(0, total_vertices),
             KOKKOS_LAMBDA(int vlid) {
 
             int offset = face_offsets(vlid);
@@ -359,7 +364,7 @@ class V2V
                 for (int j = 0; j < 3; j++)
                 {
                     int vgid = f_vid(flid, j);
-                    int vlid0 = Utils::get_lid(v_gid, vgid, 0, num_vertices);
+                    int vlid0 = Utils::get_lid(v_gid, vgid, owned_vertices, total_vertices);
                     // printf("vlid: %d, flid %d, vlid0: %d\n", vlid, flid, vlid0);
                     if ((vlid0 != vlid) && (vlid0 > -1)) { // Exclude self and vertices not in our AoSoA
                         auto hash_key = hashFunction(vlid, vlid0);
@@ -377,9 +382,9 @@ class V2V
         });
 
         // Compute offsets using exclusive scan
-        _offsets = integer_view("offsets", num_vertices);
+        _offsets = integer_view("offsets", total_vertices);
         auto offsets = _offsets;
-        Kokkos::parallel_scan("compute_offsets", Kokkos::RangePolicy<execution_space>(0, num_vertices),
+        Kokkos::parallel_scan("compute_offsets", Kokkos::RangePolicy<execution_space>(0, total_vertices),
             KOKKOS_LAMBDA(int i, int& update, bool final) {
             if (final) offsets(i) = update;
             update += neighbor_counts(i);
@@ -389,7 +394,7 @@ class V2V
         int total_adj_verts = 0;
         Kokkos::parallel_reduce("Calculate total adjacency vertices", Kokkos::RangePolicy<execution_space>(0, 1),
             KOKKOS_LAMBDA(const int, int& count) {
-                count = offsets(num_vertices - 1) + neighbor_counts(num_vertices - 1);
+                count = offsets(total_vertices - 1) + neighbor_counts(total_vertices - 1);
             }, total_adj_verts);
 
         // Allocate indices
@@ -398,7 +403,7 @@ class V2V
 
         // Second pass: Fill indices
         vert_vert_map.clear();
-        Kokkos::parallel_for("fill_indices", Kokkos::RangePolicy<execution_space>(0, num_vertices),
+        Kokkos::parallel_for("fill_indices", Kokkos::RangePolicy<execution_space>(0, total_vertices),
             KOKKOS_LAMBDA(int vlid) {
                 int offset = offsets(vlid);
                 int face_offset = face_offsets(vlid);
@@ -411,7 +416,7 @@ class V2V
                     for (int j = 0; j < 3; j++)
                     {
                         int vgid = f_vid(flid, j);
-                        int vlid0 = Utils::get_lid(v_gid, vgid, 0, num_vertices);
+                        int vlid0 = Utils::get_lid(v_gid, vgid, owned_vertices, total_vertices);
                         if ((vlid0 != vlid) && (vlid0 > -1)) { // Exclude self and vertices not in our AoSoA
                             auto hash_key = hashFunction(vlid, vlid0);
                             auto result = vert_vert_map.insert(hash_key, vlid0); // Add (vert, neighbor vert) pair to map

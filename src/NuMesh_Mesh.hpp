@@ -762,7 +762,7 @@ class Mesh
             Utils::updateGlobalID(Edge(), &distributor_edges_import_slice(i), vef_gid_start, vef_gid_start_old_d);
 
             // Parent edge LID
-            int elid = Utils::get_lid(e_gid, distributor_edges_import_slice(i), 0, owned_edges);
+            int elid = Utils::get_lid(e_gid, distributor_edges_import_slice(i), owned_edges, owned_edges);
             assert(elid != -1);
             halo_export_ids(idx) = elid;
 
@@ -910,7 +910,7 @@ class Mesh
                 {
                     int egid = f_eid(face_id, k);
                     int lid = egid - vef_gid_start(rank, 1);
-                    elid[k] = Utils::get_lid(e_gid, egid, 0, num_edges);
+                    elid[k] = Utils::get_lid(e_gid, egid, owned_edges, num_edges);
                     assert(elid[k] != -1);
                     // if (e_gid(e_lid) == 699) printf("elid %d: %d\n", k, elid[k]);                 
                 }
@@ -1002,11 +1002,11 @@ class Mesh
             parent_eg0 = f_eid(parent_face_lid, 0);
             parent_eg1 = f_eid(parent_face_lid, 1);
             parent_eg2 = f_eid(parent_face_lid, 2);
-            parent_el0 = Utils::get_lid(e_gid, parent_eg0, 0, num_edges);
+            parent_el0 = Utils::get_lid(e_gid, parent_eg0, owned_edges, num_edges);
             assert(parent_el0 != -1);
-            parent_el1 = Utils::get_lid(e_gid, parent_eg1, 0, num_edges);
+            parent_el1 = Utils::get_lid(e_gid, parent_eg1, owned_edges, num_edges);
             assert(parent_el1 != -1);
-            parent_el2 = Utils::get_lid(e_gid, parent_eg2, 0, num_edges);
+            parent_el2 = Utils::get_lid(e_gid, parent_eg2, owned_edges, num_edges);
             assert(parent_el2 != -1);
             vg_mid0 = e_vid(parent_el0, 2); vg_mid1 = e_vid(parent_el1, 2); vg_mid2 = e_vid(parent_el2, 2);
             // printf("R%d: vgmid 0/1/2: %d, %d, %d\n", rank, vg_mid0, vg_mid1, vg_mid2);

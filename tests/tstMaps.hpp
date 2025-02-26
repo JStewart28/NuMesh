@@ -175,6 +175,7 @@ class MapsTest : public MeshTest<T>
         auto v_gid = Cabana::slice<V_GID>(*this->vertices);
     
         int total_vertices = this->vertices->size();
+        int owned_vertices = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
     
         // Check that offsets are properly increasing
         for (int v = 0; v < total_vertices-1; v++) {
@@ -199,7 +200,7 @@ class MapsTest : public MeshTest<T>
                     // Collect all neighboring vertices from this face
                     for (int j = 0; j < 3; j++) {
                         int vgid_face = f_vid(f, j);
-                        int vlid_face = NuMesh::Utils::get_lid(v_gid, vgid_face, 0, total_vertices); 
+                        int vlid_face = NuMesh::Utils::get_lid(v_gid, vgid_face, owned_vertices, total_vertices); 
                         if ((vlid_face != v) && (vlid_face != -1)) { // Avoid adding self and vertices not owned or ghosted
                             expected_neighbors.insert(f_vid(f, j));
                         }

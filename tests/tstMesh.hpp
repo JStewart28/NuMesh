@@ -619,6 +619,9 @@ class MeshTest : public ::testing::Test
         auto e_pid = Cabana::slice<E_PID>(*edges);
         auto e_layer = Cabana::slice<E_LAYER>(*edges);
 
+        int total_edges = edges->size();
+        int owned_edges = mesh_->count(NuMesh::Own(), NuMesh::Edge());
+
         for (int i = 0; i < le+ge; i++)
         {
             // Skip edges without children
@@ -631,7 +634,7 @@ class MeshTest : public ::testing::Test
             // Child vertices
             int c0v0, c0v1, c1v0, c1v1;
 
-            ce0 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 0), 0, edges->size()); ce1 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 1), 0, edges->size());
+            ce0 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 0), owned_edges, total_edges); ce1 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 1), owned_edges, total_edges);
             pv0 = e_vid(i, 0); pv1 = e_vid(i, 1); pvm = e_vid(i, 2);
 
             // Check child edge 0
@@ -670,12 +673,15 @@ class MeshTest : public ::testing::Test
         auto e_pid = Cabana::slice<E_PID>(*edges);
         auto e_layer = Cabana::slice<E_LAYER>(*edges);
 
+        int total_edges = edges->size();
+        int owned_edges = mesh_->count(NuMesh::Own(), NuMesh::Edge());
+
         for (int i = 0; i < lf+gf; i++)
         {
             int e0, e1, e2;
-            e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), 0, edges->size());
-            e1 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 1), 0, edges->size());
-            e2 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 2), 0, edges->size());
+            e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), owned_edges, total_edges);
+            e1 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 1), owned_edges, total_edges);
+            e2 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 2), owned_edges, total_edges);
             // if (f_gid(i) == 258)
             // {
             //     int egid;

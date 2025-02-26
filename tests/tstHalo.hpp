@@ -65,6 +65,9 @@ class HaloTest : public MeshTest<T>
         int total_verts = this->vertices->size();
         int total_edges = this->edges->size();
         int total_faces = this->faces->size();
+        int owned_verts = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
+        int owned_edges = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
+        int owned_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
 
         ASSERT_GT(total_verts, 0); ASSERT_GT(total_edges, 0); ASSERT_GT(total_faces, 0);
 
@@ -135,14 +138,14 @@ class HaloTest : public MeshTest<T>
                     front = (front + 1) % capacity;
 
                     // Check we have this face
-                    int flid = NuMesh::Utils::get_lid(f_gid, fgid, 0, total_faces);
+                    int flid = NuMesh::Utils::get_lid(f_gid, fgid, owned_faces, total_faces);
                     ASSERT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << " not found" << std::endl;
                     
                     // Check vertices of this face
                     for (int i = 0; i < 3; ++i)
                     {
                         int vid = f_vids(flid, i);
-                        int vlid = NuMesh::Utils::get_lid(v_gid, vid, 0, total_verts);
+                        int vlid = NuMesh::Utils::get_lid(v_gid, vid, owned_verts, total_verts);
                         EXPECT_NE(vlid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
                     }
                     
@@ -150,7 +153,7 @@ class HaloTest : public MeshTest<T>
                     for (int i = 0; i < 3; ++i)
                     {
                         int eid = f_eids(flid, i);
-                        int elid = NuMesh::Utils::get_lid(e_gid, eid, 0, total_edges);
+                        int elid = NuMesh::Utils::get_lid(e_gid, eid, owned_edges, total_edges);
                         EXPECT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing egid " << eid << std::endl;
                     }     
 
