@@ -1408,7 +1408,7 @@ class Mesh
                     }
 
                     // Queue for children (local per thread), that will all go to the remote rank
-                    const int capacity = 86;
+                    const int capacity = 630;
                     int queue[capacity]; // Adjust size as needed
                     int front = 0, back = 0;
 
