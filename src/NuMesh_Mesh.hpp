@@ -2733,7 +2733,7 @@ class Mesh
                     "NuMesh::Mesh: halo depth of gather must be at least 1." );
         if (level < 0)
             throw std::runtime_error(
-                    "NuMesh::Mesh: level of gather must be at least 1." );
+                    "NuMesh::Mesh: level of gather must be at least 0." );
         if (level > _max_tree_level)
             throw std::runtime_error(
                     "NuMesh::Mesh: level of gather must be at <= max tree level." );
