@@ -38,6 +38,8 @@ public:
     Halo(std::shared_ptr<Mesh> mesh, int level, int depth, EntityType entity)
         : _mesh(mesh), _level(level), _depth(depth), _entity(entity)
     {
+        Kokkos::Profiling::pushRegion("Halo::constructor");
+
         static_assert(is_numesh_mesh<Mesh>::value, "NuMesh::Halo: NuMesh Mesh required");
 
         if (_depth < 1)
@@ -70,6 +72,8 @@ public:
 
         _num_local = _cabana_halo->numLocal();
         _num_ghost = _cabana_halo->numGhost();
+
+        Kokkos::Profiling::popRegion();
     }
 
     ~Halo() {}
@@ -107,6 +111,8 @@ auto createHalo(std::shared_ptr<Mesh> mesh, int level, int depth, EntityType ent
 template <class HaloType, class ArrayType>
 void gather(std::shared_ptr<HaloType>& halo, std::shared_ptr<ArrayType> data)
 {
+    Kokkos::Profiling::pushRegion("gather");
+
     static_assert( Array::is_array<ArrayType>::value, "NuMesh::Array required" );
 
     using entity_type = typename ArrayType::entity_type;
@@ -133,6 +139,8 @@ void gather(std::shared_ptr<HaloType>& halo, std::shared_ptr<ArrayType> data)
     }
     auto cabana_halo = halo->cabana_halo();
     Cabana::gather(*cabana_halo, *aosoa);
+
+    Kokkos::Profiling::popRegion();
 }
 
 } // end namespce NuMesh

@@ -159,6 +159,8 @@ class Mesh
      */
     void _populate_boundary_elements()
     {
+        Kokkos::Profiling::pushRegion("Mesh::_populate_boundary_elements");
+
         auto e_vids = Cabana::slice<E_VIDS>(_edges);
         auto e_gid = Cabana::slice<E_GID>(_edges);
         auto f_vids = Cabana::slice<F_VIDS>(_faces);
@@ -172,7 +174,7 @@ class Mesh
         Kokkos::View<bool*, memory_space> is_b_edge("is_b_edge", _owned_edges);
         Kokkos::deep_copy(is_neighbor, false);
         Kokkos::deep_copy(is_b_edge, false);
-        Kokkos::parallel_for("find", Kokkos::RangePolicy<execution_space>(0, _owned_edges),
+        Kokkos::parallel_for("find_edges", Kokkos::RangePolicy<execution_space>(0, _owned_edges),
             KOKKOS_LAMBDA(int i) {
 
             for (int v = 0; v < 2; v++)
@@ -194,7 +196,7 @@ class Mesh
         // Identify faces
         Kokkos::View<bool*, memory_space> is_b_face("is_b_face", _owned_faces);
         Kokkos::deep_copy(is_b_face, false);
-        Kokkos::parallel_for("find", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
+        Kokkos::parallel_for("find_faces", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
             KOKKOS_LAMBDA(int i) {
 
             for (int v = 0; v < 3; v++)
@@ -294,6 +296,8 @@ class Mesh
         _neighbors = neighbors;
         _boundary_edges = boundary_edges;
         _boundary_faces = boundary_faces;
+
+        Kokkos::Profiling::popRegion();
     }
 
     /**
@@ -302,6 +306,8 @@ class Mesh
      */
     void _createFaces()
     {
+        Kokkos::Profiling::pushRegion("Mesh::_createFaces");
+
         /* Each vertex contributes 2 faces */
         _faces.resize(_owned_faces);
     
@@ -322,7 +328,7 @@ class Mesh
 
         int rank = _rank;
         const auto vef_gid_start = _vef_gid_start;
-        Kokkos::parallel_for("Initialize faces", Kokkos::RangePolicy<execution_space>(0, _vertices.size()), KOKKOS_LAMBDA(int i) {
+        Kokkos::parallel_for("Initialize_faces", Kokkos::RangePolicy<execution_space>(0, _vertices.size()), KOKKOS_LAMBDA(int i) {
             // Face 1: "left" face; face 2: "right" face   
             int f_lid;
 
@@ -389,6 +395,7 @@ class Mesh
         });
 
         //printf("Num verts: %d, edges: %d, faces: %d\n", _v_array.size(), _e_array.size(), _f_array.size());
+        Kokkos::Profiling::popRegion();
     }
 
     /**
@@ -401,6 +408,8 @@ class Mesh
     template <class View>
     void _refineFaces(View fgids)
     {
+        Kokkos::Profiling::pushRegion("Mesh::_refineFaces");
+
         const int rank = _rank, comm_size = _comm_size;
         const int num_face_refinements = fgids.extent(0);
         auto vef_gid_start = _vef_gid_start;
@@ -470,7 +479,7 @@ class Mesh
         Kokkos::deep_copy(face_counter, 0);
         Kokkos::deep_copy(remote_edge_counter, 0);
         
-        Kokkos::parallel_for("populate edge_needrefine", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
+        Kokkos::parallel_for("populate_edge_needrefine", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
             KOKKOS_LAMBDA(int i) {
             
             int f_lid = fgids(i) - vef_gid_start(rank, 2);
@@ -578,7 +587,7 @@ class Mesh
         // Iterate through our received edges and mark them for refinement
         auto distributor_edges_import_slice = Cabana::slice<0>(distributor_edges_import);
         auto distributor_ranks_import_slice = Cabana::slice<1>(distributor_edges_import);
-        Kokkos::parallel_for("add remotes to edge_needrefine", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+        Kokkos::parallel_for("add_remotes_to_edge_needrefine", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
             KOKKOS_LAMBDA(int i) {
 
             int elid = distributor_edges_import_slice(i) - vef_gid_start(rank, 1);
@@ -1109,10 +1118,13 @@ class Mesh
         // }
         // printf("R%d: end of refine: num faces: %d\n", rank, _faces.size());
 
+        Kokkos::Profiling::popRegion();
     }
   
     void _updateGlobalIDs(bool remap_aosoa_ids)
     {
+        Kokkos::Profiling::pushRegion("Mesh::_updateGlobalIDs");
+
         // Update mesh version
         _version++;
         
@@ -1228,6 +1240,8 @@ class Mesh
             // Parent face
             Utils::updateGlobalID(Face(), &f_pid(i), vef_gid_start, old_vef_start);
         });
+
+        Kokkos::Profiling::popRegion();
     }
 
     /**
@@ -1250,6 +1264,8 @@ class Mesh
      */
     void _gather_depth_one()
     {
+        Kokkos::Profiling::pushRegion("_gather_depth_one");
+
         const int level = _halo_level, rank = _rank, tree_depth = _max_tree_level;
 
         // Define the hash map type
@@ -1826,6 +1842,8 @@ class Mesh
         _ghost_vertices = vhalo.numGhost();
         _ghost_edges = ehalo.numGhost();
         _ghost_faces = fhalo.numGhost();
+
+        Kokkos::Profiling::popRegion();
     }
 
     /**
@@ -1833,6 +1851,7 @@ class Mesh
      */
     void make_sparse()
     {
+        Kokkos::Profiling::pushRegion("make_sparse");
         /**
          * A = hypre_ParCSRMatrixCreate(...)
          * row_starts and col_starts: these will be the same. Arrays of size 2 where
@@ -1903,6 +1922,7 @@ class Mesh
         //                         diag_i[local_num_rows],
         //                         offd_i[local_num_rows]);
         
+        Kokkos::Profiling::popRegion();
     }
 
     /**
@@ -1915,6 +1935,8 @@ class Mesh
     template <class CabanaArray>
     void initializeFromArray( CabanaArray& array )
     {
+        Kokkos::Profiling::pushRegion("initializeFromArray");
+
         static_assert( Cabana::Grid::is_array<CabanaArray>::value, "NuMesh::Mesh::initializeFromArray: Cabana::Grid::Array required" );
         
         if (!Utils::isPerfectSquare(_comm_size))
@@ -2179,6 +2201,8 @@ class Mesh
         _createFaces();
         // _sort_by_layer();
         _populate_boundary_elements();
+
+        Kokkos::Profiling::popRegion();
     }
         
     /**
@@ -2202,6 +2226,8 @@ class Mesh
     template <class VerticesAoSoA, class FacesAoSoA>
     void initializeFromConnectivity(VerticesAoSoA& verts_in, FacesAoSoA& faces_in)
     {
+        Kokkos::Profiling::pushRegion("Mesh::initializeFromConnectivity");
+
         const int rank = _rank;
 
         auto v_in_gid = Cabana::slice<0>(verts_in);
@@ -2299,7 +2325,7 @@ class Mesh
         auto f_layer = Cabana::slice<F_LAYER>(_faces);
         
         // Initialize vertices
-        Kokkos::parallel_for("init vertices", Kokkos::RangePolicy<execution_space>(0, _vertices.size()),
+        Kokkos::parallel_for("create vertices", Kokkos::RangePolicy<execution_space>(0, _vertices.size()),
             KOKKOS_LAMBDA(int i) {
 
             v_gid(i) = v_in_gid(i);
@@ -2334,7 +2360,7 @@ class Mesh
         Kokkos::deep_copy(edge_counter, 0); 
         Kokkos::deep_copy(counter_d, 0); // Counter for local ID of face
         int edges_size = _edges.size();
-        Kokkos::parallel_for("init faces 1", Kokkos::RangePolicy<execution_space>(0, faces_in.size()),
+        Kokkos::parallel_for("create faces and edges", Kokkos::RangePolicy<execution_space>(0, faces_in.size()),
             KOKKOS_LAMBDA(const int i) {
             
             // Determine face ownership
@@ -2507,7 +2533,7 @@ class Mesh
 
         // Iterate over edges recieved. If a remote rank asks requested an edge we don't have,
         // that means the edge is on a face we do not own, so we need to create the edge
-        Kokkos::parallel_for("edge_distributor_import_to_export", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+        Kokkos::parallel_for("edge_distributor_import_to_export1", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
         KOKKOS_LAMBDA(const int i) {
         
             int v0 = edge_distributor_import_verts(i, 0);
@@ -2562,7 +2588,7 @@ class Mesh
         Kokkos::fence();
 
         // Now iterate over imported data again, populating EGIDs to export
-        Kokkos::parallel_for("edge_distributor_import_to_export", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+        Kokkos::parallel_for("edge_distributor_import_to_export2", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
             KOKKOS_LAMBDA(const int i) {
             
             int v0 = edge_distributor_import_verts(i, 0);
@@ -2597,7 +2623,7 @@ class Mesh
         edge_distributor_import_torank = Cabana::slice<2>(edge_distributor_import);
 
         // Hash recieved edges and GIDs into edges map
-        Kokkos::parallel_for("edge_distributor_import_to_export", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+        Kokkos::parallel_for("edge_distributor_import_to_export3", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
             KOKKOS_LAMBDA(const int i) {
             
             int v0 = edge_distributor_import_verts(i, 0);
@@ -2656,6 +2682,8 @@ class Mesh
         //     _owned_vertices, _ghost_vertices, (int)_vertices.size(),
         //     _owned_edges, _ghost_edges, (int)_edges.size(),
         //     _owned_faces, _ghost_faces, (int)_faces.size());
+
+        Kokkos::Profiling::popRegion();
     }
 
     /**
@@ -2668,6 +2696,8 @@ class Mesh
     template <class View>
     void refine(View& fgids)
     {
+        Kokkos::Profiling::pushRegion("Mesh::refine");
+
         // Refining outdates halo data
         _halo_level = 0; _halo_depth = 0;
         _vert_halo_export.clear();
@@ -2682,6 +2712,8 @@ class Mesh
         // _sort_by_layer();
         _populate_boundary_elements();
         _version++;
+
+        Kokkos::Profiling::popRegion();
     }
 
     /**
@@ -2694,6 +2726,8 @@ class Mesh
      */
     void gather(int level, int depth)
     {
+        Kokkos::Profiling::pushRegion("Mesh::gather");
+
         if (depth < 1)
             throw std::runtime_error(
                     "NuMesh::Mesh: halo depth of gather must be at least 1." );
@@ -2713,6 +2747,8 @@ class Mesh
         //     _mesh->printVertices();
         // }
         _version++;
+
+        Kokkos::Profiling::popRegion();
     }
     
     v_array_type& vertices() {return _vertices;}

@@ -52,6 +52,8 @@ class V2E
      */
     void rebuild()
     {
+        Kokkos::Profiling::pushRegion("V2E::rebuild");
+
         auto vertices = _mesh->vertices();
         auto edges = _mesh->edges();
 
@@ -123,6 +125,8 @@ class V2E
             });
         Kokkos::fence();
         _map_version = _mesh->version();
+
+        Kokkos::Profiling::popRegion();
     }
 
     auto offsets() {return _offsets;}
@@ -181,6 +185,8 @@ class V2F
      */
     void rebuild()
     {
+        Kokkos::Profiling::pushRegion("V2F::rebuild");
+
         auto vertices = _mesh->vertices();
         auto faces = _mesh->faces();
 
@@ -257,6 +263,8 @@ class V2F
         Kokkos::fence();
 
         _map_version = _mesh->version();
+
+        Kokkos::Profiling::popRegion();
     }
 
     auto offsets() {return _offsets;}
@@ -317,6 +325,8 @@ class V2V
      */
     void rebuild()
     {
+        Kokkos::Profiling::pushRegion("V2V::rebuild");
+
         // int rank = _rank;
         // Define the hash map type
         using PairType = std::pair<int, int>;
@@ -430,6 +440,8 @@ class V2V
             });
         Kokkos::fence();
         _map_version = _mesh->version();
+
+        Kokkos::Profiling::popRegion();
     }
 
     auto offsets() {return _offsets;}
