@@ -5,9 +5,6 @@ from vtk.util.numpy_support import numpy_to_vtk
 from scipy.spatial import ConvexHull
 from sklearn.cluster import KMeans
 
-# Ian's code starts with an icosohedran (20 faces yes, 12 vertices?), then refines and throws away more coarse levels
-# Do this: 162 verts then refine uniformly 5 more times (~160,000 verts?) all on a unit sphere
-
 def fibonacci_sphere(radius, num_points):
     """ Generate `num_points` nearly uniform points on a sphere of given `radius` using the Fibonacci lattice. """
     indices = np.arange(0, num_points, dtype=float) + 0.5
@@ -165,9 +162,9 @@ def main():
     num_points = int(sys.argv[2])
     num_procs = int(sys.argv[3])
 
-    if num_points % num_procs != 0:
-        print("Error: num_points must be evenly divisible by num_procs.")
-        sys.exit(1)
+    # if num_points % num_procs != 0:
+    #     print("Error: num_points must be evenly divisible by num_procs.")
+    #     sys.exit(1)
 
     points = fibonacci_sphere(radius, num_points)
     connectivity = spherical_triangulation(points)
@@ -180,7 +177,7 @@ def main():
     for rank, (part_points, part_cells, num_owned, ghost_flags, vertex_owners, vertex_gids) in enumerate(partitions):
         filename = f"mesh_{rank}.vtu"
         write_vtu(filename, part_points, part_cells, ghost_flags, vertex_owners, vertex_gids)
-        print(f"Written {filename} with {len(part_points)} points ({num_owned} owned, {len(part_points) - num_owned} ghosts) and {len(part_cells)} cells")
+        print(f"Wrote {filename} with {len(part_points)} points ({num_owned} owned, {len(part_points) - num_owned} ghosts) and {len(part_cells)} cells")
 
 
 if __name__ == "__main__":
