@@ -354,7 +354,7 @@ class V2V
         int total_vertices = vertices.size();
 
         // At worst, each vert is connected 6*3*(max tree level) verts
-        int max_verts = total_vertices * 6 * 3 * (_mesh->max_level() + 1); // Max level could be 0
+        int max_verts = total_vertices * 6 * 3 * (_mesh->local_max_tree_depth() + 1); // Max level could be 0
         MapType vert_vert_map(max_verts);
 
         // Allocate offsets and indices (first pass to count unique neighbors)

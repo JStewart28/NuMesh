@@ -135,7 +135,7 @@ void gather(std::shared_ptr<HaloType>& halo, std::shared_ptr<ArrayType> data)
     if (aosoa->size() != (num_local+num_ghost))
     {
         throw std::runtime_error(
-                    "NuMesh::gather: Array extents not large enough for gather");
+                    "NuMesh::gather: Array extents not large enough for gather. Call update()");
     }
     auto cabana_halo = halo->cabana_halo();
     Cabana::gather(*cabana_halo, *aosoa);

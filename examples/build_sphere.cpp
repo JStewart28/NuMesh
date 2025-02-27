@@ -226,57 +226,58 @@ int main(int argc, char** argv) {
     auto positions = NuMesh::Array::createArray<memory_space>("positions", vertex_triple_layout);
     auto paosoa = positions->aosoa();
 
-    auto numesh_halo = NuMesh::createHalo(mesh, 0, 1, NuMesh::Vertex());
-    positions->update();
-    NuMesh::gather(numesh_halo, positions);
-    // printf("After gather / before refine: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
+    // auto numesh_halo = NuMesh::createHalo(mesh, 0, 1, NuMesh::Vertex());
+    // positions->update();
+    // NuMesh::gather(numesh_halo, positions);
+    // // printf("After gather / before refine: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
 
 
-    Kokkos::View<int[1], memory_space> fin("fin");
-    Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, fin.extent(0)),
-    KOKKOS_LAMBDA(int i) {
+    // Kokkos::View<int[1], memory_space> fin("fin");
+    // Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, fin.extent(0)),
+    // KOKKOS_LAMBDA(int i) {
 
-        fin(i) = 15;
+    //     fin(i) = 15;
 
-    });
+    // });
     
-    mesh->refine(fin);
+    // mesh->refine(fin);
     // printf("Before update: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
 
-    positions->update();
+    // positions->update();
     // printf("After refine and update: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
 
     // Uniform refinement
-    // for (int i = 0; i < 1; i++)
-    // {
-    //     int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
-    //     auto vef_gid_start = mesh->vef_gid_start();
-    //     int face_gid_start = vef_gid_start(rank, 2);
-    //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
-    //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
-    //         KOKKOS_LAMBDA(int i) {
+    for (int i = 0; i < 4; i++)
+    {
+        int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
+        auto vef_gid_start = mesh->vef_gid_start();
+        int face_gid_start = vef_gid_start(rank, 2);
+        Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
+        Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),
+            KOKKOS_LAMBDA(int i) {
 
-    //             fin(i) = face_gid_start + i;
+                fin(i) = face_gid_start + i;
 
-    //         });
-    //     mesh->refine(fin);
-    // }
+            });
+        if (rank  == 0) printf("R%d: Starting refine %d...\n", rank, i+1);
+        mesh->refine(fin);
+        int global_max_tree_depth = mesh->global_max_max_tree_depth();
+        int global_min_tree_depth = mesh->global_min_max_tree_depth();
+        // if (rank == 0) printf("R%d: global min/max depths: %d, %d\n", rank, global_min_tree_depth, global_max_tree_depth);
+        if (rank == 0) printf("R%d: Creating halo %d at level %d...\n", rank, i+1, global_min_tree_depth);
 
-    mesh->gather(0, 1);
-    positions->update();
+        auto numesh_halo = NuMesh::createHalo(mesh, global_min_tree_depth, 1, NuMesh::Vertex());
+        // mesh->gather(global_min_tree_depth, 1);
+        if (rank == 0) printf("R%d: gathering positions...\n", rank);
+        positions->update();
+        NuMesh::gather(numesh_halo, positions);
+
+    }
+    if (rank == 0) printf("R%d: done\n", rank);
+
+    // mesh->gather(1, 1);
+    
     // printf("After gather/update: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
-
-    mesh->printFaces(1, 15);
-    mesh->printEdges(1, 31);
-    mesh->printEdges(1, 203);
-    mesh->printEdges(1, 32);
-    mesh->printVertices(1, 24);
-    mesh->printVertices(1, 25);
-    mesh->printVertices(1, 77);
-    mesh->printFaces(1, 45);
-    mesh->printFaces(1, 46);
-    mesh->printFaces(1, 47);
-    mesh->printFaces(1, 48);
 
 
 

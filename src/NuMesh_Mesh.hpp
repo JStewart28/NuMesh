@@ -115,7 +115,7 @@ class Mesh
         _version = 0;
 
         // Mesh starts with no refinement
-        _max_tree_level = 0;
+        _local_max_tree_depth = 0;
 
         // Mesh starts with no haloing
         _halo_level = -1; _halo_depth = 0;
@@ -147,6 +147,16 @@ class Mesh
         Cabana::permute( sort_edges, _edges );
         auto sort_faces = Cabana::sortByKey( f_layer );
         Cabana::permute( sort_faces, _faces );
+    }
+
+    /**
+     * Updates global values for min max tree depth and
+     * max max tree depth
+     */
+    void update_global_tree_depths()
+    {
+        MPI_Allreduce(&_local_max_tree_depth, &_global_min_max_tree_depth, 1, MPI_INT, MPI_MIN, _comm);
+        MPI_Allreduce(&_local_max_tree_depth, &_global_max_max_tree_depth, 1, MPI_INT, MPI_MAX, _comm);
     }
 
     /**
@@ -961,8 +971,8 @@ class Mesh
         // Create the new faces
         // printFaces(1, 31);
         // printf("New lid start: %d\n", f_new_lid_start);
-        int_d max_tree_level_d("max_tree_level_d"); Kokkos::deep_copy(max_tree_level_d, _max_tree_level);
-        int max_tree_level = _max_tree_level;
+        int_d local_max_tree_depth_d("local_max_tree_depth_d"); Kokkos::deep_copy(local_max_tree_depth_d, _local_max_tree_depth);
+        int local_max_tree_depth = _local_max_tree_depth;
         Kokkos::deep_copy(face_counter, 0);
         Kokkos::parallel_for("new internal faces", Kokkos::RangePolicy<execution_space>(0, face_refinements),
             KOKKOS_LAMBDA(int i) {
@@ -972,7 +982,7 @@ class Mesh
             int layer = f_layer(parent_face_lid) + 1;
 
             // If this layer is higher than the max tree level, update it
-            if (layer > max_tree_level) Kokkos::atomic_store(&max_tree_level_d(), layer);
+            if (layer > local_max_tree_depth) Kokkos::atomic_store(&local_max_tree_depth_d(), layer);
 
             int offset = Kokkos::atomic_fetch_add(&face_counter(), 4);
             int new_face_lid, new_face_gid;
@@ -1100,7 +1110,7 @@ class Mesh
 
         });
 
-        Kokkos::deep_copy(_max_tree_level, max_tree_level_d);
+        Kokkos::deep_copy(_local_max_tree_depth, local_max_tree_depth_d);
 
         // Clear ghosted edges that were needed to complete refinement.
         // We do this to remain consistent, so only a call to gather()
@@ -1108,6 +1118,9 @@ class Mesh
         _vertices.resize(_owned_vertices); _ghost_vertices = 0;
         _edges.resize(_owned_edges); _ghost_edges = 0;
         _faces.resize(_owned_faces); _ghost_faces = 0;
+
+        // Update global values of tree depth
+        update_global_tree_depths();
 
         // if (rank == 0)
         // {
@@ -1266,7 +1279,7 @@ class Mesh
     {
         Kokkos::Profiling::pushRegion("_gather_depth_one");
 
-        const int level = _halo_level, rank = _rank, tree_depth = _max_tree_level;
+        const int level = _halo_level, rank = _rank, tree_depth = _local_max_tree_depth;
 
         // Define the hash map type
         using PairType = std::pair<int, int>;
@@ -1384,8 +1397,9 @@ class Mesh
             int fgid_parent = boundary_faces(face_idx);
             int flid_parent = fgid_parent - vef_gid_start(rank, 2);
             int face_level = f_layer(flid_parent);
-            // if (rank == 2) printf("R%d: boundary face gid: %d, level: %d\n", rank, fgid_parent, face_level);
-            if (face_level != level) return; // Only consider elements at our level and their children
+            // if (rank == 0) printf("R%d: boundary face gid: %d, level: %d\n", rank, fgid_parent, face_level);
+            if (face_level < level) return; // Only consider elements at our level and their children
+            // if (rank == 0) printf("R%d: bpface %d, face_level: %d, level: %d\n", rank, fgid_parent, face_level, level);
 
             // if (fgid_parent == 30 || fgid_parent == 31) printf("R%d: processing parent FGID %d\n",
             //     rank, fgid_parent);
@@ -1404,9 +1418,6 @@ class Mesh
                     // but first check that it is not already present
                     // "If we do not own this vert, we need to tell the owner to send it to us"
                     auto hash_key = hashFunction(vgid_parent, vert_owner, rank);
-                    /**
-                     * For some reason keys 120259084289 and 206158430211 conflict on grid mesh
-                     */
                     auto result = vert_distributor_map.insert(hash_key, 1);
                     // if (rank == 0)
                     //     printf("R%d: vgid_parent %d, vowner: %d, result: %d key: %" PRIu64 "\n", rank,
@@ -1557,6 +1568,8 @@ class Mesh
                             if (fcgid != -1) { // -1 indicates no child
                                 queue[back] = fcgid;
                                 back = (back + 1) % capacity;
+
+                                // if (rank == 0) printf("R%d: from figd %d, adding child %d\n", rank, f_gid(flid), fcgid);
 
                                 // Handle queue overflow (optional, if queue size is too small)
                                 assert(back != front);
@@ -2196,7 +2209,7 @@ class Mesh
         Kokkos::fence();
 
         // All initialized faces are on the same level
-        _max_tree_level = 0;
+        _local_max_tree_depth = 0;
 
         _createFaces();
         // _sort_by_layer();
@@ -2707,7 +2720,7 @@ class Mesh
         _refineFaces(fgids);
 
         // Increase max tree depth by 1
-        _max_tree_level++;
+        _local_max_tree_depth++;
 
         // _sort_by_layer();
         _populate_boundary_elements();
@@ -2734,7 +2747,7 @@ class Mesh
         if (level < 0)
             throw std::runtime_error(
                     "NuMesh::Mesh: level of gather must be at least 0." );
-        if (level > _max_tree_level)
+        if (level > _local_max_tree_depth)
             throw std::runtime_error(
                     "NuMesh::Mesh: level of gather must be at <= max tree level." );
         
@@ -2760,7 +2773,12 @@ class Mesh
     int halo_level() const {return _halo_level;}
     int halo_depth() const {return _halo_depth;}
 
-    int max_level() const {return _max_tree_level;}
+    // Local and global tree depths
+    int local_max_tree_depth() const {return _local_max_tree_depth;}
+    int global_min_max_tree_depth() const {return _global_min_max_tree_depth;}
+    int global_max_max_tree_depth() const {return _global_max_max_tree_depth;}
+
+    // Element counts
     int count(Own, Vertex) const {return _owned_vertices;}
     int count(Own, Edge) const {return _owned_edges;}
     int count(Own, Face) const {return _owned_faces;}
@@ -2931,8 +2949,11 @@ class Mesh
     std::vector<std::shared_ptr<halo_aosoa>> _face_halo_export;
     int _halo_level, _halo_depth;
 
-    // Max depth of tree
-    int _max_tree_level;
+    // Max local depth of tree
+    int _local_max_tree_depth;
+
+    // Global maximum amd minimum tree 
+    int _global_min_max_tree_depth, _global_max_max_tree_depth;
 };
 //---------------------------------------------------------------------------//
 
