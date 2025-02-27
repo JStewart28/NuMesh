@@ -102,9 +102,9 @@ TYPED_TEST(HaloTest, grid_test_halo_depth_1_uniform_refinement2)
  */
 TYPED_TEST(HaloTest, sphere_test_halo_depth_1_no_refinement)
 {
-    if (this->comm_size_ != 4)
+    if ((this->comm_size_ != 4) && (this->comm_size_ != 16))
     {
-        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        printf("sphere_test0_refinement: only communicator size of 4 or 16 is supported.\n");
         return;
     }
     
@@ -125,9 +125,9 @@ TYPED_TEST(HaloTest, sphere_test_halo_depth_1_no_refinement)
  */
 TYPED_TEST(HaloTest, sphere_test_halo_depth_1_uniform_refinement1)
 {
-    if (this->comm_size_ != 4)
+    if ((this->comm_size_ != 4) && (this->comm_size_ != 16))
     {
-        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        printf("sphere_test0_refinement: only communicator size of 4 or 16 is supported.\n");
         return;
     }
     
@@ -163,9 +163,9 @@ TYPED_TEST(HaloTest, sphere_test_halo_depth_1_uniform_refinement1)
  */
 TYPED_TEST(HaloTest, sphere_test_halo_depth_1_uniform_refinement2)
 {
-    if (this->comm_size_ != 4)
+    if ((this->comm_size_ != 4) && (this->comm_size_ != 16))
     {
-        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        printf("sphere_test0_refinement: only communicator size of 4 or 16 is supported.\n");
         return;
     }
     

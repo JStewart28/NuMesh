@@ -439,6 +439,37 @@ class Mesh
         // (global ID, from rank) tuples
         using int_vector_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int>, memory_space, 4>;
 
+        // Make one pass to figure out correct sizes for buffers
+        auto f_eid_slice0 = Cabana::slice<F_EIDS>(_faces);
+        auto f_cid_slice0 = Cabana::slice<F_CID>(_faces);
+        int_d remote_edge_counter("remote_edge_counter");
+        Kokkos::parallel_for("populate_edge_needrefine", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
+            KOKKOS_LAMBDA(int i) {
+            
+            int f_lid = fgids(i) - vef_gid_start(rank, 2);
+
+            if ((f_lid >= 0) && (f_lid < owned_faces)) // Make sure we own the face
+            {
+                // If a face has already been refined (i.e. has children), don't refine it again
+                if (f_cid_slice0(f_lid, 0) != -1) return;
+
+                for (int j = 0; j < 3; j++)
+                {
+                    int ex_gid = f_eid_slice0(f_lid, j);
+                    int ex_lid = ex_gid - vef_gid_start(rank, 1);
+                    if (!((ex_lid >= 0) && (ex_lid < owned_edges)))
+                    {
+                        /**
+                         * We do not own this edge and need to tell another
+                         * process to refine it. Increment counter
+                         */
+                        Kokkos::atomic_increment(&remote_edge_counter());
+                    }
+                }
+            }
+        });
+        Kokkos::fence();
+
         /**
          * List of locally-owned face IDs this process needs to split
          * Since we don't know the size a priori, make it as large as the
@@ -463,15 +494,13 @@ class Mesh
         int_vector_d edge_needrefine("edge_needrefine", _owned_edges);
         Kokkos::deep_copy(edge_needrefine, 0);
 
-
-        const int remote_edge_needrefine_size = _owned_edges;
+        int remote_edge_needrefine_size;
+        Kokkos::deep_copy(remote_edge_needrefine_size, remote_edge_counter);
         int_vector_aosoa export_edges_aosoa("remote_edges_send", remote_edge_needrefine_size);
         int_vector_d distributor_export_ranks("distributor_export_ranks", remote_edge_needrefine_size);
         Kokkos::deep_copy(distributor_export_ranks, -1);
         
         // Slices we need
-        auto f_eid_slice0 = Cabana::slice<F_EIDS>(_faces);
-        auto f_cid_slice0 = Cabana::slice<F_CID>(_faces);
         auto remote_edge_slice = Cabana::slice<0>(export_edges_aosoa);
         auto remote_edge_rank_slice = Cabana::slice<1>(export_edges_aosoa);
         Cabana::deep_copy(remote_edge_slice, -1);
@@ -483,12 +512,11 @@ class Mesh
         int_d vert_counter("vert_counter");
         int_d edge_counter("edge_counter");
         int_d face_counter("face_counter");
-        int_d remote_edge_counter("remote_edge_counter");
         Kokkos::deep_copy(vert_counter, 0);
         Kokkos::deep_copy(edge_counter, 0);
         Kokkos::deep_copy(face_counter, 0);
         Kokkos::deep_copy(remote_edge_counter, 0);
-        
+
         Kokkos::parallel_for("populate_edge_needrefine", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
             KOKKOS_LAMBDA(int i) {
             
@@ -641,6 +669,7 @@ class Mesh
         _edges.resize(_owned_edges + _ghost_edges);
         _owned_vertices += new_vertices;
         _vertices.resize(_owned_vertices);
+        // if (rank == 14) printf("R%d: new elid start: %d, o/g edges: %d, %d\n", rank, e_new_lid_start, owned_edges, _ghost_edges);
 
         // Vertex slices
         auto v_rank = Cabana::slice<V_OWNER>(_vertices);
@@ -722,11 +751,12 @@ class Mesh
             int ec_gid1 = vef_gid_start(rank, 1) + ec_lid1;
             int ec_layer = e_layer(i) + 1;
 
-            // if (rank == 1) printf("R%d refining edge %d: new edges %d, %d (offset %d)\n", rank, i+vef_gid_start(rank, 1), ec_gid0, ec_gid1, offset);
-
             // Global IDs = global ID start + local ID
             e_gid(ec_lid0) = ec_gid0;
             e_gid(ec_lid1) = ec_gid1;
+
+            // if (rank == 14) printf("R%d refining edge %d: new egids (%d, %d), elids (%d, %d), (offset %d)\n",
+            //     rank, i+vef_gid_start(rank, 1), ec_gid0, ec_gid1, ec_lid0, ec_lid1, offset);
 
             // Set parent edges for the split edges
             e_pid(ec_lid0) = i + vef_gid_start(rank, 1);
@@ -782,6 +812,9 @@ class Mesh
 
             // Parent edge LID
             int elid = Utils::get_lid(e_gid, distributor_edges_import_slice(i), owned_edges, owned_edges);
+            // if (rank == 14) printf("R%d: imported eg/lid: (%d, %d), from R%d, egid min range: %d\n", rank,
+            //     distributor_edges_import_slice(i), elid, distributor_ranks_import_slice(i),
+            //     vef_gid_start(rank, 1));
             assert(elid != -1);
             halo_export_ids(idx) = elid;
 
@@ -2822,7 +2855,7 @@ class Mesh
         
     }
     /**
-     * opt: 1 = specific edge, 2 = owned, 3 = own+ghost
+     * opt: 1 = specific edge, 2 = owned, 0 = all
      */
     void printEdges(int opt, int egid)
     {

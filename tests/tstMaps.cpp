@@ -133,9 +133,9 @@ TYPED_TEST(MapsTest, grid_test_v2v_refinement2)
  */
 TYPED_TEST(MapsTest, sphere_test_v2e_refinement0)
 {
-    if (this->comm_size_ != 4)
+    if ((this->comm_size_ != 4) && (this->comm_size_ != 16))
     {
-        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        printf("sphere_test0_refinement: only communicator size of 4 or 16 is supported.\n");
         return;
     }
     
@@ -155,9 +155,9 @@ TYPED_TEST(MapsTest, sphere_test_v2e_refinement0)
  */
 TYPED_TEST(MapsTest, sphere_test_v2f_refinement0)
 {
-    if (this->comm_size_ != 4)
+    if ((this->comm_size_ != 4) && (this->comm_size_ != 16))
     {
-        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        printf("sphere_test0_refinement: only communicator size of 4 or 16 is supported.\n");
         return;
     }
     
@@ -178,9 +178,9 @@ TYPED_TEST(MapsTest, sphere_test_v2f_refinement0)
  */
 TYPED_TEST(MapsTest, sphere_test_v2f_refinement2)
 {
-    if (this->comm_size_ != 4)
+    if ((this->comm_size_ != 4) && (this->comm_size_ != 16))
     {
-        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        printf("sphere_test0_refinement: only communicator size of 4 or 16 is supported.\n");
         return;
     }
     
@@ -215,9 +215,9 @@ TYPED_TEST(MapsTest, sphere_test_v2f_refinement2)
  */
 TYPED_TEST(MapsTest, sphere_test_v2v_refinement0)
 {
-    if (this->comm_size_ != 4)
+    if ((this->comm_size_ != 4) && (this->comm_size_ != 16))
     {
-        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        printf("sphere_test0_refinement: only communicator size of 4 or 16 is supported.\n");
         return;
     }
     
@@ -238,9 +238,9 @@ TYPED_TEST(MapsTest, sphere_test_v2v_refinement0)
  */
 TYPED_TEST(MapsTest, sphere_test_v2v_refinement2)
 {
-    if (this->comm_size_ != 4)
+    if ((this->comm_size_ != 4) && (this->comm_size_ != 16))
     {
-        printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        printf("sphere_test0_refinement: only communicator size of 4 or 16 is supported.\n");
         return;
     }
     

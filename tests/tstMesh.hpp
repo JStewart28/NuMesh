@@ -407,10 +407,13 @@ class MeshTest : public ::testing::Test
         MPI_Allreduce(&vcount, &actual_verts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&ecount, &actual_edges, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&fcount, &actual_faces, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        ASSERT_EQ(expected_verts, actual_verts);
-        ASSERT_EQ(expected_edges, actual_edges);
-        ASSERT_EQ(expected_faces, actual_faces);
-
+        std::array<int, 3> expected_vef = {expected_verts, expected_edges, expected_faces};
+        std::array<int, 3> actual_vef = {actual_verts, actual_edges, actual_faces};
+        if (rank_ == 0)
+        {
+            ASSERT_EQ(expected_vef, actual_vef) << "Total elements incorrect\n";
+        }
+        
         gatherAndCopyToHost();
 
         // The following tests are performed on the entire mesh on Rank 0

@@ -131,6 +131,7 @@ TYPED_TEST(MeshTest, sphere_test0_refinement0)
     if (this->comm_size_ != 4)
     {
         printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        // Otherwise the faces will not be neighbors based on their GIDs
         return;
     }
     
@@ -168,6 +169,7 @@ TYPED_TEST(MeshTest, sphere_test0_refinement1)
     if (this->comm_size_ != 4)
     {
         printf("sphere_test0_refinement: only communicator size of 4 is supported.\n");
+        // Otherwise the faces will not be neighbors based on their GIDs
         return;
     }
     
@@ -205,9 +207,9 @@ TYPED_TEST(MeshTest, sphere_test0_refinement1)
  */
 TYPED_TEST(MeshTest, sphere_test1_refinement)
 {
-    if (this->comm_size_ != 4)
+    if ((this->comm_size_ != 4) && (this->comm_size_ != 16))
     {
-        printf("sphere_test1_refinement: only communicator size of 4 is supported.\n");
+        printf("sphere_test1_refinement: only communicator size of 4 or 16 is supported.\n");
         return;
     }
     
@@ -251,9 +253,9 @@ TYPED_TEST(MeshTest, sphere_test1_refinement)
  */
 TYPED_TEST(MeshTest, sphere_test2_refinement)
 {
-    if (this->comm_size_ != 4)
+    if ((this->comm_size_ != 4) && (this->comm_size_ != 16))
     {
-        printf("sphere_test2_refinement: only communicator size of 4 is supported.\n");
+        printf("sphere_test2_refinement: only communicator size of 4 or 16 is supported.\n");
         return;
     }
     

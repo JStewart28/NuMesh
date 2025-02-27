@@ -203,6 +203,8 @@ int get_lid(Slice_t& gid_slice, int gid, int owned_count, int slice_size)
         int val = gid_slice(mid);
         if (val == gid)
             return mid;
+        else if (val == -1) // GID not yet set, search lower part of space
+            right = mid - 1;
         else if (val < gid)
             left = mid + 1;
         else
