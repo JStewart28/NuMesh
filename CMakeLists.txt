@@ -56,7 +56,9 @@ find_package(MPI REQUIRED)
 
 # Add VTK include directories
 find_package(VTK REQUIRED)
+find_package(SEACASIoss REQUIRED)
 include_directories(${VTK_INCLUDE_DIRS})
+find_package(OpenGL REQUIRED) # Needed to correctly link on Tioga
 
 # find dependencies
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})

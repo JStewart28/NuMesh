@@ -118,10 +118,10 @@ class MeshTest : public ::testing::Test
     {
         // Host-side AoSoAs for storing VTU data
         using vertices_d = Cabana::MemberTypes<int,       // Vertex global ID                                 
-                                               int,       // Owning rank
+                                               int       // Owning rank
                                                >;
         using face_d = Cabana::MemberTypes<int[3],       // Vertex LIDs forming the triangle                                
-                                           bool,         // Flag indicating if the cell contains a ghost point
+                                           bool         // Flag indicating if the cell contains a ghost point
                                            >;
 
         using vert_aosoa = Cabana::AoSoA<vertices_d, Kokkos::HostSpace, 4>;

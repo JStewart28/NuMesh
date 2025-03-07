@@ -19,7 +19,7 @@
 
 #include <NuMesh_Utils.hpp>
 
-#include "_hypre_parcsr_ls.h"
+// #include "_hypre_parcsr_ls.h"
 
 #ifndef AOSOA_SLICE_INDICES
 #define AOSOA_SLICE_INDICES 1
@@ -76,8 +76,7 @@ class Mesh
 
     // Note: Larger types should be listed first
     using vertex_data = Cabana::MemberTypes<int,       // Vertex global ID                                 
-                                            int,       // Owning rank
-                                            >;
+                                            int>;
     using edge_data = Cabana::MemberTypes<  int[3],    // Vertex global IDs of edge: (endpoint, endpoint, midpoint)
                                                        // Midpoint is populated when the edge is split    
                                             int[2],    // Child edge global IDs, going clockwise from
@@ -85,7 +84,7 @@ class Mesh
                                             int,       // Parent edge global ID
                                             int,       // Edge global ID
                                             int,       // Layer of the tree this edge lives on
-                                            int,       // Owning rank
+                                            int       // Owning rank
                                             >;
     using face_data = Cabana::MemberTypes<  int[4],    // Child face global IDs
                                             int[3],    // Edge global IDs that make up face 
@@ -93,7 +92,7 @@ class Mesh
                                             int,       // Face global ID
                                             int,       // Parent face global ID 
                                             int,       // Layer of the tree this face lives on                       
-                                            int,       // Owning rank
+                                            int       // Owning rank
                                             >;
                                             
     // XXX Change the final parameter of particle_array_type, vector type, to
@@ -1934,39 +1933,7 @@ class Mesh
          *      Call the set diags/values functions in reverse.
          */
 
-        hypre_ParCSRMatrix *A;
-        hypre_CSRMatrix *diag;
-        hypre_CSRMatrix *offd;
-
-        HYPRE_Int    *diag_i;
-        HYPRE_Int    *diag_j;
-        HYPRE_Real *diag_data;
-
-        HYPRE_Int    *offd_i;
-        HYPRE_Int    *offd_j = NULL;
-        HYPRE_BigInt *big_offd_j = NULL;
-        HYPRE_Real *offd_data = NULL;
-
-        HYPRE_BigInt global_part[2];
-        HYPRE_BigInt ix, iy, iz;
-        HYPRE_Int cnt, o_cnt;
-        HYPRE_Int local_num_rows;
-        HYPRE_BigInt *col_map_offd;
-        HYPRE_Int row_index;
-        HYPRE_Int i;
-
-        HYPRE_Int nx_local, ny_local, nz_local;
-        HYPRE_Int num_cols_offd;
-        HYPRE_BigInt grid_size;
-
-        // diag_i = hypre_CTAlloc(HYPRE_Int,  local_num_rows + 1, HYPRE_MEMORY_HOST);
-        // offd_i = hypre_CTAlloc(HYPRE_Int,  local_num_rows + 1, HYPRE_MEMORY_HOST);
-
-
-        // A = hypre_ParCSRMatrixCreate(comm, grid_size, grid_size,
-        //                         global_part, global_part, num_cols_offd,
-        //                         diag_i[local_num_rows],
-        //                         offd_i[local_num_rows]);
+        
         
         Kokkos::Profiling::popRegion();
     }
