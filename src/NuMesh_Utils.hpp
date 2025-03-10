@@ -183,22 +183,42 @@ void updateGlobalID(Face, int* gid, const vef_gid_start_array n, const vef_gid_s
 /**
  * Get the local ID of a ghosted vert/edge/face given its global ID
  * Performs linear search on the GIDs between range start and end.
- * Cannot assume the AoSoA is sorted for GID
+ * 
+ * Assumes the gid_slice is sorted by GIDs up to index "owned_count"
+ * Consequently, a binary search is performed over the owned space,
+ * and if the gid is not found a linear search is performed over
+ * the ghost space (indices "owned_count" to "slice_size")
+ * 
  * Returns -1 if the global ID is not found
  */
 template <class Slice_t>
 KOKKOS_INLINE_FUNCTION
-int get_lid(Slice_t& slice, int gid, int start, int end)
+int get_lid(Slice_t& gid_slice, int gid, int owned_count, int slice_size)
 {
-    for (int i = start; i < end; i++)
+    // Binary search over the owned space
+    int left = 0, right = owned_count - 1;
+    while (left <= right)
     {
-        int val = slice(i);
+        int mid = left + (right - left) / 2;
+        int val = gid_slice(mid);
         if (val == gid)
-        {
-            return i;
-        }
+            return mid;
+        else if (val == -1) // GID not yet set, search lower part of space
+            right = mid - 1;
+        else if (val < gid)
+            left = mid + 1;
+        else
+            right = mid - 1;
     }
-    return -1;
+
+    // Linear search over the ghost space
+    for (int i = owned_count; i < slice_size; i++)
+    {
+        if (gid_slice(i) == gid)
+            return i;
+    }
+
+    return -1; // Not found
 }
 
 /**

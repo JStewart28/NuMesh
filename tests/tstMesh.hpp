@@ -1,5 +1,5 @@
-#ifndef _TSTMESH2D_HPP_
-#define _TSTMESH2D_HPP_
+#ifndef _TSTMESH_HPP_
+#define _TSTMESH_HPP_
 
 #include <iostream>
 #include <filesystem>
@@ -12,7 +12,14 @@
 #include <Kokkos_Core.hpp>
 #include <NuMesh_Core.hpp>
 
-// #include "TestingUtils.hpp"
+#include <vtkSmartPointer.h>
+#include <vtkXMLUnstructuredGridReader.h>
+#include <vtkUnstructuredGrid.h>
+#include <vtkPoints.h>
+#include <vtkCellArray.h>
+#include <vtkTriangle.h>
+#include <vtkPointData.h>
+#include <vtkDataArray.h>
 
 #include "tstDriver.hpp"
 
@@ -22,7 +29,7 @@ namespace NuMeshTest
 {
 
 template <class T>
-class Mesh2DTest : public ::testing::Test
+class MeshTest : public ::testing::Test
 {
     using ExecutionSpace = typename T::ExecutionSpace;
     using MemorySpace = typename T::MemorySpace;
@@ -39,9 +46,9 @@ class Mesh2DTest : public ::testing::Test
     int rank_, comm_size_;
     int periodic_;
     std::shared_ptr<mesh_t> mesh_ = NuMesh::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
-    v_array_type vertices;
-    e_array_type edges;
-    f_array_type faces;
+    std::shared_ptr<v_array_type> vertices;
+    std::shared_ptr<e_array_type> edges;
+    std::shared_ptr<f_array_type> faces;
     // l = local, g = ghost
     int lv = -1, le = -1, lf = -1, gv = -1, ge = -1, gf = -1;
 
@@ -49,6 +56,10 @@ class Mesh2DTest : public ::testing::Test
     {
         MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
         MPI_Comm_size(MPI_COMM_WORLD, &comm_size_);
+
+        vertices = std::make_shared<v_array_type>("vertices", 0);
+        edges = std::make_shared<e_array_type>("edges", 0);
+        faces = std::make_shared<f_array_type>("faces", 0);
     }
 
     void TearDown() override
@@ -73,7 +84,7 @@ class Mesh2DTest : public ::testing::Test
     }
 
   public:
-    void init(int mesh_size, int periodic)
+    void init_from_grid(int mesh_size, int periodic)
     {
         periodic_ = periodic;
 
@@ -93,7 +104,152 @@ class Mesh2DTest : public ::testing::Test
 
         auto layout = Cabana::Grid::createArrayLayout(local_grid, 1, Cabana::Grid::Node());
         auto array = Cabana::Grid::createArray<double, MemorySpace>("for_initialization", layout);
-        this->mesh_->initializeFromArray(*array, *array);
+        this->mesh_->initializeFromArray(*array);
+
+        // Ensure the size of the mesh is greater than 0
+        int num_verts = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
+        int num_edges = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
+        int num_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+
+        ASSERT_GT(num_verts, 0); ASSERT_GT(num_edges, 0); ASSERT_GT(num_faces, 0);
+    }
+
+    int init_from_file()
+    {
+        // Host-side AoSoAs for storing VTU data
+        using vertices_d = Cabana::MemberTypes<int,       // Vertex global ID                                 
+                                               int       // Owning rank
+                                               >;
+        using face_d = Cabana::MemberTypes<int[3],       // Vertex LIDs forming the triangle                                
+                                           bool         // Flag indicating if the cell contains a ghost point
+                                           >;
+
+        using vert_aosoa = Cabana::AoSoA<vertices_d, Kokkos::HostSpace, 4>;
+        using face_aosoa = Cabana::AoSoA<face_d, Kokkos::HostSpace, 4>;
+
+        std::string filename = "../tests/mesh_files/comm" + std::to_string(comm_size_) + "/mesh_" + std::to_string(rank_) + ".vtu";
+        // std::cout << "Rank " << rank_ << " reading " << filename << std::endl;
+
+        // Read the VTU file
+        vtkSmartPointer<vtkXMLUnstructuredGridReader> reader = vtkSmartPointer<vtkXMLUnstructuredGridReader>::New();
+        reader->SetFileName(filename.c_str());
+        reader->Update();
+
+        vtkSmartPointer<vtkUnstructuredGrid> grid = reader->GetOutput();
+        vtkSmartPointer<vtkPoints> points = grid->GetPoints();
+        
+        if (!points) {
+            std::cerr << "Rank " << rank_ << " failed to read points from " << filename << std::endl;
+            Kokkos::finalize();
+            MPI_Finalize();
+            return 1;
+        }
+
+        int num_points = points->GetNumberOfPoints();
+        int num_cells = grid->GetNumberOfCells();
+
+        // Read ghost point flags
+        vtkSmartPointer<vtkDataArray> ghost_flags_array = grid->GetPointData()->GetArray("ghost_points");
+        if (!ghost_flags_array) {
+            std::cerr << "Rank " << rank_ << " failed to read ghost point flags from " << filename << std::endl;
+            Kokkos::finalize();
+            MPI_Finalize();
+            return 1;
+        }
+
+        vtkSmartPointer<vtkDataArray> vertex_owners_array = grid->GetPointData()->GetArray("vertex_owner");
+        if (!vertex_owners_array) {
+            std::cerr << "Rank " << rank_ << " failed to read vertex owner data from " << filename << std::endl;
+            Kokkos::finalize();
+            MPI_Finalize();
+            return 1;
+        }
+
+        vtkSmartPointer<vtkDataArray> vertex_gids_array = grid->GetPointData()->GetArray("vertex_gids");
+        if (!vertex_gids_array) {
+            std::cerr << "Rank " << rank_ << " failed to read vertex gid data from " << filename << std::endl;
+            Kokkos::finalize();
+            MPI_Finalize();
+            return 1;
+        }
+
+        // Create AoSoAs
+        vert_aosoa vertices_vtu("vertices", num_points);
+        face_aosoa faces_vtu("faces", num_cells);
+        auto v_gid = Cabana::slice<0>(vertices_vtu);
+        auto v_owner = Cabana::slice<1>(vertices_vtu);
+        auto f_vids = Cabana::slice<0>(faces_vtu);
+        auto f_isGhost = Cabana::slice<1>(faces_vtu);
+
+        std::unordered_map<int, bool> is_ghost_point;
+        for (int i = 0; i < num_points; ++i) {
+            int ghost_flag = static_cast<int>(ghost_flags_array->GetComponent(i, 0));
+            is_ghost_point[i] = (ghost_flag == 1);  // Mark as ghost point if flag is 1
+        }
+
+        // Mapping from global VTK point index to local vertex ID
+        std::unordered_map<int, int> global_to_local;
+        // std::vector<Vertex> vertices;
+            
+        int num_ghost_vertices = 0;
+        for (int i = 0; i < num_points; ++i) {
+            // double coords[3];
+            // points->GetPoint(i, coords);
+            global_to_local[i] = i;  // Assign local ID
+            int vertex_owner = static_cast<int>(vertex_owners_array->GetComponent(i, 0));
+            int vertex_gid = static_cast<int>(vertex_gids_array->GetComponent(i, 0));
+            if (is_ghost_point[i]) {
+                num_ghost_vertices++;
+            }
+            v_gid(i) = vertex_gid;
+            v_owner(i) = vertex_owner;
+            // vertices.push_back({i, vertex_gid, vertex_owner, coords[0], coords[1], coords[2]});
+        }
+
+        // Read cells (triangles) and assign local cell IDs
+        for (int i = 0; i < num_cells; ++i) {
+            vtkCell* cell = grid->GetCell(i);
+            if (cell->GetNumberOfPoints() != 3) continue;  // Skip non-triangle cells
+
+            int v0 = cell->GetPointId(0);
+            int v1 = cell->GetPointId(1);
+            int v2 = cell->GetPointId(2);
+
+            // Check if the cell contains a ghost point
+            bool contains_ghost = is_ghost_point[v0] || is_ghost_point[v1] || is_ghost_point[v2];
+
+            f_vids(i, 0) = v0; f_vids(i, 1) = v1; f_vids(i, 2) = v2;
+            f_isGhost(i) = contains_ghost;
+
+        }
+
+        // Output results
+        // std::cout << "Rank " << rank << " processed:\n"
+        //           << "  - " << vertices.size() << " vertices\n"
+        //           << "  - " << cells.size() << " cells\n"
+        //           << "  - " << edges.size() << " edges\n";
+
+        // Output the number of cells containing ghost points
+        // int ghost_cells_count = 0;
+        // for (const auto& cell : cells) {
+        //     if (cell.contains_ghost) {
+        //         ++ghost_cells_count;
+        //     }
+        // }
+
+        // std::cout << "Rank " << rank << " has " << ghost_cells_count << " cells containing ghost points.\n";
+
+        // Copy AoSoAs to deivce, then initialize
+        using vert_aosoa_device = Cabana::AoSoA<vertices_d, MemorySpace, 4>;
+        using face_aosoa_device = Cabana::AoSoA<face_d, MemorySpace, 4>;
+        vert_aosoa_device vertices_device("vertices_device", vertices_vtu.size());
+        face_aosoa_device faces_device("faces_device", faces_vtu.size());
+        Cabana::deep_copy(vertices_device, vertices_vtu);
+        Cabana::deep_copy(faces_device, faces_vtu);
+
+        this->mesh_->initializeFromConnectivity(vertices_device, faces_device);
+
+        return 0;
     }
 
     /**
@@ -105,13 +261,13 @@ class Mesh2DTest : public ::testing::Test
         auto& edges_ptr = mesh_->edges();
         auto& faces_ptr = mesh_->faces();
 
-        vertices.resize(vertices_ptr.size());
-        edges.resize(edges_ptr.size());
-        faces.resize(faces_ptr.size());
+        vertices->resize(vertices_ptr.size());
+        edges->resize(edges_ptr.size());
+        faces->resize(faces_ptr.size());
 
-        Cabana::deep_copy(faces, faces_ptr);
-        Cabana::deep_copy(edges, edges_ptr);
-        Cabana::deep_copy(vertices, vertices_ptr);
+        Cabana::deep_copy(*faces, faces_ptr);
+        Cabana::deep_copy(*edges, edges_ptr);
+        Cabana::deep_copy(*vertices, vertices_ptr);
     }
 
     /**
@@ -121,9 +277,9 @@ class Mesh2DTest : public ::testing::Test
     {
         const int rank = rank_;
 
-        auto vertices_ptr = mesh_->vertices();
-        auto edges_ptr = mesh_->edges();
-        auto faces_ptr = mesh_->faces();
+        auto& vertices_ptr = mesh_->vertices();
+        auto& edges_ptr = mesh_->edges();
+        auto& faces_ptr = mesh_->faces();
 
          // Local counts for each rank
         int local_vef_count[3] = {mesh_->count(NuMesh::Own(), NuMesh::Vertex()),
@@ -154,7 +310,7 @@ class Mesh2DTest : public ::testing::Test
 
         lv = vert_halo.numLocal(); gv = vert_halo.numGhost();
         vertices_ptr.resize(lv + gv);
-        vertices.resize(lv + gv);
+        vertices->resize(lv + gv);
 
         Cabana::gather(vert_halo, vertices_ptr);
 
@@ -187,7 +343,7 @@ class Mesh2DTest : public ::testing::Test
 
         le = edge_halo.numLocal(); ge = edge_halo.numGhost();
         edges_ptr.resize(le + ge);
-        edges.resize(le + ge);
+        edges->resize(le + ge);
 
         Cabana::gather(edge_halo, edges_ptr);
 
@@ -215,15 +371,15 @@ class Mesh2DTest : public ::testing::Test
 
         lf = face_halo.numLocal(); gf = face_halo.numGhost();
         faces_ptr.resize(lf + gf);
-        faces.resize(lf + gf);
+        faces->resize(lf + gf);
 
         Cabana::gather(face_halo, faces_ptr);
 
         // Copy data to host
         // Rank 0 holds the entire mesh
-        Cabana::deep_copy(faces, faces_ptr);
-        Cabana::deep_copy(edges, edges_ptr);
-        Cabana::deep_copy(vertices, vertices_ptr);
+        Cabana::deep_copy(*faces, faces_ptr);
+        Cabana::deep_copy(*edges, edges_ptr);
+        Cabana::deep_copy(*vertices, vertices_ptr);
     }
 
     /**
@@ -241,19 +397,34 @@ class Mesh2DTest : public ::testing::Test
     /**
      * Verify the faces in fin were refined corrrectly
      */
-    void verifyRefinement()
+    void verifyRefinement(int expected_verts, int expected_edges, int expected_faces)
     {
+        // Check that the correct number of new vertices, edges, and faces were created
+        int vcount = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
+        int ecount = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
+        int fcount = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int actual_verts, actual_edges, actual_faces;
+        MPI_Allreduce(&vcount, &actual_verts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&ecount, &actual_edges, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&fcount, &actual_faces, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        std::array<int, 3> expected_vef = {expected_verts, expected_edges, expected_faces};
+        std::array<int, 3> actual_vef = {actual_verts, actual_edges, actual_faces};
+        if (rank_ == 0)
+        {
+            ASSERT_EQ(expected_vef, actual_vef) << "Total elements incorrect\n";
+        }
+        
         gatherAndCopyToHost();
 
         // The following tests are performed on the entire mesh on Rank 0
         checkGIDSpaceGaps();
 
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto e_owner = Cabana::slice<E_OWNER>(edges);
-        auto f_gid = Cabana::slice<F_GID>(faces);
-        auto e_vid = Cabana::slice<E_VIDS>(edges);
-        auto e_children = Cabana::slice<E_CIDS>(edges);
-        auto e_parent = Cabana::slice<E_PID>(edges);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
+        auto e_owner = Cabana::slice<E_OWNER>(*edges);
+        auto f_gid = Cabana::slice<F_GID>(*faces);
+        auto e_vid = Cabana::slice<E_VIDS>(*edges);
+        auto e_children = Cabana::slice<E_CIDS>(*edges);
+        auto e_parent = Cabana::slice<E_PID>(*edges);
 
         for (int i = 0; i < le+ge; i++)
         {
@@ -277,9 +448,9 @@ class Mesh2DTest : public ::testing::Test
      */
     void checkGIDSpaceBounds()
     {
-        auto v_gid = Cabana::slice<V_GID>(vertices);
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto f_gid = Cabana::slice<F_GID>(faces);
+        auto v_gid = Cabana::slice<V_GID>(*vertices);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
+        auto f_gid = Cabana::slice<F_GID>(*faces);
 
         auto vef_gid_start = mesh_->vef_gid_start();
 
@@ -338,18 +509,18 @@ class Mesh2DTest : public ::testing::Test
     {
         if (rank_ != 0) return;
 
-        auto v_gid = Cabana::slice<V_GID>(vertices);
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto e_owner = Cabana::slice<E_OWNER>(edges);
-        auto f_gid = Cabana::slice<F_GID>(faces);
+        auto v_gid = Cabana::slice<V_GID>(*vertices);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
+        auto e_owner = Cabana::slice<E_OWNER>(*edges);
+        auto f_gid = Cabana::slice<F_GID>(*faces);
 
         // Sort by GID
         auto sort_verts = Cabana::sortByKey( v_gid );
-        Cabana::permute( sort_verts, vertices );
+        Cabana::permute( sort_verts, *vertices );
         auto sort_edges = Cabana::sortByKey( e_gid );
-        Cabana::permute( sort_edges, edges );
+        Cabana::permute( sort_edges, *edges );
         auto sort_faces = Cabana::sortByKey( f_gid );
-        Cabana::permute( sort_faces, faces );
+        Cabana::permute( sort_faces, *faces );
 
         for (int i = 0; i < lv+gv; i++)
         {
@@ -357,9 +528,9 @@ class Mesh2DTest : public ::testing::Test
             ASSERT_EQ(i, gid) << "Rank " << rank_ << ": Gap in vertex GID space\n";
             
         }
-        auto e_vid = Cabana::slice<E_VIDS>(edges);
-        auto e_children = Cabana::slice<E_CIDS>(edges);
-        auto e_parent = Cabana::slice<E_PID>(edges);
+        auto e_vid = Cabana::slice<E_VIDS>(*edges);
+        auto e_children = Cabana::slice<E_CIDS>(*edges);
+        auto e_parent = Cabana::slice<E_PID>(*edges);
         // for (int i = 0; i < mesh_->count(NuMesh::Own(), NuMesh::Edge()); i++)
         // {
            
@@ -396,9 +567,9 @@ class Mesh2DTest : public ::testing::Test
     {
         if (rank_ != 0) return;
 
-        auto v_gid = Cabana::slice<V_GID>(vertices);
-        auto e_vid = Cabana::slice<E_VIDS>(edges);
-        auto e_gid = Cabana::slice<E_GID>(edges);
+        auto v_gid = Cabana::slice<V_GID>(*vertices);
+        auto e_vid = Cabana::slice<E_VIDS>(*edges);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
 
         int num_verts = lv + gv;
         Kokkos::View<int**, Kokkos::HostSpace> v2e("v2e", num_verts, num_verts);
@@ -444,12 +615,15 @@ class Mesh2DTest : public ::testing::Test
      */
     void checkEdgeChildren()
     {
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto e_vid = Cabana::slice<E_VIDS>(edges);
-        auto e_rank = Cabana::slice<E_OWNER>(edges);
-        auto e_cid = Cabana::slice<E_CIDS>(edges);
-        auto e_pid = Cabana::slice<E_PID>(edges);
-        auto e_layer = Cabana::slice<E_LAYER>(edges);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
+        auto e_vid = Cabana::slice<E_VIDS>(*edges);
+        auto e_rank = Cabana::slice<E_OWNER>(*edges);
+        auto e_cid = Cabana::slice<E_CIDS>(*edges);
+        auto e_pid = Cabana::slice<E_PID>(*edges);
+        auto e_layer = Cabana::slice<E_LAYER>(*edges);
+
+        int total_edges = edges->size();
+        int owned_edges = mesh_->count(NuMesh::Own(), NuMesh::Edge());
 
         for (int i = 0; i < le+ge; i++)
         {
@@ -463,7 +637,7 @@ class Mesh2DTest : public ::testing::Test
             // Child vertices
             int c0v0, c0v1, c1v0, c1v1;
 
-            ce0 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 0), 0, edges.size()); ce1 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 1), 0, edges.size());
+            ce0 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 0), owned_edges, total_edges); ce1 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 1), owned_edges, total_edges);
             pv0 = e_vid(i, 0); pv1 = e_vid(i, 1); pvm = e_vid(i, 2);
 
             // Check child edge 0
@@ -488,26 +662,29 @@ class Mesh2DTest : public ::testing::Test
     void checkFaceEdges()
     {
         if (rank_ != 0) return;
-        auto f_cid = Cabana::slice<F_CID>(faces);
-        auto f_gid = Cabana::slice<F_GID>(faces);
-        auto f_eid = Cabana::slice<F_EIDS>(faces);
-        auto f_pid = Cabana::slice<F_PID>(faces);
-        auto f_layer = Cabana::slice<F_LAYER>(faces);
-        auto f_owner = Cabana::slice<F_OWNER>(faces);
+        auto f_cid = Cabana::slice<F_CID>(*faces);
+        auto f_gid = Cabana::slice<F_GID>(*faces);
+        auto f_eid = Cabana::slice<F_EIDS>(*faces);
+        auto f_pid = Cabana::slice<F_PID>(*faces);
+        auto f_layer = Cabana::slice<F_LAYER>(*faces);
+        auto f_owner = Cabana::slice<F_OWNER>(*faces);
 
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto e_vid = Cabana::slice<E_VIDS>(edges);
-        auto e_rank = Cabana::slice<E_OWNER>(edges);
-        auto e_cid = Cabana::slice<E_CIDS>(edges);
-        auto e_pid = Cabana::slice<E_PID>(edges);
-        auto e_layer = Cabana::slice<E_LAYER>(edges);
+        auto e_gid = Cabana::slice<E_GID>(*edges);
+        auto e_vid = Cabana::slice<E_VIDS>(*edges);
+        auto e_rank = Cabana::slice<E_OWNER>(*edges);
+        auto e_cid = Cabana::slice<E_CIDS>(*edges);
+        auto e_pid = Cabana::slice<E_PID>(*edges);
+        auto e_layer = Cabana::slice<E_LAYER>(*edges);
+
+        int total_edges = edges->size();
+        int owned_edges = mesh_->count(NuMesh::Own(), NuMesh::Edge());
 
         for (int i = 0; i < lf+gf; i++)
         {
             int e0, e1, e2;
-            e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), 0, edges.size());
-            e1 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 1), 0, edges.size());
-            e2 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 2), 0, edges.size());
+            e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), owned_edges, total_edges);
+            e1 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 1), owned_edges, total_edges);
+            e2 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 2), owned_edges, total_edges);
             // if (f_gid(i) == 258)
             // {
             //     int egid;
@@ -518,7 +695,6 @@ class Mesh2DTest : public ::testing::Test
             //     egid = f_eid(i, 2);
             //     printf("egid: %d, endpoints: %d, %d\n", egid, e_vid(e2, 0), e_vid(e2, 1));
             // }
-            
             ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e0, e1)) << "FGID " << f_gid(i) << "\n";
             ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e1, e2)) << "FGID " << f_gid(i) << "\n";
             ASSERT_TRUE(shareExactlyOneEndpoint(e_vid, e2, e0)) << "FGID " << f_gid(i) << "\n";
@@ -528,4 +704,4 @@ class Mesh2DTest : public ::testing::Test
 
 } // end namespace NuMeshTest
 
-#endif // _TSTMESH2D_HPP_
+#endif // _TSTMESH_HPP_

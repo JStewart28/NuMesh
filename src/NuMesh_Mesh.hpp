@@ -19,16 +19,16 @@
 
 #include <NuMesh_Utils.hpp>
 
+// #include "_hypre_parcsr_ls.h"
+
 #ifndef AOSOA_SLICE_INDICES
 #define AOSOA_SLICE_INDICES 1
 #endif
 
 // Constants for tuple/slice indices
 #if AOSOA_SLICE_INDICES
-    #define V_XYZ 0
-    #define V_VORT 1
-    #define V_GID 2
-    #define V_OWNER 3
+    #define V_GID 0
+    #define V_OWNER 1
     #define E_VIDS 0
     #define E_CIDS 1
     #define E_PID 2
@@ -70,14 +70,13 @@ class Mesh
     //using l2g_type = Cabana::Grid::IndexConversion::L2G<mesh_type, Node>;
     // using node_view = Kokkos::View<double***, device_type>;
 
-    using halo_type = Cabana::Grid::Halo<MemorySpace>;
+    // For halo data
+    // (global ID, to_rank) tuples
+    using halo_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int>, memory_space, 4>;
 
     // Note: Larger types should be listed first
-    using vertex_data = Cabana::MemberTypes<double[3],    // XYZ coordinates of vertex
-                                            double[2],    // XY vorticity
-                                            int,       // Vertex global ID                                 
-                                            int,       // Owning rank
-                                            >;
+    using vertex_data = Cabana::MemberTypes<int,       // Vertex global ID                                 
+                                            int>;
     using edge_data = Cabana::MemberTypes<  int[3],    // Vertex global IDs of edge: (endpoint, endpoint, midpoint)
                                                        // Midpoint is populated when the edge is split    
                                             int[2],    // Child edge global IDs, going clockwise from
@@ -85,7 +84,7 @@ class Mesh
                                             int,       // Parent edge global ID
                                             int,       // Edge global ID
                                             int,       // Layer of the tree this edge lives on
-                                            int,       // Owning rank
+                                            int       // Owning rank
                                             >;
     using face_data = Cabana::MemberTypes<  int[4],    // Child face global IDs
                                             int[3],    // Edge global IDs that make up face 
@@ -93,7 +92,7 @@ class Mesh
                                             int,       // Face global ID
                                             int,       // Parent face global ID 
                                             int,       // Layer of the tree this face lives on                       
-                                            int,       // Owning rank
+                                            int       // Owning rank
                                             >;
                                             
     // XXX Change the final parameter of particle_array_type, vector type, to
@@ -104,7 +103,7 @@ class Mesh
     using size_type = typename memory_space::size_type;
 
     // Construct a mesh.
-    Mesh( MPI_Comm comm ) : _comm ( comm )
+    Mesh( MPI_Comm comm ) : _comm( comm )
     {
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
@@ -114,9 +113,13 @@ class Mesh
 
         _version = 0;
 
-        _max_depth = 0;
+        // Mesh starts with no refinement
+        _local_max_tree_depth = 0;
 
-        _vef_gid_start = Kokkos::View<int*[3], Kokkos::HostSpace>("_vef_gid_start", _comm_size);
+        // Mesh starts with no haloing
+        _halo_level = -1; _halo_depth = 0;
+
+        _vef_gid_start = Kokkos::View<int*[3], memory_space>("_vef_gid_start", _comm_size);
         Kokkos::deep_copy(_vef_gid_start, -1);
 
         _owned_vertices = 0, _owned_edges = 0, _owned_faces = 0;
@@ -125,7 +128,7 @@ class Mesh
 
     ~Mesh()
     {
-        //MPIX_Info_free(&_xinfo);
+        //MPIX_Info_free(&_xinfo);`
         //MPIX_Comm_free(&_xcomm);
     }
 
@@ -146,6 +149,16 @@ class Mesh
     }
 
     /**
+     * Updates global values for min max tree depth and
+     * max max tree depth
+     */
+    void update_global_tree_depths()
+    {
+        MPI_Allreduce(&_local_max_tree_depth, &_global_min_max_tree_depth, 1, MPI_INT, MPI_MIN, _comm);
+        MPI_Allreduce(&_local_max_tree_depth, &_global_max_max_tree_depth, 1, MPI_INT, MPI_MAX, _comm);
+    }
+
+    /**
      * Populates vector of neighbor ranks. Derives neighbor
      * ranks from boundary edges.
      * 
@@ -155,31 +168,28 @@ class Mesh
      */
     void _populate_boundary_elements()
     {
+        Kokkos::Profiling::pushRegion("Mesh::_populate_boundary_elements");
+
         auto e_vids = Cabana::slice<E_VIDS>(_edges);
         auto e_gid = Cabana::slice<E_GID>(_edges);
         auto f_vids = Cabana::slice<F_VIDS>(_faces);
         auto f_gid = Cabana::slice<F_GID>(_faces);
         auto f_level = Cabana::slice<F_LAYER>(_faces);
         const int rank = _rank;
-
-        // Copy _vef_gid_start to device
-        Kokkos::View<int*[3], MemorySpace> vef_gid_start_d("vef_gid_start_d", _comm_size);
-        auto hv_tmp = Kokkos::create_mirror_view(vef_gid_start_d);
-        Kokkos::deep_copy(hv_tmp, _vef_gid_start);
-        Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
+        const auto vef_gid_start = _vef_gid_start;
 
         // Identify edges and vertices not owned by this rank
         Kokkos::View<bool*, memory_space> is_neighbor("is_neighbor", _comm_size);
         Kokkos::View<bool*, memory_space> is_b_edge("is_b_edge", _owned_edges);
         Kokkos::deep_copy(is_neighbor, false);
         Kokkos::deep_copy(is_b_edge, false);
-        Kokkos::parallel_for("find", Kokkos::RangePolicy<execution_space>(0, _owned_edges),
+        Kokkos::parallel_for("find_edges", Kokkos::RangePolicy<execution_space>(0, _owned_edges),
             KOKKOS_LAMBDA(int i) {
 
             for (int v = 0; v < 2; v++)
             {
                 int vgid = e_vids(i, v);
-                int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
+                int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start);
 
                 if (vertex_owner != rank)
                 {
@@ -195,19 +205,18 @@ class Mesh
         // Identify faces
         Kokkos::View<bool*, memory_space> is_b_face("is_b_face", _owned_faces);
         Kokkos::deep_copy(is_b_face, false);
-        Kokkos::parallel_for("find", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
+        Kokkos::parallel_for("find_faces", Kokkos::RangePolicy<execution_space>(0, _owned_faces),
             KOKKOS_LAMBDA(int i) {
-
-            // if (rank == 0) printf("R%d: checking fgid %d, level %d\n", rank, f_gid(i), f_level(i));
 
             for (int v = 0; v < 3; v++)
             {
                 int vgid = f_vids(i, v);
-                int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start_d);
+                int vertex_owner = Utils::owner_rank(Vertex(), vgid, vef_gid_start);
 
                 if (vertex_owner != rank)
                 {
                     Kokkos::atomic_store(&is_b_face(i), true);
+                    // printf("R%d: flid %d is boundary face\n", rank, i);
 
                     // Once we know this is a boundary face we don't need to check other vertices
                     break;
@@ -296,6 +305,8 @@ class Mesh
         _neighbors = neighbors;
         _boundary_edges = boundary_edges;
         _boundary_faces = boundary_faces;
+
+        Kokkos::Profiling::popRegion();
     }
 
     /**
@@ -304,6 +315,8 @@ class Mesh
      */
     void _createFaces()
     {
+        Kokkos::Profiling::pushRegion("Mesh::_createFaces");
+
         /* Each vertex contributes 2 faces */
         _faces.resize(_owned_faces);
     
@@ -323,12 +336,8 @@ class Mesh
         auto f_layer = Cabana::slice<F_LAYER>(_faces);
 
         int rank = _rank;
-        // Copy _vef_gid_start to device
-        Kokkos::View<int*[3], MemorySpace> vef_gid_start_d("vef_gid_start_d", _comm_size);
-        auto hv_tmp = Kokkos::create_mirror_view(vef_gid_start_d);
-        Kokkos::deep_copy(hv_tmp, _vef_gid_start);
-        Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
-        Kokkos::parallel_for("Initialize faces", Kokkos::RangePolicy<execution_space>(0, _vertices.size()), KOKKOS_LAMBDA(int i) {
+        const auto vef_gid_start = _vef_gid_start;
+        Kokkos::parallel_for("Initialize_faces", Kokkos::RangePolicy<execution_space>(0, _vertices.size()), KOKKOS_LAMBDA(int i) {
             // Face 1: "left" face; face 2: "right" face   
             int f_lid;
 
@@ -338,19 +347,19 @@ class Mesh
             int e_gid0, e_lid0, e_gid1, e_gid2, e_lid2;
             v_gid0 = v_gid(i);
             // Follow first edge to get next vertex
-            e_gid0 = v_gid0*3; e_lid0 = e_gid0 - vef_gid_start_d(rank, 1);
+            e_gid0 = v_gid0*3; e_lid0 = e_gid0 - vef_gid_start(rank, 1);
             v_gid1 = e_vid(e_lid0, 1);
             // Use second vertex to get next edge
             e_gid1 = v_gid1*3+2;
             // Edge 2 GID is always the ID after edge 0
-            e_gid2 = e_gid0+1; e_lid2 = e_gid2 - vef_gid_start_d(rank, 1);
+            e_gid2 = e_gid0+1; e_lid2 = e_gid2 - vef_gid_start(rank, 1);
             v_gid2 = e_vid(e_lid2, 1);
             
             // Populate face 1 values
             f_lid = i*2;
             f_egids(f_lid, 0) = e_gid0; f_egids(f_lid, 1) = e_gid1; f_egids(f_lid, 2) = e_gid2;
             f_vgids(f_lid, 0) = v_gid0; f_vgids(f_lid, 1) = v_gid1; f_vgids(f_lid, 2) = v_gid2;
-            f_gid(f_lid) = f_lid + vef_gid_start_d(rank, 2);
+            f_gid(f_lid) = f_lid + vef_gid_start(rank, 2);
             f_parent(f_lid) = -1;
             f_child(f_lid, 0) = -1; f_child(f_lid, 1) = -1; f_child(f_lid, 2) = -1; f_child(f_lid, 3) = -1;
             f_owner(f_lid) = rank;
@@ -371,7 +380,7 @@ class Mesh
             // Get vertex 1 global ID the same way
             v_gid1 = e_vid(e_lid0, 1);
             // Edge 2 GID is always the ID after edge 0
-            e_gid2 = e_gid0+1; e_lid2 = e_gid2 - vef_gid_start_d(rank, 1);
+            e_gid2 = e_gid0+1; e_lid2 = e_gid2 - vef_gid_start(rank, 1);
             v_gid2 = e_vid(e_lid2, 1);
             // DIFFERENT: Use vertex 2 to get edge 1. Edge 1 the first edge of vertex 2
             e_gid1 = v_gid2*3;
@@ -380,7 +389,7 @@ class Mesh
             f_lid = i*2+1;
             f_egids(f_lid, 0) = e_gid0; f_egids(f_lid, 1) = e_gid1; f_egids(f_lid, 2) = e_gid2;
             f_vgids(f_lid, 0) = v_gid0; f_vgids(f_lid, 1) = v_gid1; f_vgids(f_lid, 2) = v_gid2;
-            f_gid(f_lid) = f_lid + vef_gid_start_d(rank, 2);
+            f_gid(f_lid) = f_lid + vef_gid_start(rank, 2);
             f_parent(f_lid) = -1;
             f_child(f_lid, 0) = -1; f_child(f_lid, 1) = -1; f_child(f_lid, 2) = -1; f_child(f_lid, 3) = -1;
             f_owner(f_lid) = rank;
@@ -395,23 +404,10 @@ class Mesh
         });
 
         //printf("Num verts: %d, edges: %d, faces: %d\n", _v_array.size(), _e_array.size(), _f_array.size());
+        Kokkos::Profiling::popRegion();
     }
 
     /**
-     * After the vertex and edge connectivity has been set and
-     * global IDs assigned, create faces from the edges and vertices.
-     *  1. Create the faces
-     *  2. Update the edges to reflect which faces they are part of
-     *  3. Gather face global IDs from remotely owned faces to the edges
-     */
-    void _finializeInit()
-    {
-        _createFaces();
-        // _sort_by_layer();
-        _populate_boundary_elements();
-    }
-
-        /**
      * Refines faces
      * 
      * @param fid: Kokkos view holding the global IDs
@@ -420,9 +416,12 @@ class Mesh
      */
     template <class View>
     void _refineFaces(View fgids)
-    {        
+    {
+        Kokkos::Profiling::pushRegion("Mesh::_refineFaces");
+
         const int rank = _rank, comm_size = _comm_size;
         const int num_face_refinements = fgids.extent(0);
+        auto vef_gid_start = _vef_gid_start;
 
         // Lambda capture variables
         int owned_edges = _owned_edges; // Updated after edge refinement
@@ -438,6 +437,37 @@ class Mesh
 
         // (global ID, from rank) tuples
         using int_vector_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int>, memory_space, 4>;
+
+        // Make one pass to figure out correct sizes for buffers
+        auto f_eid_slice0 = Cabana::slice<F_EIDS>(_faces);
+        auto f_cid_slice0 = Cabana::slice<F_CID>(_faces);
+        int_d remote_edge_counter("remote_edge_counter");
+        Kokkos::parallel_for("populate_edge_needrefine", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
+            KOKKOS_LAMBDA(int i) {
+            
+            int f_lid = fgids(i) - vef_gid_start(rank, 2);
+
+            if ((f_lid >= 0) && (f_lid < owned_faces)) // Make sure we own the face
+            {
+                // If a face has already been refined (i.e. has children), don't refine it again
+                if (f_cid_slice0(f_lid, 0) != -1) return;
+
+                for (int j = 0; j < 3; j++)
+                {
+                    int ex_gid = f_eid_slice0(f_lid, j);
+                    int ex_lid = ex_gid - vef_gid_start(rank, 1);
+                    if (!((ex_lid >= 0) && (ex_lid < owned_edges)))
+                    {
+                        /**
+                         * We do not own this edge and need to tell another
+                         * process to refine it. Increment counter
+                         */
+                        Kokkos::atomic_increment(&remote_edge_counter());
+                    }
+                }
+            }
+        });
+        Kokkos::fence();
 
         /**
          * List of locally-owned face IDs this process needs to split
@@ -463,15 +493,13 @@ class Mesh
         int_vector_d edge_needrefine("edge_needrefine", _owned_edges);
         Kokkos::deep_copy(edge_needrefine, 0);
 
-
-        const int remote_edge_needrefine_size = _owned_edges/5;
+        int remote_edge_needrefine_size;
+        Kokkos::deep_copy(remote_edge_needrefine_size, remote_edge_counter);
         int_vector_aosoa export_edges_aosoa("remote_edges_send", remote_edge_needrefine_size);
         int_vector_d distributor_export_ranks("distributor_export_ranks", remote_edge_needrefine_size);
         Kokkos::deep_copy(distributor_export_ranks, -1);
         
         // Slices we need
-        auto f_eid_slice0 = Cabana::slice<F_EIDS>(_faces);
-        auto f_cid_slice0 = Cabana::slice<F_CID>(_faces);
         auto remote_edge_slice = Cabana::slice<0>(export_edges_aosoa);
         auto remote_edge_rank_slice = Cabana::slice<1>(export_edges_aosoa);
         Cabana::deep_copy(remote_edge_slice, -1);
@@ -483,23 +511,15 @@ class Mesh
         int_d vert_counter("vert_counter");
         int_d edge_counter("edge_counter");
         int_d face_counter("face_counter");
-        int_d remote_edge_counter("remote_edge_counter");
         Kokkos::deep_copy(vert_counter, 0);
         Kokkos::deep_copy(edge_counter, 0);
         Kokkos::deep_copy(face_counter, 0);
         Kokkos::deep_copy(remote_edge_counter, 0);
 
-        // Copy _vef_gid_start to device
-        Kokkos::View<int*[3], MemorySpace> _vef_gid_start_d("_vef_gid_start_d", _comm_size);
-        auto hv_tmp = Kokkos::create_mirror_view(_vef_gid_start_d);
-        Kokkos::deep_copy(hv_tmp, _vef_gid_start);
-        Kokkos::deep_copy(_vef_gid_start_d, hv_tmp);
-
-        
-        Kokkos::parallel_for("populate edge_needrefine", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
+        Kokkos::parallel_for("populate_edge_needrefine", Kokkos::RangePolicy<execution_space>(0, num_face_refinements),
             KOKKOS_LAMBDA(int i) {
             
-            int f_lid = fgids(i) - _vef_gid_start_d(rank, 2);
+            int f_lid = fgids(i) - vef_gid_start(rank, 2);
 
             if ((f_lid >= 0) && (f_lid < owned_faces)) // Make sure we own the face
             {
@@ -514,7 +534,7 @@ class Mesh
                 for (int j = 0; j < 3; j++)
                 {
                     int ex_gid = f_eid_slice0(f_lid, j);
-                    int ex_lid = ex_gid - _vef_gid_start_d(rank, 1);
+                    int ex_lid = ex_gid - vef_gid_start(rank, 1);
                     if ((ex_lid >= 0) && (ex_lid < owned_edges))
                     {
                         /**
@@ -538,6 +558,8 @@ class Mesh
                          * process to refine it
                          */
                         int idx = Kokkos::atomic_fetch_add(&remote_edge_counter(), 1);
+                        // printf("R%d: idx: %d, size: %d\n", rank, idx, remote_edge_needrefine_size);
+                        assert(idx < remote_edge_needrefine_size);
                         remote_edge_slice(idx) = f_eid_slice0(f_lid, j);
                         remote_edge_rank_slice(idx) = rank;
 
@@ -546,7 +568,7 @@ class Mesh
                         for (int r = 0; r < comm_size; r++)
                         {
                             if (r == rank) continue;
-                            if (ex_gid >= _vef_gid_start_d(r, 1))
+                            if (ex_gid >= vef_gid_start(r, 1))
                             {
                                 export_rank = r;
                             }
@@ -602,10 +624,10 @@ class Mesh
         // Iterate through our received edges and mark them for refinement
         auto distributor_edges_import_slice = Cabana::slice<0>(distributor_edges_import);
         auto distributor_ranks_import_slice = Cabana::slice<1>(distributor_edges_import);
-        Kokkos::parallel_for("add remotes to edge_needrefine", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+        Kokkos::parallel_for("add_remotes_to_edge_needrefine", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
             KOKKOS_LAMBDA(int i) {
 
-            int elid = distributor_edges_import_slice(i) - _vef_gid_start_d(rank, 1);
+            int elid = distributor_edges_import_slice(i) - vef_gid_start(rank, 1);
             
             // Record this edge needs to be refined
             int edge_counted = Kokkos::atomic_fetch_add(&edge_needrefine(elid), 1);
@@ -629,7 +651,7 @@ class Mesh
         Kokkos::deep_copy(remote_edges_send, remote_edge_counter);
         Kokkos::deep_copy(face_refinements, face_counter);
 
-        // printf("R%d old FGID space: %d to %d\n", rank, _vef_gid_start(_rank, 2), _vef_gid_start(_rank, 2)+_owned_faces);
+        // printf("R%d old FGID space: %d to %d\n", rank, vef_gid_start(_rank, 2), vef_gid_start(_rank, 2)+_owned_faces);
 
 
         // Store new local ID (LID) start values for each array
@@ -646,6 +668,7 @@ class Mesh
         _edges.resize(_owned_edges + _ghost_edges);
         _owned_vertices += new_vertices;
         _vertices.resize(_owned_vertices);
+        // if (rank == 14) printf("R%d: new elid start: %d, o/g edges: %d, %d\n", rank, e_new_lid_start, owned_edges, _ghost_edges);
 
         // Vertex slices
         auto v_rank = Cabana::slice<V_OWNER>(_vertices);
@@ -682,20 +705,16 @@ class Mesh
         // Update global IDs before making edits, but store the old global IDs
         // so we know how to fix our ghosted edge IDs
         Kokkos::View<int*[3], memory_space> vef_gid_start_old_d("vef_gid_start_old_d", _comm_size);
-        auto tmp = Kokkos::create_mirror_view(vef_gid_start_old_d);
-        Kokkos::deep_copy(tmp, _vef_gid_start);
-        Kokkos::deep_copy(vef_gid_start_old_d, tmp);
-        _updateGlobalIDs();
+        Kokkos::deep_copy(vef_gid_start_old_d, vef_gid_start);
+        _updateGlobalIDs(true);
         
         // printf("R%d new VEF: %d, %d, %d\n", rank, new_vertices, new_edges, face_refinements*4);
         // printf("R%d new VGID space: %d to %d\n", rank, _vef_gid_start(_rank, 0), _vef_gid_start(_rank, 0)+_owned_vertices);
         // printf("R%d new EGID space: %d to %d\n", rank, _vef_gid_start(_rank, 1), _vef_gid_start(_rank, 1)+_owned_edges);
         // printf("R%d new FGID space: %d to %d\n", rank, _vef_gid_start(_rank, 2), _vef_gid_start(_rank, 2)+_owned_faces);
         
-        // Copy new _vef_gid_start to device
-        auto tmp1 = Kokkos::create_mirror_view(_vef_gid_start_d);
-        Kokkos::deep_copy(tmp1, _vef_gid_start);
-        Kokkos::deep_copy(_vef_gid_start_d, tmp1);
+        // Update to new _vef_gid_start
+        vef_gid_start = _vef_gid_start;
 
         /******************************
          * Populate new vertices
@@ -704,7 +723,7 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             int v_l = v_new_lid_start + i;
-            int v_g = v_l + _vef_gid_start_d(rank, 0);
+            int v_g = v_l + vef_gid_start(rank, 0);
             v_gid(v_l) = v_g;
             v_rank(v_l) = rank;
             // printf("R%d added VGID %d\n", rank, v_g);
@@ -727,19 +746,20 @@ class Mesh
             int offset = Kokkos::atomic_fetch_add(&edge_counter(), 2);
             int ec_lid0 = e_new_lid_start + offset;
             int ec_lid1 = e_new_lid_start + offset + 1;
-            int ec_gid0 = _vef_gid_start_d(rank, 1) + ec_lid0;
-            int ec_gid1 = _vef_gid_start_d(rank, 1) + ec_lid1;
+            int ec_gid0 = vef_gid_start(rank, 1) + ec_lid0;
+            int ec_gid1 = vef_gid_start(rank, 1) + ec_lid1;
             int ec_layer = e_layer(i) + 1;
-
-            // if (rank == 1) printf("R%d refining edge %d: new edges %d, %d (offset %d)\n", rank, i+_vef_gid_start_d(rank, 1), ec_gid0, ec_gid1, offset);
 
             // Global IDs = global ID start + local ID
             e_gid(ec_lid0) = ec_gid0;
             e_gid(ec_lid1) = ec_gid1;
 
+            // if (rank == 14) printf("R%d refining edge %d: new egids (%d, %d), elids (%d, %d), (offset %d)\n",
+            //     rank, i+vef_gid_start(rank, 1), ec_gid0, ec_gid1, ec_lid0, ec_lid1, offset);
+
             // Set parent edges for the split edges
-            e_pid(ec_lid0) = i + _vef_gid_start_d(rank, 1);
-            e_pid(ec_lid1) = i + _vef_gid_start_d(rank, 1);
+            e_pid(ec_lid0) = i + vef_gid_start(rank, 1);
+            e_pid(ec_lid1) = i + vef_gid_start(rank, 1);
 
             // Set child edges for the split edges
             e_cid(ec_lid0, 0) = -1; e_cid(ec_lid0, 1) = -1;
@@ -760,7 +780,7 @@ class Mesh
              *  ec_lid1: (new vertex, second vertex of parent edge, -1)
              */
             offset /= 2;
-            int new_vgid = _vef_gid_start_d(rank, 0) + v_new_lid_start + offset;
+            int new_vgid = vef_gid_start(rank, 0) + v_new_lid_start + offset;
             e_vid(ec_lid0, 0) = e_vid(i, 0); e_vid(ec_lid0, 1) = new_vgid;
             e_vid(ec_lid1, 0) = new_vgid; e_vid(ec_lid1, 1) = e_vid(i, 1);
             e_vid(ec_lid0, 2) = -1; e_vid(ec_lid1, 2) = -1;
@@ -787,19 +807,22 @@ class Mesh
 
             // Modify the global ID because GIDs have been updated in the mesh but 
             // not in the distributor receive buffer
-            Utils::updateGlobalID(Edge(), &distributor_edges_import_slice(i), _vef_gid_start_d, vef_gid_start_old_d);
+            Utils::updateGlobalID(Edge(), &distributor_edges_import_slice(i), vef_gid_start, vef_gid_start_old_d);
 
             // Parent edge LID
-            int elid = Utils::get_lid(e_gid, distributor_edges_import_slice(i), 0, owned_edges);
+            int elid = Utils::get_lid(e_gid, distributor_edges_import_slice(i), owned_edges, owned_edges);
+            // if (rank == 14) printf("R%d: imported eg/lid: (%d, %d), from R%d, egid min range: %d\n", rank,
+            //     distributor_edges_import_slice(i), elid, distributor_ranks_import_slice(i),
+            //     vef_gid_start(rank, 1));
             assert(elid != -1);
             halo_export_ids(idx) = elid;
 
             // First child edge LID
-            int clid = e_cid(elid, 0) - _vef_gid_start_d(rank, 1);
+            int clid = e_cid(elid, 0) - vef_gid_start(rank, 1);
             halo_export_ids(idx+1) = clid;
 
             // Second child edge LID
-            clid = e_cid(elid, 1) - _vef_gid_start_d(rank, 1);
+            clid = e_cid(elid, 1) - vef_gid_start(rank, 1);
             halo_export_ids(idx+2) = clid;
 
             // Set the export ranks
@@ -900,7 +923,7 @@ class Mesh
             // Set general values for each of the three new edges
             int offset = Kokkos::atomic_fetch_add(&edge_counter(), 3);
             // if (rank == 1) printf("R%d face %d (edges %d, %d, %d), adding edges %d, %d, %d (offset %d)\n", rank,
-            //     face_id+_vef_gid_start_d(rank, 2),
+            //     face_id+vef_gid_start(rank, 2),
             //     f_eid(face_id, 0), f_eid(face_id, 1), f_eid(face_id, 2),
             //     e_new_lid_start+offset, e_new_lid_start+offset+1, e_new_lid_start+offset+2, offset);
             for (int j = offset; j < offset+3; j++)
@@ -908,10 +931,10 @@ class Mesh
                 e_lid = e_new_lid_start + j;
 
                 // Global IDs = global ID start + local ID
-                e_gid(e_lid) = _vef_gid_start_d(rank, 1) + e_lid;
+                e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
 
                 // if (rank == 2) printf("R%d face %d (edges %d, %d, %d), adding edge %d (offset %d)\n", rank,
-                // face_id+_vef_gid_start_d(rank, 2),
+                // face_id+vef_gid_start(rank, 2),
                 // f_eid(face_id, 0), f_eid(face_id, 1), f_eid(face_id, 2),
                 // e_gid(e_lid), offset);
 
@@ -937,8 +960,8 @@ class Mesh
                 for (int k = 0; k < 3; k++)
                 {
                     int egid = f_eid(face_id, k);
-                    int lid = egid - _vef_gid_start_d(rank, 1);
-                    elid[k] = Utils::get_lid(e_gid, egid, 0, num_edges);
+                    int lid = egid - vef_gid_start(rank, 1);
+                    elid[k] = Utils::get_lid(e_gid, egid, owned_edges, num_edges);
                     assert(elid[k] != -1);
                     // if (e_gid(e_lid) == 699) printf("elid %d: %d\n", k, elid[k]);                 
                 }
@@ -956,7 +979,7 @@ class Mesh
                 int nv0, nv1, nv2;
                 nv0 = e_vid(elid[0], 2); nv1 = e_vid(elid[1], 2); nv2 = e_vid(elid[2], 2); 
                 //int elid0, elid1, elid2, nv0, nv1, nv2;
-                // elid0 = f_eid(face_id, 0)-_vef_gid_start_d(rank, 1); elid1 = f_eid(face_id, 1)-_vef_gid_start_d(rank, 1); elid2 = f_eid(face_id, 2)-_vef_gid_start_d(rank, 1);
+                // elid0 = f_eid(face_id, 0)-vef_gid_start(rank, 1); elid1 = f_eid(face_id, 1)-vef_gid_start(rank, 1); elid2 = f_eid(face_id, 2)-vef_gid_start(rank, 1);
                 // nv0 = e_vid(elid0, 2); nv1 = e_vid(elid1, 2); nv2 = e_vid(elid2, 2); 
                 // printf("R%d: nv: %d, %d, %d\n", rank, nv0, nv1, nv2);
                 if (j == offset) {e_vid(e_lid, 0) = nv0; e_vid(e_lid, 1) = nv1;}
@@ -965,7 +988,7 @@ class Mesh
 
                 // Middle vertex not set until new edges are further refined
                 e_vid(e_lid, 2) = -1;
-                // printf("R%d: ne%d: (%d, %d, %d)\n", rank, e_lid+_vef_gid_start_d(rank, 1), e_vid(e_lid, 0), e_vid(e_lid, 1), e_vid(e_lid, 2));
+                // printf("R%d: ne%d: (%d, %d, %d)\n", rank, e_lid+vef_gid_start(rank, 1), e_vid(e_lid, 0), e_vid(e_lid, 1), e_vid(e_lid, 2));
             
                 // if (e_gid(e_lid) == 699)
                 // {
@@ -980,13 +1003,19 @@ class Mesh
         // Create the new faces
         // printFaces(1, 31);
         // printf("New lid start: %d\n", f_new_lid_start);
+        int_d local_max_tree_depth_d("local_max_tree_depth_d"); Kokkos::deep_copy(local_max_tree_depth_d, _local_max_tree_depth);
+        int local_max_tree_depth = _local_max_tree_depth;
         Kokkos::deep_copy(face_counter, 0);
         Kokkos::parallel_for("new internal faces", Kokkos::RangePolicy<execution_space>(0, face_refinements),
             KOKKOS_LAMBDA(int i) {
             
             int parent_face_lid = local_face_lids(i);
-            int parent_face_gid = parent_face_lid + _vef_gid_start_d(rank, 2);
+            int parent_face_gid = parent_face_lid + vef_gid_start(rank, 2);
             int layer = f_layer(parent_face_lid) + 1;
+
+            // If this layer is higher than the max tree level, update it
+            if (layer > local_max_tree_depth) Kokkos::atomic_store(&local_max_tree_depth_d(), layer);
+
             int offset = Kokkos::atomic_fetch_add(&face_counter(), 4);
             int new_face_lid, new_face_gid;
             int num_edges = owned_edges + ghost_edges; // Edge AoSoA size
@@ -995,7 +1024,7 @@ class Mesh
             for (int j = offset; j < offset+4; j++)
             {
                 new_face_lid = f_new_lid_start + j;
-                new_face_gid = new_face_lid + _vef_gid_start_d(rank, 2);
+                new_face_gid = new_face_lid + vef_gid_start(rank, 2);
 
                 // Set new faces as children of parent face
                 f_cid(parent_face_lid, j-offset) = new_face_gid;
@@ -1024,11 +1053,11 @@ class Mesh
             parent_eg0 = f_eid(parent_face_lid, 0);
             parent_eg1 = f_eid(parent_face_lid, 1);
             parent_eg2 = f_eid(parent_face_lid, 2);
-            parent_el0 = Utils::get_lid(e_gid, parent_eg0, 0, num_edges);
+            parent_el0 = Utils::get_lid(e_gid, parent_eg0, owned_edges, num_edges);
             assert(parent_el0 != -1);
-            parent_el1 = Utils::get_lid(e_gid, parent_eg1, 0, num_edges);
+            parent_el1 = Utils::get_lid(e_gid, parent_eg1, owned_edges, num_edges);
             assert(parent_el1 != -1);
-            parent_el2 = Utils::get_lid(e_gid, parent_eg2, 0, num_edges);
+            parent_el2 = Utils::get_lid(e_gid, parent_eg2, owned_edges, num_edges);
             assert(parent_el2 != -1);
             vg_mid0 = e_vid(parent_el0, 2); vg_mid1 = e_vid(parent_el1, 2); vg_mid2 = e_vid(parent_el2, 2);
             // printf("R%d: vgmid 0/1/2: %d, %d, %d\n", rank, vg_mid0, vg_mid1, vg_mid2);
@@ -1113,6 +1142,18 @@ class Mesh
 
         });
 
+        Kokkos::deep_copy(_local_max_tree_depth, local_max_tree_depth_d);
+
+        // Clear ghosted edges that were needed to complete refinement.
+        // We do this to remain consistent, so only a call to gather()
+        // maintains persistent ghosting
+        _vertices.resize(_owned_vertices); _ghost_vertices = 0;
+        _edges.resize(_owned_edges); _ghost_edges = 0;
+        _faces.resize(_owned_faces); _ghost_faces = 0;
+
+        // Update global values of tree depth
+        update_global_tree_depths();
+
         // if (rank == 0)
         // {
         //     printf("***************AFTER***************\n");
@@ -1122,50 +1163,53 @@ class Mesh
         // }
         // printf("R%d: end of refine: num faces: %d\n", rank, _faces.size());
 
+        Kokkos::Profiling::popRegion();
     }
   
-    void _updateGlobalIDs()
+    void _updateGlobalIDs(bool remap_aosoa_ids)
     {
+        Kokkos::Profiling::pushRegion("Mesh::_updateGlobalIDs");
+
         // Update mesh version
         _version++;
         
         // Temporarily save old starting positions
-        Kokkos::View<int*[3], Kokkos::HostSpace> old_vef_start("old_vef_start", _comm_size);
+        Kokkos::View<int*[3], memory_space> old_vef_start("old_vef_start", _comm_size);
         Kokkos::deep_copy(old_vef_start, _vef_gid_start);
+
+        // Copy _vef_gid_start to host to modify
+        auto vef_gid_start_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), _vef_gid_start);
 
         int vef[3] = {_owned_vertices, _owned_edges, _owned_faces};
         MPI_Allgather(vef, 3, MPI_INT, _vef_gid_start.data(), 3, MPI_INT, _comm);
 
         // Find where each process starts its global IDs
         for (int i = 1; i < _comm_size; ++i) {
-            _vef_gid_start(i, 0) += _vef_gid_start(i - 1, 0);
-            _vef_gid_start(i, 1) += _vef_gid_start(i - 1, 1);
-            _vef_gid_start(i, 2) += _vef_gid_start(i - 1, 2);
+            vef_gid_start_h(i, 0) += vef_gid_start_h(i - 1, 0);
+            vef_gid_start_h(i, 1) += vef_gid_start_h(i - 1, 1);
+            vef_gid_start_h(i, 2) += vef_gid_start_h(i - 1, 2);
         }
         for (int i = _comm_size - 1; i > 0; --i) {
-            _vef_gid_start(i, 0) = _vef_gid_start(i - 1, 0);
-            _vef_gid_start(i, 1) = _vef_gid_start(i - 1, 1);
-            _vef_gid_start(i, 2) = _vef_gid_start(i - 1, 2);
+            vef_gid_start_h(i, 0) = vef_gid_start_h(i - 1, 0);
+            vef_gid_start_h(i, 1) = vef_gid_start_h(i - 1, 1);
+            vef_gid_start_h(i, 2) = vef_gid_start_h(i - 1, 2);
         }
-        _vef_gid_start(0, 0) = 0;
-        _vef_gid_start(0, 1) = 0;
-        _vef_gid_start(0, 2) = 0;
+        vef_gid_start_h(0, 0) = 0;
+        vef_gid_start_h(0, 1) = 0;
+        vef_gid_start_h(0, 2) = 0;
 
-        if (old_vef_start(0, 0) == -1)
+        if (!remap_aosoa_ids)
         {
             // Don't update global IDs when the mesh is initially formed
             return;
         }
 
-        // Copy vef views to device
-        Kokkos::View<int*[3], MemorySpace> vef_gid_start_d("_vef_gid_start_d", _comm_size);
-        auto hv_tmp1 = Kokkos::create_mirror_view(vef_gid_start_d);
-        Kokkos::deep_copy(hv_tmp1, _vef_gid_start);
-        Kokkos::deep_copy(vef_gid_start_d, hv_tmp1);
-        Kokkos::View<int*[3], MemorySpace> old_vef_start_d("old_vef_start_d", _comm_size);
-        auto hv_tmp2 = Kokkos::create_mirror_view(old_vef_start_d);
-        Kokkos::deep_copy(hv_tmp2, old_vef_start);
-        Kokkos::deep_copy(old_vef_start_d, hv_tmp2);
+        // Copy updated vef view to device
+        auto hv_tmp1 = Kokkos::create_mirror_view(_vef_gid_start);
+        Kokkos::deep_copy(hv_tmp1, vef_gid_start_h);
+        Kokkos::deep_copy(_vef_gid_start, hv_tmp1);
+
+        auto vef_gid_start = _vef_gid_start;
 
         // Update vertices
         auto v_gid = Cabana::slice<V_GID>(_vertices);
@@ -1173,7 +1217,7 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             // Global ID
-            Utils::updateGlobalID(Vertex(), &v_gid(i), vef_gid_start_d, old_vef_start_d);
+            Utils::updateGlobalID(Vertex(), &v_gid(i), vef_gid_start, old_vef_start);
             
         });
 
@@ -1190,22 +1234,22 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             // Global ID
-            Utils::updateGlobalID(Edge(), &e_gid(i), vef_gid_start_d, old_vef_start_d);
+            Utils::updateGlobalID(Edge(), &e_gid(i), vef_gid_start, old_vef_start);
 
             // Vertex association GIDs
             for (int j = 0; j < 3; j++)
             {
-                Utils::updateGlobalID(Vertex(), &e_vid(i, j), vef_gid_start_d, old_vef_start_d);
+                Utils::updateGlobalID(Vertex(), &e_vid(i, j), vef_gid_start, old_vef_start);
             }
             
             // Child edge GIDs
             for (int j = 0; j < 2; j++)
             {
-                Utils::updateGlobalID(Edge(), &e_cid(i, j), vef_gid_start_d, old_vef_start_d);
+                Utils::updateGlobalID(Edge(), &e_cid(i, j), vef_gid_start, old_vef_start);
             }
 
             // Parent edge GID
-            Utils::updateGlobalID(Edge(), &e_pid(i), vef_gid_start_d, old_vef_start_d);
+            Utils::updateGlobalID(Edge(), &e_pid(i), vef_gid_start, old_vef_start);
         });
 
         // Update Faces
@@ -1218,29 +1262,680 @@ class Mesh
             KOKKOS_LAMBDA(int i) {
             
             // Global ID
-            Utils::updateGlobalID(Face(), &f_gid(i), vef_gid_start_d, old_vef_start_d);
+            Utils::updateGlobalID(Face(), &f_gid(i), vef_gid_start, old_vef_start);
 
             // Child face association GIDs
             for (int j = 0; j < 4; j++)
             {   
-                Utils::updateGlobalID(Face(), &f_cid(i, j), vef_gid_start_d, old_vef_start_d);
+                Utils::updateGlobalID(Face(), &f_cid(i, j), vef_gid_start, old_vef_start);
             }
 
             // Edge association GIDs
             for (int j = 0; j < 3; j++)
             {
-                Utils::updateGlobalID(Edge(), &f_eid(i, j), vef_gid_start_d, old_vef_start_d);
+                Utils::updateGlobalID(Edge(), &f_eid(i, j), vef_gid_start, old_vef_start);
             }
 
             // Vertex association GIDs
             for (int j = 0; j < 3; j++)
             {
-                Utils::updateGlobalID(Vertex(), &f_vid(i, j), vef_gid_start_d, old_vef_start_d);
+                Utils::updateGlobalID(Vertex(), &f_vid(i, j), vef_gid_start, old_vef_start);
             }
 
             // Parent face
-            Utils::updateGlobalID(Face(), &f_pid(i), vef_gid_start_d, old_vef_start_d);
+            Utils::updateGlobalID(Face(), &f_pid(i), vef_gid_start, old_vef_start);
         });
+
+        Kokkos::Profiling::popRegion();
+    }
+
+    /**
+     * Find the vertices, edges, and/or faces that must be exchanged for the halo 
+     * 
+     * Step 1:
+     *  Use distributor to request missing vertex data for owned faces which
+     *      contain an unowned vertex. At the same time, build the halo data
+     *      Approach:
+     *          - Iterate over boundary faces:
+     *              1. Add to vert_distributor_export: Any vertex GIDs we do not own
+     *              2. Add to edge_distributor_export: Any edge GIDs we do not own
+     *              3. Add to halo_export_ids: All vef data on faces that contain an unowned vertex
+     *              4. Add to halo_export_ranks: The owner rank of the unowned vertex
+     * 
+     * Step 2:
+     *  - Distribute the vert/edge_distributor_export data into vert/edge_distributor_import
+     *  - Add imported vertex and edge GIDs to halo_export_ids and halo_export_ranks.
+     * 
+     */
+    void _gather_depth_one()
+    {
+        Kokkos::Profiling::pushRegion("_gather_depth_one");
+
+        const int level = _halo_level, rank = _rank, tree_depth = _local_max_tree_depth;
+
+        // Define the hash map type
+        using PairType = std::pair<int, int>;
+        using KeyType = uint64_t;  // Hashable key
+        using MapType = Kokkos::UnorderedMap<KeyType, int, memory_space>;
+
+        // Hash function to combine two integers into a single key
+        // auto hashFunction = KOKKOS_LAMBDA(int first, int second) -> KeyType {
+        //     return (static_cast<KeyType>(first) << 32) | (static_cast<KeyType>(second) & 0xFFFFFFFF);
+        // };
+        // Hash function to combine three integers into a single key
+        auto hashFunction = KOKKOS_LAMBDA(int a, int b, int c) -> KeyType {
+            constexpr KeyType P1 = 73856093;  // Large prime number
+            constexpr KeyType P2 = 19349663;  // Another large prime
+            constexpr KeyType P3 = 83492791;  // Yet another large prime
+        
+            return (static_cast<KeyType>(a) * P1) ^ 
+                   (static_cast<KeyType>(b) * P2) ^ 
+                   (static_cast<KeyType>(c) * P3);
+        };
+
+        auto boundary_faces = _boundary_faces;
+        size_t num_boundary_faces = boundary_faces.extent(0);
+        // size_t num_boundary_edges = _mesh->boundary_edges().extent(0);
+
+        auto vef_gid_start = _vef_gid_start;
+
+        // Vertex slices
+        auto v_gid = Cabana::slice<V_GID>(_vertices);
+
+        // Edge slices
+        auto e_gid = Cabana::slice<E_GID>(_edges);
+        auto e_vid = Cabana::slice<E_VIDS>(_edges);
+        auto e_rank = Cabana::slice<E_OWNER>(_edges);
+        auto e_cid = Cabana::slice<E_CIDS>(_edges);
+        auto e_pid = Cabana::slice<E_PID>(_edges);
+        auto e_layer = Cabana::slice<E_LAYER>(_edges);
+
+        // Face slices
+        auto f_gid = Cabana::slice<F_GID>(_faces);
+        auto f_eid = Cabana::slice<F_EIDS>(_faces);
+        auto f_vid = Cabana::slice<F_VIDS>(_faces);
+        auto f_cid = Cabana::slice<F_CID>(_faces);
+        auto f_pid = Cabana::slice<F_PID>(_faces);
+        auto f_rank = Cabana::slice<F_OWNER>(_faces);
+        auto f_layer = Cabana::slice<F_LAYER>(_faces);
+
+        int vertex_count = _owned_vertices;
+        int edge_count = _owned_edges;
+        int face_count = _owned_faces;
+
+        // Distributor data
+        // (global ID, to_rank, from_rank) tuples
+        using distributor_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int, int, int>, memory_space, 4>;
+        size_t vert_distributor_size = num_boundary_faces*(tree_depth+1)*4;
+        size_t edge_distributor_size = num_boundary_faces*(tree_depth+1)*4;
+        // printf("R%d: vert/edge dist sizes: %d, %d\n", rank, vert_distributor_size, edge_distributor_size);
+        distributor_aosoa vert_distributor_export("vert_distributor_export", vert_distributor_size);
+        distributor_aosoa edge_distributor_export("edge_distributor_export", edge_distributor_size);
+
+        // Halo data
+        // (global ID, to_rank) tuples
+        size_t vhalo_size = num_boundary_faces*(tree_depth+1)*6; // Slight buffer for faces that must be sent to >1 processes
+        size_t ehalo_size = num_boundary_faces*(tree_depth+1)*6; // and for refinements along boundaries
+        size_t fhalo_size = num_boundary_faces*(tree_depth+1)*6;
+        halo_aosoa vert_halo_export("vert_halo_export", vhalo_size);
+        halo_aosoa edge_halo_export("edge_halo_export", ehalo_size);
+        halo_aosoa face_halo_export("face_halo_export", fhalo_size);
+
+        // Hash maps - used to keep duplicate entries from the distributor and halo data structures
+        MapType vert_distributor_map(vert_distributor_size);
+        MapType edge_distributor_map(edge_distributor_size);
+        MapType vert_halo_map(vhalo_size);
+        MapType edge_halo_map(ehalo_size);
+        /**
+         * The face_halo_map is different:
+         * Used track which faces (and the vertex and edge data they hold)
+         * must be sent to which remote processes
+         */
+        MapType face_halo_map(fhalo_size);
+
+        // Counters
+        using int_d = Kokkos::View<size_t, memory_space>;
+        int_d vd_idx("vd_idx"); Kokkos::deep_copy(vd_idx, 0); // Vert distributor
+        int_d ed_idx("ed_idx"); Kokkos::deep_copy(ed_idx, 0); // Edge distributor
+        int_d vh_idx("vh_idx"); Kokkos::deep_copy(vh_idx, 0); // Vert halo
+        int_d eh_idx("eh_idx"); Kokkos::deep_copy(eh_idx, 0); // Edge halo
+        int_d fh_idx("fh_idx"); Kokkos::deep_copy(fh_idx, 0); // Face halo
+
+        // Slices
+        auto vert_distributor_export_gids = Cabana::slice<0>(vert_distributor_export);
+        auto vert_distributor_export_to_ranks = Cabana::slice<1>(vert_distributor_export);
+        auto vert_distributor_export_from_ranks = Cabana::slice<2>(vert_distributor_export);
+        auto edge_distributor_export_gids = Cabana::slice<0>(edge_distributor_export);
+        auto edge_distributor_export_to_ranks = Cabana::slice<1>(edge_distributor_export);
+        auto edge_distributor_export_from_ranks = Cabana::slice<2>(edge_distributor_export);
+        auto vert_halo_export_lids = Cabana::slice<0>(vert_halo_export);
+        auto vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
+        auto edge_halo_export_lids = Cabana::slice<0>(edge_halo_export);
+        auto edge_halo_export_ranks = Cabana::slice<1>(edge_halo_export);
+        auto face_halo_export_lids = Cabana::slice<0>(face_halo_export);
+        auto face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
+
+        /**
+         * Iterate over boundary faces. For each boundary face, check if any vertices
+         * on it are owned by another process.
+         * If so, hash the (fgid, vert_owner) tuple into face_halo_map 
+         * AND hash all children faces of this face into face_halo_map,
+         *  to the same vert_owner.
+         * ALSO add all vertices and edges of these faces to the halos and distributors
+         */
+        Kokkos::parallel_for("boundary face iteration", Kokkos::RangePolicy<execution_space>(0, num_boundary_faces),
+            KOKKOS_LAMBDA(int face_idx) {
+            
+            int fgid_parent = boundary_faces(face_idx);
+            int flid_parent = fgid_parent - vef_gid_start(rank, 2);
+            int face_level = f_layer(flid_parent);
+            // if (rank == 0) printf("R%d: boundary face gid: %d, level: %d\n", rank, fgid_parent, face_level);
+            if (face_level < level) return; // Only consider elements at our level and their children
+            // if (rank == 0) printf("R%d: bpface %d, face_level: %d, level: %d\n", rank, fgid_parent, face_level, level);
+
+            // if (fgid_parent == 30 || fgid_parent == 31) printf("R%d: processing parent FGID %d\n",
+            //     rank, fgid_parent);
+
+            // Consider each vertex of this face
+            for (int i = 0; i < 3; i++)
+            {
+                const int vgid_parent = f_vid(flid_parent, i);
+                int vert_owner = Utils::owner_rank(Vertex(), vgid_parent, vef_gid_start);
+
+                // If unowned vertex, add this face and all child faces to
+                // send to vert_owner
+                if (vert_owner != rank)
+                {
+                    // Add this vert to the distributor to tell the owner rank we need this vertex data
+                    // but first check that it is not already present
+                    // "If we do not own this vert, we need to tell the owner to send it to us"
+                    auto hash_key = hashFunction(vgid_parent, vert_owner, rank);
+                    auto result = vert_distributor_map.insert(hash_key, 1);
+                    // if (rank == 0)
+                    //     printf("R%d: vgid_parent %d, vowner: %d, result: %d key: %" PRIu64 "\n", rank,
+                    //         vgid_parent, vert_owner, result.success(), hash_key);
+                    if (result.success()) {
+                        // If insertion succeeds; tuple not present; add to AoSoA
+                        int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
+                        assert(dvdx < vert_distributor_size);
+                        vert_distributor_export_gids(dvdx) = vgid_parent;
+                        vert_distributor_export_from_ranks(dvdx) = rank;
+                        vert_distributor_export_to_ranks(dvdx) = vert_owner;
+                        // if (fgid_parent == 30 || fgid_parent == 31)
+                        // if (rank == 0) printf("Step 1: R%d: adding (vgid %d, to R%d) key: %" PRIu64 "\n",
+                        //     rank, vgid_parent, vert_owner, hash_key);
+                    }
+
+                    // Queue for children (local per thread), that will all go to the remote rank
+                    const int capacity = 630;
+                    int queue[capacity]; // Adjust size as needed
+                    int front = 0, back = 0;
+
+                    // Initialize queue with the parent face
+                    queue[back] = fgid_parent;
+                    back = (back + 1) % capacity;
+
+                    // Traverse children iteratively
+                    while (front != back)
+                    {
+                        // Dequeue
+                        int fgid = queue[front];
+                        // if (fgid == 976) printf("R%d: processing fgid %d\n", rank, fgid);
+                        front = (front + 1) % capacity;
+                        
+                        int flid = fgid - vef_gid_start(rank, 2);
+                        assert(flid > -1);
+
+                        /************************
+                         * Process the face
+                         ***********************/
+                        
+                        // Add this face to the halo to send to the given vertex owner
+                        hash_key = hashFunction(fgid, vert_owner, rank);
+                        result = face_halo_map.insert(hash_key, vert_owner);
+                        if (result.success()) {
+                            // If insertion succeeds; tuple not present; add to AoSoA
+                            int fdx = Kokkos::atomic_fetch_add(&fh_idx(), 1);
+                            assert(fdx < fhalo_size);
+                            face_halo_export_lids(fdx) = flid;
+                            face_halo_export_ranks(fdx) = vert_owner;
+                            // if (fgid == 976) printf("R%d: adding fgid %d to halo to R%d\n", rank, fgid, vert_owner);
+                        }
+                                                
+                        // Add owned edges
+                        for (int j = 0; j < 3; j++)
+                        {
+                            int egid = f_eid(flid, j);
+                            int edge_owner = Utils::owner_rank(Edge(), egid, vef_gid_start);
+                            // if (fgid == 976) printf("R%d: edge %d from face %d, eowner R%d\n", rank, egid, fgid, edge_owner);
+                            if (edge_owner != rank)
+                            {
+                                // We reference this edge but do not own it; add to AoSoA
+                                hash_key = hashFunction(egid, edge_owner, rank);
+                                result = edge_distributor_map.insert(hash_key, 1);
+                                if (result.success()) {
+                                    // If insertion succeeds; tuple not present; add to AoSoA
+                                    int dedx = Kokkos::atomic_fetch_add(&ed_idx(), 1);
+                                    assert(dedx < edge_distributor_size);
+                                    edge_distributor_export_gids(dedx) = egid;
+                                    edge_distributor_export_from_ranks(dedx) = rank;
+                                    edge_distributor_export_to_ranks(dedx) = edge_owner;
+                                }
+                                // fgid 976
+                                // if (rank == 3) printf("R%d: from face %d: edge_dist(%d): %d to rank %d\n", rank, fgid, dedx, egid, edge_owner);
+                                continue; 
+                            }
+
+                            // Otherwise we own the edge and need to add it to the halo
+                            hash_key = hashFunction(egid, edge_owner, rank);
+                            result = edge_halo_map.insert(hash_key, 1);
+                            if (result.success()) {
+                                // If insertion succeeds; tuple not present; add to AoSoA
+                                int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
+                                assert(edx < ehalo_size);
+                                int elid = egid - vef_gid_start(rank, 1);
+                                edge_halo_export_lids(edx) = elid;
+                                edge_halo_export_ranks(edx) = vert_owner;
+                            }
+                            
+                            // if (rank == 2) printf("R%d: adding edge %d from face %d to rank %d\n", rank, egid, fgid, vert_owner);
+                        }
+
+                        // Add owned verts
+                        for (int k = 0; k < 3; k++)
+                        {
+                            int vgid1 = f_vid(flid, k);
+                            int vowner = Utils::owner_rank(Vertex(), vgid1, vef_gid_start);
+                            // if (fgid == 976 || vgid1 == 193) printf("R%d: vertex %d from face %d, vowner: R%d\n", rank, vgid1, fgid, vowner);
+                            if (vowner != rank)
+                            {
+                                // 30, 94, 126, 63
+                                // if (fgid == 30 || fgid == 94 || fgid == 126 || fgid == 63)
+                                //     printf("R%d: from fgid %d: unowned vgid %d (would send to R%d), vowner: %d\n",
+                                //         rank, fgid, vgid1, vert_owner, vowner);
+                                /**
+                                 * Most of the time, vowner is the same rank as vertex_owner.
+                                 * BUT sometimes it is not. If not, we need to tell vowner
+                                 * rank to send this vgid data to vert_owner
+                                 */
+                                if (vowner != vert_owner)
+                                {
+                                    hash_key = hashFunction(vgid1, vowner, vert_owner);
+                                    result = vert_distributor_map.insert(hash_key, 1);
+                                    // if ((hash_key == 206158430211 || hash_key == 120259084289) && rank == 0)
+                                    //     printf("R%d: parent fgid %d: vgid_parent %d, vowner: %d, result: %d key: %" PRIu64 "\n", rank,
+                                    //             fgid, vgid1, vowner, result.success(), hash_key);
+                                    if (result.success()) {
+                                        // If insertion succeeds; tuple not present; add to AoSoA
+                                        int dvdx = Kokkos::atomic_fetch_add(&vd_idx(), 1);
+                                        assert(dvdx < vert_distributor_size);
+                                        vert_distributor_export_gids(dvdx) = vgid1;
+                                        vert_distributor_export_from_ranks(dvdx) = vert_owner; // Reciving rank uses this as rank to send back to
+                                        vert_distributor_export_to_ranks(dvdx) = vowner;
+                                        // if (rank == 0) printf("Step 2: R%d: adding (vgid %d, to R%d) key: %" PRIu64 "\n",
+                                        //     rank, vgid1, vowner, hash_key);
+                                    }
+                                }
+                                continue; // Can't export verts we don't own
+                            }
+                            hash_key = hashFunction(vgid1, vert_owner, rank);
+                            result = vert_halo_map.insert(hash_key, 1);
+                            if (result.success()) {
+                                // If insertion succeeds; tuple not present; add to AoSoA
+                                int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
+                                assert(vdx < vhalo_size);
+                                int vlid1 = vgid1 - vef_gid_start(rank, 0);
+                                vert_halo_export_lids(vdx) = vlid1;
+                                vert_halo_export_ranks(vdx) = vert_owner;
+                            }
+                            
+                            // if (fgid == 976) printf("R%d: from FGID %d: sending vgid %d to %d\n", rank, fgid, vgid1, vert_owner);
+                        }
+
+                        // Enqueue child faces to be send to vert_owner rank
+                        for (int j = 0; j < 4; j++)
+                        {
+                            int fcgid = f_cid(flid, j);
+                            // Enqueue child if it exists
+                            if (fcgid != -1) { // -1 indicates no child
+                                queue[back] = fcgid;
+                                back = (back + 1) % capacity;
+
+                                // if (rank == 0) printf("R%d: from figd %d, adding child %d\n", rank, f_gid(flid), fcgid);
+
+                                // Handle queue overflow (optional, if queue size is too small)
+                                assert(back != front);
+                                // if (fgid == 791) printf("R%d: from fgid %d, unowned vert %d, adding child %d\n",
+                                //     rank, fgid_parent, fgid, fcgid);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        Kokkos::fence();
+
+        // Resize distributor data to correct sizes
+        Kokkos::deep_copy(vert_distributor_size, vd_idx);
+        Kokkos::deep_copy(edge_distributor_size, ed_idx);
+
+        // Kokkos::parallel_for("vert dist stuff", Kokkos::RangePolicy<execution_space>(0, vert_distributor_size),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     if (rank == 0) printf("R%d: gid/to/from: vdistr(%d): (%d, %d, %d)\n", rank, i,
+        //         vert_distributor_export_gids(i),
+        //         vert_distributor_export_to_ranks(i),
+        //         vert_distributor_export_from_ranks(i)
+        //     );
+
+        // });
+        
+        vert_distributor_export.resize(vert_distributor_size);
+        edge_distributor_export.resize(edge_distributor_size);
+
+        // Set duplicates to -1 so they are ignored
+        // _set_duplicates_neg1(vert_distributor_export);
+        // _set_duplicates_neg1(edge_distributor_export);
+
+        // Update distributor slices after resizing
+        vert_distributor_export_gids = Cabana::slice<0>(vert_distributor_export);
+        vert_distributor_export_to_ranks = Cabana::slice<1>(vert_distributor_export);
+        vert_distributor_export_from_ranks = Cabana::slice<2>(vert_distributor_export);
+        edge_distributor_export_gids = Cabana::slice<0>(edge_distributor_export);
+        edge_distributor_export_to_ranks = Cabana::slice<1>(edge_distributor_export);
+        edge_distributor_export_from_ranks = Cabana::slice<2>(edge_distributor_export);
+
+        // Set duplicate edge/face + send_to_rank pairs to be ignored (sent to rank -1)
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_distributor_export.size()),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     if (rank == 1) printf("before R%d: to: R%d, vert gid: %d\n", rank,
+        //         vert_distributor_export_to_ranks(i), vert_distributor_export_gids(i));
+
+        // });
+       
+        
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_distributor_export.size()),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     if (rank == 0) printf("vert distributor R%d: to: R%d, vert gid: %d\n", rank,
+        //         vert_distributor_export_to_ranks(i), vert_distributor_export_gids(i));
+
+        // });
+
+        /**
+         * Distribute vertex data, then add imported vertex data to the vertex halo
+         */
+        auto vert_distributor = Cabana::Distributor<memory_space>(_comm, vert_distributor_export_to_ranks);
+        const int vert_distributor_total_num_import = vert_distributor.totalNumImport();
+        distributor_aosoa vert_distributor_import("vert_distributor_import", vert_distributor_total_num_import); 
+        Cabana::migrate(vert_distributor, vert_distributor_export, vert_distributor_import);
+        
+        auto edge_distributor = Cabana::Distributor<memory_space>(_comm, edge_distributor_export_to_ranks);
+        const int edge_distributor_total_num_import = edge_distributor.totalNumImport();
+        distributor_aosoa edge_distributor_import("edge_distributor_import", edge_distributor_total_num_import);
+        Cabana::migrate(edge_distributor, edge_distributor_export, edge_distributor_import);
+
+        // Distributor import slices
+        auto vert_distributor_import_gids = Cabana::slice<0>(vert_distributor_import);
+        auto vert_distributor_import_to_ranks = Cabana::slice<1>(vert_distributor_import);
+        auto vert_distributor_import_from_ranks = Cabana::slice<2>(vert_distributor_import);
+        auto edge_distributor_import_gids = Cabana::slice<0>(edge_distributor_import);
+        auto edge_distributor_import_to_ranks = Cabana::slice<1>(edge_distributor_import);
+        auto edge_distributor_import_from_ranks = Cabana::slice<2>(edge_distributor_import);
+
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_distributor_import.size()),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     if (rank == 1) printf("R%d: R%d asking for vert gid %d\n", rank,
+        //         vert_distributor_import_from_ranks(i), vert_distributor_import_gids(i));
+
+        // });
+        Kokkos::parallel_for("add imported distributor vertex data",
+            Kokkos::RangePolicy<execution_space>(0, vert_distributor_total_num_import),
+            KOKKOS_LAMBDA(int i) {
+            
+            int vgid = vert_distributor_import_gids(i);
+            int vlid = vgid - vef_gid_start(rank, 0);
+            int from_rank = vert_distributor_import_from_ranks(i);
+
+            // Add to vert halo
+            KeyType hash_key = hashFunction(vgid, from_rank, rank);
+            auto result = vert_halo_map.insert(hash_key, 1);
+            if (result.success()) {
+                // If insertion succeeds; tuple not present; add to AoSoA
+                int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
+                assert(vdx < vhalo_size);
+                vert_halo_export_lids(vdx) = vlid;
+                vert_halo_export_ranks(vdx) = from_rank;
+            }
+            // if (vgid == 16 && from_rank == 3) printf("R%d: adding vgid %d to R%d to halo at vdx %d\n", rank, vgid, from_rank, vdx);
+            
+        });
+
+        // Add all edges and their vertices, and their children to the halo
+        Kokkos::parallel_for("add imported distributor edge data",
+            Kokkos::RangePolicy<execution_space>(0, edge_distributor_total_num_import),
+            KOKKOS_LAMBDA(int i) {
+            
+            int egid_parent = edge_distributor_import_gids(i);
+            int from_rank = edge_distributor_import_from_ranks(i);
+
+            // Queue for children (local per thread), that will all go to the remote rank
+            const int capacity = 32;
+            int queue[capacity]; // Adjust size as needed
+            int front = 0, back = 0;
+
+            // Initialize queue with the parent face
+            queue[back] = egid_parent;
+            back = (back + 1) % capacity;
+
+            // Traverse children iteratively
+            while (front != back)
+            {
+                // Dequeue
+                int egid = queue[front];
+                front = (front + 1) % capacity;
+                
+                int elid = egid - vef_gid_start(rank, 1);
+                assert(elid > -1);
+                
+                // Add this edge to the halo to send to from_rank
+                KeyType hash_key = hashFunction(egid, from_rank, rank);
+                auto result = edge_halo_map.insert(hash_key, 1);
+                if (result.success()) {
+                    // If insertion succeeds; tuple not present; add to AoSoA
+                    int edx = Kokkos::atomic_fetch_add(&eh_idx(), 1);
+                    assert(edx < ehalo_size);
+                    edge_halo_export_lids(edx) = elid;
+                    edge_halo_export_ranks(edx) = from_rank;
+                }
+
+                // Add vertices on this edge to the halo to send to from_rank
+                for (int i = 0; i < 3; i++)
+                {
+                    int vgid = e_vid(elid, i);
+                    int vowner = Utils::owner_rank(Vertex(), vgid, vef_gid_start);
+                    if (vowner != rank) continue; // Can't export verts we don't own
+                    hash_key = hashFunction(vgid, from_rank, rank);
+                    result = vert_halo_map.insert(hash_key, 1);
+                    if (result.success()) {
+                        // If insertion succeeds; tuple not present; add to AoSoA
+                        int vdx = Kokkos::atomic_fetch_add(&vh_idx(), 1);
+                        assert(vdx < vhalo_size);
+                        int vlid = vgid - vef_gid_start(rank, 0);
+                        vert_halo_export_lids(vdx) = vlid;
+                        vert_halo_export_ranks(vdx) = from_rank;
+                    }
+                }
+
+                // Enqueue child edges to be sent to vert_owner rank
+                for (int j = 0; j < 1; j++)
+                {
+                    int ecgid = e_cid(elid, j);
+                    // Enqueue child if it exists
+                    if (ecgid != -1) { // -1 indicates no child
+                        queue[back] = ecgid;
+                        back = (back + 1) % capacity;
+
+                        // Handle queue overflow (optional, if queue size is too small)
+                        assert(back != front);
+                    }
+                }
+            }
+
+            // if (edx > 85) printf("R%d: edx: %d\n", rank, edx);
+            // if (rank == 2) printf("R%d: adding egid %d to halo to rank %d: el/gid: %d, %d\n", rank, egid, from_rank, elid, e_gid(elid));
+            // if (vgid == 16 && from_rank == 3) printf("R%d: adding vgid %d to R%d to halo at vdx %d\n", rank, vgid, from_rank, vdx);
+            
+        });
+
+        // Finalize halo sizes
+        Kokkos::deep_copy(vhalo_size, vh_idx);
+        Kokkos::deep_copy(ehalo_size, eh_idx);
+        Kokkos::deep_copy(fhalo_size, fh_idx);
+        vert_halo_export.resize(vhalo_size);
+        edge_halo_export.resize(ehalo_size);
+        face_halo_export.resize(fhalo_size);
+
+        // Add this halo data to the halo vectors
+        _vert_halo_export.push_back(std::make_shared<halo_aosoa>(vert_halo_export));
+        _edge_halo_export.push_back(std::make_shared<halo_aosoa>(edge_halo_export));
+        _face_halo_export.push_back(std::make_shared<halo_aosoa>(face_halo_export));
+
+        // Update slices
+        vert_halo_export_lids = Cabana::slice<0>(vert_halo_export);
+        vert_halo_export_ranks = Cabana::slice<1>(vert_halo_export);
+        edge_halo_export_lids = Cabana::slice<0>(edge_halo_export);
+        edge_halo_export_ranks = Cabana::slice<1>(edge_halo_export);
+        face_halo_export_lids = Cabana::slice<0>(face_halo_export);
+        face_halo_export_ranks = Cabana::slice<1>(face_halo_export);
+
+        // printf("R%d: vef halo sizes: %d, %d, %d\n", rank, vhalo_size, ehalo_size, fhalo_size);
+
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_halo_export.size()),
+        //     KOKKOS_LAMBDA(int i) {
+
+            // if (rank == 1) printf("R%d: to: R%d, vert lid: %d\n", rank,
+            //     vert_halo_export_ranks(i), vert_halo_export_lids(i));
+            // int export_lid = vert_halo_export_lids(i);
+            // if (export_lid >= vertex_count) printf("R%d: max %d verts, has vlid %d\n", rank, vertex_count, export_lid);
+
+        // });
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, edge_halo_export.size()),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     printf("R%d: to: R%d, edge lid: %d\n", rank,
+        //         edge_halo_export_ranks(i), edge_halo_export_lids(i));
+
+        // });
+        
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, face_halo_export.size()),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     if (rank == 1) printf("R%d: to: R%d, face lid: %d\n", rank,
+        //         face_halo_export_ranks(i), face_halo_export_lids(i));
+
+        // });
+
+        // _set_duplicates_neg1(vert_halo_export);
+        // _set_duplicates_neg1(edge_halo_export);
+        // _set_duplicates_neg1(face_halo_export);
+
+        // Create halos
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_halo_export.size()),
+        //     KOKKOS_LAMBDA(int i) {
+
+        //     printf("R%d: to: R%d, vert lid: %d\n", rank,
+        //         vert_halo_export_ranks(i), vert_halo_export_lids(i));
+        //     // int export_lid = vert_halo_export_lids(i);
+        //     // if (export_lid >= vertex_count) printf("R%d: max %d verts, has vlid %d\n", rank, vertex_count, export_lid);
+
+        // });
+        // printf("R%d: vert count: %d, export size: %d\n", rank, vertex_count, vert_halo_export.size());
+        // halo_aosoa vert_halo_export_test("vert_halo_export", 10);
+        // auto vert_halo_export_lids_test = Cabana::slice<0>(vert_halo_export_test);
+        // auto vert_halo_export_ranks_test = Cabana::slice<1>(vert_halo_export_test);
+        // Kokkos::parallel_for("print", Kokkos::RangePolicy<execution_space>(0, vert_halo_export_test.size()),
+        //     KOKKOS_LAMBDA(int i) {
+
+            
+        //     vert_halo_export_ranks_test(i) = 1;
+        //     vert_halo_export_lids_test(i) = 1;
+        //     // int export_lid = vert_halo_export_lids(i);
+        //     // if (export_lid >= vertex_count) printf("R%d: max %d verts, has vlid %d\n", rank, vertex_count, export_lid);
+
+        // });
+
+        Cabana::Halo<memory_space> vhalo( _comm, vertex_count, vert_halo_export_lids, vert_halo_export_ranks);
+        Cabana::Halo<memory_space> ehalo( _comm, edge_count, edge_halo_export_lids, edge_halo_export_ranks);
+        Cabana::Halo<memory_space> fhalo( _comm, face_count, face_halo_export_lids, face_halo_export_ranks);
+
+        // Resize and gather
+        _vertices.resize(vhalo.numLocal() + vhalo.numGhost());
+        _edges.resize(ehalo.numLocal() + ehalo.numGhost());
+        _faces.resize(fhalo.numLocal() + fhalo.numGhost());
+        
+        Cabana::gather(vhalo, _vertices);
+        Cabana::gather(ehalo, _edges);
+        Cabana::gather(fhalo, _faces);
+        
+        // Update ghost counts in mesh
+        _owned_vertices = vhalo.numLocal();
+        _owned_edges = ehalo.numLocal();
+        _owned_faces = fhalo.numLocal();
+        _ghost_vertices = vhalo.numGhost();
+        _ghost_edges = ehalo.numGhost();
+        _ghost_faces = fhalo.numGhost();
+
+        Kokkos::Profiling::popRegion();
+    }
+
+    /**
+     * Make a sparse matrix and square it
+     */
+    void make_sparse()
+    {
+        Kokkos::Profiling::pushRegion("make_sparse");
+        /**
+         * A = hypre_ParCSRMatrixCreate(...)
+         * row_starts and col_starts: these will be the same. Arrays of size 2 where
+         *      0 = the global row/col I start
+         *      1 = the global row/col I end, non-inclusive (Add number of row/col I own to index 0)
+         * num_cols_offd: number of non-zero columns in the rows I own.
+         *      Number of distinct vertices that I am connected to that I do not own.
+         * num_nonzeros_diag: The number of non-zeroes in the part of the matrix that own (the fully local bit)
+         *      Number of edges fully local between two vertices I own
+         * num_nonzeroes_offd: total number of non-zero values in the rows but not the columns I own.
+         *      Number of edges that go to any other node on any other process
+         * returns a matrix of type hypre_ParCSRMatrix *A.
+         * 
+         * https://github.com/hypre-space/hypre/blob/master/src/parcsr_ls/par_laplace_27pt.c
+         * 
+         * Hypre uses structs to store all the parts of the matrix
+         * Line 1667: you make your own CSR 
+         * Use HYPRE_MEMORY_DEVICE
+         * col_map_offd = size = num_cols_offd; this holds, for each non-zero offd column the global ID of the column, 
+         *      ordered from lowest to highest.
+         * 
+         * Use HYPRE_MEMORY_HOST even if you want it on the GPU, 
+         * at the end call hypre_ParCSRMatrixMigrate with HYPRE_MEMORY_DEVICE as second arg.
+         * 
+         * How to print out matrix:
+         *      hypre_ParCRSMatrixPrint(). Might have to call upper-case version
+         * 
+         * TO get these functions, migh tneed to just go to the files Amanda sent and include those includes.
+         * 
+         * To multiply matrix:
+         *      See Amanada notes
+         * 
+         * How to extract info from matrix:
+         *      Call the set diags/values functions in reverse.
+         */
+
+        
+        
+        Kokkos::Profiling::popRegion();
     }
 
     /**
@@ -1248,12 +1943,13 @@ class Mesh
      * by turning each (i, j) index into a vertex and creating edges between 
      * all eight neighbor vertices in the grid.
      * 
-     * Initializes XYZ and vorticity values on vertices from values in
-     * position_array and vorticity_array, respectively.
+     * The values in the array are not used
      */
     template <class CabanaArray>
-    void initializeFromArray( CabanaArray& position_array, CabanaArray& vorticity_array )
+    void initializeFromArray( CabanaArray& array )
     {
+        Kokkos::Profiling::pushRegion("initializeFromArray");
+
         static_assert( Cabana::Grid::is_array<CabanaArray>::value, "NuMesh::Mesh::initializeFromArray: Cabana::Grid::Array required" );
         
         if (!Utils::isPerfectSquare(_comm_size))
@@ -1261,7 +1957,7 @@ class Mesh
             std::cerr << "NuMesh::initializeFromArray only supports communicator sizes that are square numbers\n";
         }
 
-        auto local_grid = position_array.layout()->localGrid();
+        auto local_grid = array.layout()->localGrid();
         auto node_space = local_grid->indexSpace( Cabana::Grid::Own(), Cabana::Grid::Node(),
                                                 Cabana::Grid::Local() );
         
@@ -1278,21 +1974,15 @@ class Mesh
         _faces.resize(of);
         _owned_vertices = ov; _owned_edges = oe; _owned_faces = of;
 
-        _updateGlobalIDs();
+        _updateGlobalIDs(false);
 
-        // Copy vef_gid_start to device
-        Kokkos::View<int*[3], MemorySpace> vef_gid_start_d("vef_gid_start_d", _comm_size);
-        auto hv_tmp = Kokkos::create_mirror_view(vef_gid_start_d);
-        Kokkos::deep_copy(hv_tmp, _vef_gid_start);
-        Kokkos::deep_copy(vef_gid_start_d, hv_tmp);
+        auto vef_gid_start = _vef_gid_start;
 
         // We should convert the following loops to a Cabana::simd_parallel_for at some point to get better write behavior
 
         // Initialize the vertices, edges, and faces
         auto v_gid = Cabana::slice<V_GID>(_vertices);
         auto v_owner = Cabana::slice<V_OWNER>(_vertices);
-        auto v_xyz = Cabana::slice<V_XYZ>(_vertices);
-        auto v_vort = Cabana::slice<V_VORT>(_vertices);
 
         auto e_vid = Cabana::slice<E_VIDS>(_edges); // VIDs from south to north, west to east vertices
         auto e_gid = Cabana::slice<E_GID>(_edges);
@@ -1326,26 +2016,16 @@ class Mesh
             e_layer(i) = 0;
         });
 
-        auto z = position_array.view();
-        auto w = vorticity_array.view();
+        auto z = array.view();
         Kokkos::parallel_for("populate_ve", Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>({{istart, jstart}}, {{iend, jend}}),
             KOKKOS_LAMBDA(int i, int j) {
 
             // Initialize vertices
             int v_lid = (i - istart) * (jend - jstart) + (j - jstart);
-            int v_gid_ = vef_gid_start_d(rank, 0) + v_lid;
+            int v_gid_ = vef_gid_start(rank, 0) + v_lid;
             //printf("i/j/vid: %d, %d, %d\n", i, j, v_lid);
             v_gid(v_lid) = v_gid_;
             v_owner(v_lid) = rank;
-
-            // Initialize position
-            for (int dim = 0; dim < 3; dim++) {
-                v_xyz(v_lid, dim) = z(i, j, dim);
-            }
-            // Initialize vorticity
-            for (int dim = 0; dim < 2; dim++) {
-                v_vort(v_lid, dim) = w(i, j, dim);
-            }
 
             /* Initialize edges
              * Edges between vertices for their:
@@ -1358,23 +2038,23 @@ class Mesh
             if ((i+1 < iend) && (j+1 < jend))
             {
                 // Edge 0: north
-                v_gid_other = vef_gid_start_d(rank, 0) + (i - istart) * (jend - jstart) + (j+1 - jstart);
+                v_gid_other = vef_gid_start(rank, 0) + (i - istart) * (jend - jstart) + (j+1 - jstart);
                 e_lid = v_lid * 3;
-                //printf("R%d: e_gid: %d, e_lid: %d, v_lid: %d\n", rank, vef_gid_start_d(rank, 1) + e_lid, e_lid, v_lid);
-                e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                //printf("R%d: e_gid: %d, e_lid: %d, v_lid: %d\n", rank, vef_gid_start(rank, 1) + e_lid, e_lid, v_lid);
+                e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 
 
                 // Edge 1: northeast
-                v_gid_other = vef_gid_start_d(rank, 0) + (i+1 - istart) * (jend - jstart) + (j+1 - jstart);
+                v_gid_other = vef_gid_start(rank, 0) + (i+1 - istart) * (jend - jstart) + (j+1 - jstart);
                 e_lid = v_lid * 3 + 1;
-                e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
 
                 // Edge 2: east
-                v_gid_other = vef_gid_start_d(rank, 0) + (i+1 - istart) * (jend - jstart) + (j - jstart);
+                v_gid_other = vef_gid_start(rank, 0) + (i+1 - istart) * (jend - jstart) + (j - jstart);
                 e_lid = v_lid * 3 + 2;
-                e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 //printf("ij: %d, %d: e3: vid: %d, vo: %d\n", i, j, v_lid, v_lid_other);
             }
@@ -1382,9 +2062,9 @@ class Mesh
             else if ((i == iend-1) && (j < jend-1))
             {   
                 // Edge 0: north
-                v_gid_other = vef_gid_start_d(rank, 0) + (i - istart) * (jend - jstart) + (j+1 - jstart);
+                v_gid_other = vef_gid_start(rank, 0) + (i - istart) * (jend - jstart) + (j+1 - jstart);
                 e_lid = v_lid * 3;
-                e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
 
                 // Edges 1 and 2
@@ -1394,12 +2074,12 @@ class Mesh
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 1;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
 
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 2;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                 } 
                 else 
@@ -1407,15 +2087,15 @@ class Mesh
                     // Periodic or MPI boundary
                     // Edge 1
                     offset = v_lid % (jend-jstart);
-                    v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset + 1;
+                    v_gid_other = vef_gid_start(neighbor_rank, 0) + offset + 1;
                     e_lid = v_lid * 3 + 1;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
 
                     // Edge 2
-                    v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset;
+                    v_gid_other = vef_gid_start(neighbor_rank, 0) + offset;
                     e_lid = v_lid * 3 + 2;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 }
             }
@@ -1423,9 +2103,9 @@ class Mesh
             else if ((j == jend-1) && (i < iend-1))
             {
                 // Edge 2: east
-                v_gid_other = vef_gid_start_d(rank, 0) + (i+1 - istart) * (jend - jstart) + (j - jstart);
+                v_gid_other = vef_gid_start(rank, 0) + (i+1 - istart) * (jend - jstart) + (j - jstart);
                 e_lid = v_lid * 3 + 2;
-                e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                 e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
 
                 // Edges 0 and 1
@@ -1435,12 +2115,12 @@ class Mesh
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
 
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 1;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                 } 
                 else 
@@ -1448,17 +2128,17 @@ class Mesh
                     // Periodic or MPI boundary
                     // Edge 0
                     offset = v_lid / (iend-istart);
-                    v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset * (iend-istart);
+                    v_gid_other = vef_gid_start(neighbor_rank, 0) + offset * (iend-istart);
                     e_lid = v_lid * 3;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
 
                     // Edge 1
                     offset = v_lid / (iend-istart);
-                    v_gid_other = vef_gid_start_d(neighbor_rank, 0) + (offset+1) * (iend-istart);
+                    v_gid_other = vef_gid_start(neighbor_rank, 0) + (offset+1) * (iend-istart);
                     e_lid = v_lid * 3 + 1;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 }
@@ -1474,15 +2154,15 @@ class Mesh
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                 } 
                 else 
                 {
                     offset = v_lid / (iend-istart);
-                    v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset * (iend-istart);
+                    v_gid_other = vef_gid_start(neighbor_rank, 0) + offset * (iend-istart);
                     e_lid = v_lid * 3;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 }
@@ -1494,14 +2174,14 @@ class Mesh
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 1;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                 } 
                 else 
                 {
-                    v_gid_other = vef_gid_start_d(neighbor_rank, 0);
+                    v_gid_other = vef_gid_start(neighbor_rank, 0);
                     e_lid = v_lid * 3 + 1;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     //printf("e_gid: %d, v0: %d, v1: %d, offset: %d\n", e_gid(e_lid), v_gid_, v_gid_other, offset);
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 }
@@ -1513,15 +2193,15 @@ class Mesh
                     // Free boundary
                     v_gid_other = -1;
                     e_lid = v_lid * 3 + 2;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = -1; e_vid(e_lid, 1) = -1;
                 } 
                 else 
                 {
                     offset = v_lid % (jend-jstart);
-                    v_gid_other = vef_gid_start_d(neighbor_rank, 0) + offset;
+                    v_gid_other = vef_gid_start(neighbor_rank, 0) + offset;
                     e_lid = v_lid * 3 + 2;
-                    e_gid(e_lid) = vef_gid_start_d(rank, 1) + e_lid;
+                    e_gid(e_lid) = vef_gid_start(rank, 1) + e_lid;
                     e_vid(e_lid, 0) = v_gid_; e_vid(e_lid, 1) = v_gid_other;
                 }
             }
@@ -1529,11 +2209,495 @@ class Mesh
         Kokkos::fence();
 
         // All initialized faces are on the same level
-        _max_depth = 0;
+        _local_max_tree_depth = 0;
 
-        _finializeInit();
+        _createFaces();
+        // _sort_by_layer();
+        _populate_boundary_elements();
+
+        Kokkos::Profiling::popRegion();
     }
         
+    /**
+     * Initialize a mesh from vectors of vertices, edges, and faces, read from
+     * a collection of VTU files where ghost vertices are marked.
+     * 
+     * Convention for ghost elements: The rank which owns the lowest vertex ID owns the element.
+     * 
+     * Inputs are AoSoAs expected in the following format:
+     *  using vertices_d = Cabana::MemberTypes<int,       // Vertex global ID                                 
+                                               int,       // Owning rank
+                                               >;
+        using cell_d = Cabana::MemberTypes<int[3],       // Vertex IDs forming the triangle                                
+                                           bool,         // Flag indicating if the cell contains a ghost point
+                                           >;
+
+        using vert_aosoa = Cabana::AoSoA<vertices_d, Kokkos::HostSpace, 4>;
+        using cell_aosoa = Cabana::AoSoA<cell_d, Kokkos::HostSpace, 4>;
+
+     */
+    template <class VerticesAoSoA, class FacesAoSoA>
+    void initializeFromConnectivity(VerticesAoSoA& verts_in, FacesAoSoA& faces_in)
+    {
+        Kokkos::Profiling::pushRegion("Mesh::initializeFromConnectivity");
+
+        const int rank = _rank;
+
+        auto v_in_gid = Cabana::slice<0>(verts_in);
+        auto v_in_owner = Cabana::slice<1>(verts_in);
+        auto f_in_vids = Cabana::slice<0>(faces_in);
+        auto f_in_isGhost = Cabana::slice<1>(faces_in);
+
+        // Hash function to determine ownership of a face
+        auto faceHash = KOKKOS_LAMBDA(int v0, int v1, int v2) -> int {
+            return v0 + v1 * 31 + v2 * 97;
+        };
+
+        using KeyType = uint64_t;  // Hashable key
+        using MapType = Kokkos::UnorderedMap<KeyType, int, memory_space>;
+
+        // Hash function to combine two integers into a single key, independent of order
+        auto hashFunction = KOKKOS_LAMBDA(int first, int second) -> KeyType {
+            int min_val = first < second ? first : second;
+            int max_val = first > second ? first : second;
+            return (static_cast<KeyType>(max_val) << 32) | (static_cast<KeyType>(min_val) & 0xFFFFFFFF);
+        };
+
+        MapType edges_map(faces_in.size()*3);
+
+        using int_d = Kokkos::View<int, memory_space>;
+
+        // Owned elements are always at the beginning of the vectors
+        int_d counter_d("counter_d");
+        Kokkos::deep_copy(counter_d, 0);
+        Kokkos::parallel_for("count ghost vertices", Kokkos::RangePolicy<execution_space>(0, verts_in.size()),
+            KOKKOS_LAMBDA(int i) {
+
+            if (v_in_owner(i) != rank) Kokkos::atomic_increment(&counter_d());
+            
+        });
+        Kokkos::deep_copy(_ghost_vertices, counter_d);
+
+        // The rank which owns the face owns the vertex with the lowest GID in the face
+        Kokkos::deep_copy(counter_d, 0);
+        Kokkos::parallel_for("count ghost faces", Kokkos::RangePolicy<execution_space>(0, faces_in.size()),
+            KOKKOS_LAMBDA(int i) {
+
+            if (f_in_isGhost(i))
+            {
+                int vlid0 = f_in_vids(i, 0);
+                int vlid1 = f_in_vids(i, 1);
+                int vlid2 = f_in_vids(i, 2);
+
+                int vertex_gids[3] = {v_in_gid(vlid0), v_in_gid(vlid1), v_in_gid(vlid2)};
+                int vertex_owners[3] = {v_in_owner(vlid0), v_in_owner(vlid1), v_in_owner(vlid2)};
+
+                int hash = faceHash(vertex_gids[0], vertex_gids[1], vertex_gids[2]);
+                int owner_rank = vertex_owners[hash % 3];
+                // Find the vertex with the lowest GID
+                if (owner_rank != rank)
+                {
+                    // printf("R%d: ghost cell %d (owner R%d): v(%d, %d, %d)\n", _rank, (int)i, verts_vec[lowest_gid].owner, faces_vec[i].v0, faces_vec[i].v1, faces_vec[i].v2);
+                    Kokkos::atomic_increment(&counter_d());
+                }
+            }
+        });
+        Kokkos::deep_copy(_ghost_faces, counter_d);
+        _owned_vertices = verts_in.size() - _ghost_vertices;
+        _owned_edges = faces_in.size()*3;
+        _owned_faces = faces_in.size() - _ghost_faces;
+        _vertices.resize(_owned_vertices);
+        _edges.resize(_owned_edges);
+        _faces.resize(_owned_faces);
+
+        // Set ghost counts to zero because nothing is ghosted
+        _ghost_vertices = 0; _ghost_edges = 0; _ghost_faces = 0;
+
+        _updateGlobalIDs(false); // False because we are still building the mesh
+
+        // Create the mesh
+        auto vef_gid_start = _vef_gid_start;
+
+        // Initialize the vertices, edges, and faces
+        auto v_gid = Cabana::slice<V_GID>(_vertices);
+        auto v_owner = Cabana::slice<V_OWNER>(_vertices);
+
+        auto e_vid = Cabana::slice<E_VIDS>(_edges); // VIDs from south to north, west to east vertices
+        auto e_gid = Cabana::slice<E_GID>(_edges);
+        auto e_cids = Cabana::slice<E_CIDS>(_edges);
+        auto e_pid = Cabana::slice<E_PID>(_edges);
+        auto e_owner = Cabana::slice<E_OWNER>(_edges);
+        auto e_layer = Cabana::slice<E_LAYER>(_edges);
+
+        auto f_egids = Cabana::slice<F_EIDS>(_faces);
+        auto f_vgids = Cabana::slice<F_VIDS>(_faces);
+        auto f_gid = Cabana::slice<F_GID>(_faces);
+        auto f_parent = Cabana::slice<F_PID>(_faces);
+        auto f_child = Cabana::slice<F_CID>(_faces);
+        auto f_owner = Cabana::slice<F_OWNER>(_faces);
+        auto f_layer = Cabana::slice<F_LAYER>(_faces);
+        
+        // Initialize vertices
+        Kokkos::parallel_for("create vertices", Kokkos::RangePolicy<execution_space>(0, _vertices.size()),
+            KOKKOS_LAMBDA(int i) {
+
+            v_gid(i) = v_in_gid(i);
+            v_owner(i) = v_in_owner(i);
+            
+        });
+
+        /**
+         * Initialize faces and edges
+         * 
+         * The rank which owns the vertex with the lower GID owns the edge. For this to work,
+         * edge vertices must be sorted
+         * 
+         * If we do not own the edge, we need to request the edge's global ID
+         * from its owner.BoundaryType
+         * 
+         * There are cases where the owner of the edge does not own any face the edge is a part of.
+         * In this case, the edge is not created until a remote process requests it.
+         */
+        using int_vector_d = Kokkos::View<int*, memory_space>;
+        using distributor_aosoa = Cabana::AoSoA<Cabana::MemberTypes<int[2], int, int>, memory_space, 4>;// (v0, v1), my_rank, to_rank
+        // printf("R%d: vert/edge dist sizes: %d, %d\n", rank, vert_distributor_size, edge_distributor_size);
+        int edge_distributor_export_size = _faces.size();
+        distributor_aosoa edge_distributor_export("edge_distributor_export", edge_distributor_export_size);
+        auto edge_distributor_export_verts = Cabana::slice<0>(edge_distributor_export);
+        auto edge_distributor_export_myrank = Cabana::slice<1>(edge_distributor_export);
+        auto edge_distributor_export_torank = Cabana::slice<2>(edge_distributor_export);
+
+        int_d distributor_idx("distributor_idx");
+        Kokkos::deep_copy(distributor_idx, 0); 
+        int_d edge_counter("edge_counter"); // Edge local ID counter
+        Kokkos::deep_copy(edge_counter, 0); 
+        Kokkos::deep_copy(counter_d, 0); // Counter for local ID of face
+        int edges_size = _edges.size();
+        Kokkos::parallel_for("create faces and edges", Kokkos::RangePolicy<execution_space>(0, faces_in.size()),
+            KOKKOS_LAMBDA(const int i) {
+            
+            // Determine face ownership
+            int vertex_lids[3] = {f_in_vids(i, 0), f_in_vids(i, 1), f_in_vids(i, 2)};
+            int vertex_gids[3] = {v_in_gid(vertex_lids[0]), v_in_gid(vertex_lids[1]), v_in_gid(vertex_lids[2])};
+            int vertex_owners[3] = {v_in_owner(vertex_lids[0]), v_in_owner(vertex_lids[1]), v_in_owner(vertex_lids[2])};
+            int hash = faceHash(vertex_gids[0], vertex_gids[1], vertex_gids[2]);
+            int face_owner = vertex_owners[hash % 3];
+            if (f_in_isGhost(i) && (face_owner != rank)) return; // We do not own this face
+
+            int flid = Kokkos::atomic_fetch_add(&counter_d(), 1);
+
+            // Assign face global ID
+            int fgid = flid + vef_gid_start(rank, 2);
+            f_gid(flid) = fgid;
+
+            // All faces have no children and no parents
+            for (int j = 0; j < 4; j++) f_child(flid, j) = -1;
+            f_parent(flid) = -1;
+
+            // All faces on layer 0 of the tree
+            f_layer(flid) = 0;
+
+            // We own this face
+            f_owner(flid) = rank;
+
+            // Assign vertex global IDs
+            for (int j = 0; j < 3; j++) f_vgids(flid, j) = vertex_gids[j];
+
+            // if (fgid == 166 || fgid == 140)
+            // printf("R%d: fgid %d: v(%d, %d, %d), o(%d, %d, %d), fowner: %d\n", rank, fgid,
+            //     vertex_gids[0], vertex_gids[1], vertex_gids[2],
+            //     vertex_owners[0], vertex_owners[1], vertex_owners[2],
+            //     face_owner);
+
+            // if (rank == 1) printf("R%d: f%d: v(%d, %d, %d)\n", rank, fgid, f_vgids(flid, 0), f_vgids(flid, 1), f_vgids(flid, 2));
+
+            /**
+             * Create edges:
+             *  v0, v1
+             *  v1, v2
+             *  v2, v0
+             */
+            for (int j = 0; j < 3; j++)
+            {
+                int j2 = j < 2 ? j+1 : 0;
+                int edge_v_gids[2] = {vertex_gids[j], vertex_gids[j2]};
+                int v_edge_owners[2] = {vertex_owners[j], vertex_owners[j2]};
+                // Ensure edge_v_gids is sorted and maintain mapping with v_edge_owners
+                if (edge_v_gids[0] > edge_v_gids[1])
+                {
+                    // Swap edge_v_gids
+                    int temp_gid = edge_v_gids[0];
+                    edge_v_gids[0] = edge_v_gids[1];
+                    edge_v_gids[1] = temp_gid;
+
+                    // Swap v_edge_owners
+                    int temp_owner = v_edge_owners[0];
+                    v_edge_owners[0] = v_edge_owners[1];
+                    v_edge_owners[1] = temp_owner;
+                }
+                // Determine edge ownership
+                // We own all edges where we own the first vertex
+                // if (edge_v_gids[0] == 15 && edge_v_gids[1] == 99)
+                //     printf("R%d: fgid %d: edge v(%d, %d), o(%d, %d), eowner: R%d\n", rank, fgid,
+                //             edge_v_gids[0], edge_v_gids[1], v_edge_owners[0], v_edge_owners[1], v_edge_owners[0]);
+
+                // The rank that owns the smaller vertex ID owns the edge
+                int edge_owner = Kokkos::min(v_edge_owners[0], v_edge_owners[1]);
+                        
+                KeyType edgekey = hashFunction(edge_v_gids[0], edge_v_gids[1]);
+                if (edge_owner == rank)
+                {
+                    // if (edge_v_gids[0] == 15 || edge_v_gids[1] == 15)
+                    // printf("AFTER R%d: fgid %d: edge from (%d, %d), o(%d, %d)\n", rank, fgid,
+                    //         edge_v_gids[0], edge_v_gids[1], v_edge_owners[0], v_edge_owners[1]);
+                    auto result = edges_map.insert(edgekey, 1);
+                    if (result.success()) {
+                        // If insertion succeeds, edge has not yet been created
+                        int elid = Kokkos::atomic_fetch_add(&edge_counter(), 1);
+                        assert(elid < edges_size);
+
+                        // Create edge
+                        e_gid(elid) = -1; // GIDs must be populated once we know total number of edges
+                        
+                        // Vertex endpoints and midpoint
+                        e_vid(elid, 0) = edge_v_gids[0];
+                        e_vid(elid, 1) = edge_v_gids[1];
+                        e_vid(elid, 2) = -1;
+
+                        // No children or parent edges
+                        for (int k = 0; k < 2; k++) e_cids(elid, k) = -1;
+                        e_pid(elid) = -1;
+
+                        // Layer 0
+                        e_layer(elid) = 0;
+
+                        // Owner rank
+                        e_owner(elid) = rank;
+
+                        //if (fgid == 123) printf("R%d: adding edge from v(%d, %d)\n", rank, e_vid(elid, 0), e_vid(elid, 1));
+                    }
+                }
+                else
+                {
+                    auto result = edges_map.insert(edgekey, 1);
+                    if (result.success()) {
+                        // printf("Not owned: R%d: fgid %d: edge from (%d, %d), o(%d, %d)\n", rank, fgid,
+                        //     edge_v_gids[0], edge_v_gids[1], v_edge_owners[0], v_edge_owners[1]);
+
+                        // Ensure we don't request the same edge twice
+                        int idx = Kokkos::atomic_fetch_add(&distributor_idx(), 1);
+                        assert(idx < edge_distributor_export_size);
+                        edge_distributor_export_verts(idx, 0) = edge_v_gids[0];
+                        edge_distributor_export_verts(idx, 1) = edge_v_gids[1];
+                        edge_distributor_export_myrank(idx) = rank;
+                        edge_distributor_export_torank(idx) = v_edge_owners[0];
+                        // printf("R%d: v(%d, %d) to R%d, from R%d\n", rank, edge_distributor_export_verts(idx, 1), 
+                        //     edge_distributor_export_verts(idx, 2), edge_distributor_export_torank(idx), edge_distributor_export_myrank(idx));
+                    }
+                }
+            }
+        });
+        int distributor_size;
+        Kokkos::deep_copy(distributor_size, distributor_idx);
+        edge_distributor_export.resize(distributor_size);
+
+        // Update slices after resizing
+        edge_distributor_export_verts = Cabana::slice<0>(edge_distributor_export);
+        edge_distributor_export_myrank = Cabana::slice<1>(edge_distributor_export);
+        edge_distributor_export_torank = Cabana::slice<2>(edge_distributor_export);
+        e_gid = Cabana::slice<E_GID>(_edges);
+        e_vid = Cabana::slice<E_VIDS>(_edges);
+
+        // // Now we can set edge global IDs, and hash edges vertices to global ID for quick lookup
+        // Kokkos::parallel_for("set edge GIDs", Kokkos::RangePolicy<execution_space>(0, _edges.size()),
+        //     KOKKOS_LAMBDA(const int i) {
+            
+        //     int egid = i + vef_gid_start(rank, 1);
+        //     e_gid(i) = egid;
+        //     KeyType edgekey = hashFunction(e_vid(i, 0), e_vid(i, 1));
+        //     edges_map.insert(edgekey, egid);
+        //     // if (result.success())
+        //     //     if (rank == 1) printf("Insert: R%d: egid %d, v(%d, %d)\n", rank, egid, e_vid(i, 0), e_vid(i, 1));
+
+        // });
+        // Kokkos::fence();
+
+        // for (size_t i = 0; i < edge_distributor_export.size(); i++)
+        // {
+        //     printf("R%d: v(%d, %d) to R%d, from R%d\n", rank, edge_distributor_export_verts(i, 1), 
+        //         edge_distributor_export_verts(i, 2), edge_distributor_export_torank(i), edge_distributor_export_myrank(i));
+        // }
+
+        // Now tell other ranks we need edge GIDs we do not have
+        auto distributor = Cabana::Distributor<memory_space>(_comm, edge_distributor_export_torank);
+        int distributor_total_num_import = distributor.totalNumImport();
+        // printf("R%d: distributor i/e: %d, %d\n", _rank, distributor_total_num_import, distributor_export_ranks.extent(0));
+        distributor_aosoa edge_distributor_import("edge_distributor_import", distributor_total_num_import);
+        Cabana::migrate(distributor, edge_distributor_export, edge_distributor_import);
+        auto edge_distributor_import_verts = Cabana::slice<0>(edge_distributor_import);
+        auto edge_distributor_import_myrank = Cabana::slice<1>(edge_distributor_import);
+        auto edge_distributor_import_torank = Cabana::slice<2>(edge_distributor_import);
+
+        // Create another distributor to send EGIDs back to the requesting rank
+        edge_distributor_export.resize(distributor_total_num_import);
+        edge_distributor_export_verts = Cabana::slice<0>(edge_distributor_export);
+        auto edge_distributor_export_egid = Cabana::slice<1>(edge_distributor_export);
+        edge_distributor_export_torank = Cabana::slice<2>(edge_distributor_export);
+
+        // Iterate over edges recieved. If a remote rank asks requested an edge we don't have,
+        // that means the edge is on a face we do not own, so we need to create the edge
+        Kokkos::parallel_for("edge_distributor_import_to_export1", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+        KOKKOS_LAMBDA(const int i) {
+        
+            int v0 = edge_distributor_import_verts(i, 0);
+            int v1 = edge_distributor_import_verts(i, 1);
+            KeyType edgekey = hashFunction(v0, v1);
+            auto result = edges_map.insert(edgekey, 1);
+            if (result.success()) {
+                // If insertion succeeds, edge has not yet been created
+                int elid = Kokkos::atomic_fetch_add(&edge_counter(), 1);
+                assert(elid < edges_size);
+
+                // Create edge
+                e_gid(elid) = -1; // GIDs must be populated once we know total number of edges
+                
+                // Vertex endpoints and midpoint
+                e_vid(elid, 0) = v0;
+                e_vid(elid, 1) = v1;
+                e_vid(elid, 2) = -1;
+
+                // No children or parent edges
+                for (int k = 0; k < 2; k++) e_cids(elid, k) = -1;
+                e_pid(elid) = -1;
+
+                // Layer 0
+                e_layer(elid) = 0;
+
+                // Owner rank
+                e_owner(elid) = rank;
+
+                // printf("R%d: adding edge from v(%d, %d)\n", rank, e_vid(elid, 0), e_vid(elid, 1));
+            }
+        });
+        Kokkos::deep_copy(_owned_edges, edge_counter);
+        _edges.resize(_owned_edges);
+        _updateGlobalIDs(false);
+
+        // Clear edges map so we can use it to store edge global IDs
+        edges_map.clear();
+
+        // Now that all edges have been created, assign global IDs
+        Kokkos::parallel_for("set edge GIDs", Kokkos::RangePolicy<execution_space>(0, _edges.size()),
+            KOKKOS_LAMBDA(const int i) {
+            
+            int egid = i + vef_gid_start(rank, 1);
+            e_gid(i) = egid;
+            KeyType edgekey = hashFunction(e_vid(i, 0), e_vid(i, 1));
+            edges_map.insert(edgekey, egid);
+            // if (result.success())
+            //     if (rank == 1) printf("Insert: R%d: egid %d, v(%d, %d)\n", rank, egid, e_vid(i, 0), e_vid(i, 1));
+
+        });
+        Kokkos::fence();
+
+        // Now iterate over imported data again, populating EGIDs to export
+        Kokkos::parallel_for("edge_distributor_import_to_export2", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+            KOKKOS_LAMBDA(const int i) {
+            
+            int v0 = edge_distributor_import_verts(i, 0);
+            int v1 = edge_distributor_import_verts(i, 1);
+            KeyType edgekey = hashFunction(v0, v1);
+            auto index = edges_map.find(edgekey);
+            if (index < edges_map.capacity())
+            {
+                int egid = edges_map.value_at(index);
+                edge_distributor_export_verts(i, 0) = v0;
+                edge_distributor_export_verts(i, 1) = v1;
+                edge_distributor_export_egid(i) = egid;
+                edge_distributor_export_torank(i) = edge_distributor_import_myrank(i);
+            }
+            else
+            {
+                // This shouldn't be printed
+                printf("R%d: Rank %d requested uncreated edge with vertices (%d, %d)\n",
+                    rank, edge_distributor_import_myrank(i), edge_distributor_import_verts(i, 0), 
+                    edge_distributor_import_verts(i, 1));
+            }
+        });
+        
+
+        distributor = Cabana::Distributor<memory_space>(_comm, edge_distributor_export_torank);
+        distributor_total_num_import = distributor.totalNumImport();
+        // printf("R%d: distributor i/e: %d, %d\n", _rank, distributor_total_num_import, distributor_export_ranks.extent(0));
+        edge_distributor_import.resize(distributor_total_num_import);
+        Cabana::migrate(distributor, edge_distributor_export, edge_distributor_import);
+        edge_distributor_import_verts = Cabana::slice<0>(edge_distributor_import);
+        auto edge_distributor_import_egid = Cabana::slice<1>(edge_distributor_import);
+        edge_distributor_import_torank = Cabana::slice<2>(edge_distributor_import);
+
+        // Hash recieved edges and GIDs into edges map
+        Kokkos::parallel_for("edge_distributor_import_to_export3", Kokkos::RangePolicy<execution_space>(0, distributor_total_num_import),
+            KOKKOS_LAMBDA(const int i) {
+            
+            int v0 = edge_distributor_import_verts(i, 0);
+            int v1 = edge_distributor_import_verts(i, 1);
+            int egid = edge_distributor_import_egid(i);
+            KeyType edgekey = hashFunction(v0, v1);
+            edges_map.insert(edgekey, egid);
+
+        });
+
+
+        // Assign edges to faces
+        Kokkos::parallel_for("set edges for faces", Kokkos::RangePolicy<execution_space>(0, _faces.size()),
+            KOKKOS_LAMBDA(const int i) {
+
+            int vertex_gids[3] = {f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2)};
+            // if (rank == 1) printf("R%d: f%d: v(%d, %d, %d)\n", rank, f_gid(i), f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2));
+
+             /**
+             * Find edges:
+             *  v0, v1
+             *  v1, v2
+             *  v2, v0
+             */
+            for (int j = 0; j < 3; j++)
+            {
+                int j2 = j < 2 ? j+1 : 0;
+                int edge_v_gids[2] = {vertex_gids[j], vertex_gids[j2]};
+                KeyType edgekey = hashFunction(edge_v_gids[0], edge_v_gids[1]);
+                auto index = edges_map.find(edgekey);
+                if (index < edges_map.capacity())
+                {
+                    int egid = edges_map.value_at(index);
+                    f_egids(i, j) = egid;   
+                }
+                else
+                {
+                    f_egids(i, j) = -1;
+                    printf("R%d: fgid %d: missing edge v(%d, %d)\n", rank, i+vef_gid_start(rank, 2), edge_v_gids[0], edge_v_gids[1]);
+                }
+                // if (rank == 1) printf("R%d: fgid %d, egid %d, v(%d, %d)\n", rank, f_gid(i), f_egids(i, j), edge_v_gids[0], edge_v_gids[1]);
+            }
+    
+        });
+       
+
+        // printf("R%d: owned/ghost counts: v(%d, %d), e(%d, %d), f(%d, %d)\n", _rank, _owned_vertices, ghost_vert_count,
+        //     _owned_edges, -1, _owned_faces, ghost_cells_count);
+
+        // printEdges(3, 1);
+        // printFaces(0, 1);
+
+        // Finally, populate which elements are on MPI boundaries
+        _populate_boundary_elements();
+        // printf("R%d: end of init: owned/ghost/actual: v(%d, %d, %d), e(%d, %d, %d), f(%d, %d, %d)\n", _rank,
+        //     _owned_vertices, _ghost_vertices, (int)_vertices.size(),
+        //     _owned_edges, _ghost_edges, (int)_edges.size(),
+        //     _owned_faces, _ghost_faces, (int)_faces.size());
+
+        Kokkos::Profiling::popRegion();
+    }
 
     /**
      * Refine all faces specified in the fids vector 
@@ -1545,54 +2709,120 @@ class Mesh
     template <class View>
     void refine(View& fgids)
     {
+        Kokkos::Profiling::pushRegion("Mesh::refine");
+
+        // Refining outdates halo data
+        _halo_level = 0; _halo_depth = 0;
+        _vert_halo_export.clear();
+        _edge_halo_export.clear();
+        _face_halo_export.clear();
+
         _refineFaces(fgids);
 
         // Increase max tree depth by 1
-        _max_depth++;
+        _local_max_tree_depth++;
 
         // _sort_by_layer();
         _populate_boundary_elements();
+        _version++;
+
+        Kokkos::Profiling::popRegion();
+    }
+
+    /**
+     * Gather vertices, edges, and faces at the given
+     * level of the tree and any levels higher (i.e.
+     * their children) and for the given depth into
+     * remotely owned sections of the mesh
+     * 
+     * Populates the vhalo, ehalo, fhalo objects
+     */
+    void gather(int level, int depth)
+    {
+        Kokkos::Profiling::pushRegion("Mesh::gather");
+
+        if (depth < 1)
+            throw std::runtime_error(
+                    "NuMesh::Mesh: halo depth of gather must be at least 1." );
+        if (level < 0)
+            throw std::runtime_error(
+                    "NuMesh::Mesh: level of gather must be at least 0." );
+        if (level > _local_max_tree_depth)
+            throw std::runtime_error(
+                    "NuMesh::Mesh: level of gather must be at <= max tree level." );
+        
+        _halo_level = level; _halo_depth = depth;
+        _gather_depth_one();
+        // printf("R%d: after gather: %d verts\n", _rank, _vertices.size());
+        // if (_rank == 1)
+        // {
+        //     printf("R%d: total verts: %d\n", _rank, _mesh->vertices().size());
+        //     _mesh->printVertices();
+        // }
+        _version++;
+
+        Kokkos::Profiling::popRegion();
     }
     
     v_array_type& vertices() {return _vertices;}
     e_array_type& edges() {return _edges;}
     f_array_type& faces() {return _faces;}
+    std::vector<std::shared_ptr<halo_aosoa>> halo_export(Vertex) const {return _vert_halo_export;}
+    std::vector<halo_aosoa> halo_export(Edge) const {return _edge_halo_export;}
+    std::vector<halo_aosoa> halo_export(Face) const {return _face_halo_export;}
+    int halo_level() const {return _halo_level;}
+    int halo_depth() const {return _halo_depth;}
 
-    int depth() {return _max_depth;}
-    int count(Own, Vertex) {return _owned_vertices;}
-    int count(Own, Edge) {return _owned_edges;}
-    int count(Own, Face) {return _owned_faces;}
-    int count(Ghost, Vertex) {return _ghost_vertices;}
-    int count(Ghost, Edge) {return _ghost_edges;}
-    int count(Ghost, Face) {return _ghost_faces;}
-    void set(Own, Vertex, int x) { _owned_vertices = x; }
-    void set(Own, Edge, int x) { _owned_edges = x; }
-    void set(Own, Face, int x) { _owned_faces = x; }
-    void set(Ghost, Vertex, int x) { _ghost_vertices = x; }
-    void set(Ghost, Edge, int x) { _ghost_edges = x; }
-    void set(Ghost, Face, int x) { _ghost_faces = x; }
+    // Local and global tree depths
+    int local_max_tree_depth() const {return _local_max_tree_depth;}
+    int global_min_max_tree_depth() const {return _global_min_max_tree_depth;}
+    int global_max_max_tree_depth() const {return _global_max_max_tree_depth;}
+
+    // Element counts
+    int count(Own, Vertex) const {return _owned_vertices;}
+    int count(Own, Edge) const {return _owned_edges;}
+    int count(Own, Face) const {return _owned_faces;}
+    int count(Ghost, Vertex) const {return _ghost_vertices;}
+    int count(Ghost, Edge) const {return _ghost_edges;}
+    int count(Ghost, Face) const {return _ghost_faces;}
 
     MPI_Comm comm() {return _comm;}
-    int version() {return _version;}
+    int version() const {return _version;}
+    int rank() const {return _rank;}
 
     auto vef_gid_start() {return _vef_gid_start;}
     auto neighbors() {return _neighbors;}
     auto boundary_edges() {return _boundary_edges;}
     auto boundary_faces() {return _boundary_faces;}
 
-    void printVertices()
+    /**
+     * opt: 0 = all verts, 1 = specific vert
+     */
+    void printVertices(int opt, int vgid)
     {
         auto v_gid = Cabana::slice<V_GID>(_vertices);
         auto v_owner = Cabana::slice<V_OWNER>(_vertices);
-        for (int i = 0; i < (int) _vertices.size(); i++)
+        if (opt == 0)
         {
-            printf("R%d: %d, %d\n", _rank,
-                v_gid(i), 
-                v_owner(i));
+            for (int i = 0; i < (int) _vertices.size(); i++)
+            {
+                printf("R%d: v%d, owner%d\n", _rank,
+                    v_gid(i), 
+                    v_owner(i));
+            }
         }
+        else if (opt == 1)
+        {
+            int vlid = vgid - _vef_gid_start(_rank, 0);
+            if ((vlid >= 0) && (vlid < _owned_vertices))
+            printf("R%d: v%d, or%d\n", _rank,
+                v_gid(vlid), 
+                v_owner(vlid));
+        }
+        
     }
     /**
-     * opt: 1 = specific edge, 2 = owned, 3 = own+ghost
+     * opt: 1 = specific edge, 2 = owned, 0 = all
      */
     void printEdges(int opt, int egid)
     {
@@ -1615,7 +2845,7 @@ class Mesh
             if ((elid >= 0) && (elid < owned_edges))
             {
             int i = elid;
-            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
+            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, or%d, R%d\n", i,
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
                 e_children(i, 0), e_children(i, 1),
@@ -1631,7 +2861,7 @@ class Mesh
         Kokkos::parallel_for("print edges", Kokkos::RangePolicy<execution_space>(start, end),
             KOKKOS_LAMBDA(int i) {
             
-            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, %d, %d\n", i,
+            printf("i%d, e%d, v(%d, %d, %d), c(%d, %d), p(%d), L%d, or%d, R%d\n", i,
                 e_gid(i),
                 e_vid(i, 0), e_vid(i, 1), e_vid(i, 2),
                 e_children(i, 0), e_children(i, 1),
@@ -1659,7 +2889,7 @@ class Mesh
             // Print all faces
             for (int i = 0; i < (int) _faces.size(); i++)
             {
-                printf("R%d: i%d, f%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), L%d, %d\n", _rank, i,
+                printf("R%d: i%d, f%d, v(%d, %d, %d), e(%d, %d, %d), c(%d, %d, %d, %d), p(%d), L%d, or%d\n", _rank, i,
                     f_gid(i),
                     f_vgids(i, 0), f_vgids(i, 1), f_vgids(i, 2),
                     f_egids(i, 0), f_egids(i, 1), f_egids(i, 2),
@@ -1708,13 +2938,22 @@ class Mesh
 
     // How many vertices, edges, and faces each process owns
     // Index = rank
-    Kokkos::View<int*[3], Kokkos::HostSpace> _vef_gid_start;
+    Kokkos::View<int*[3], memory_space> _vef_gid_start;
 
     // Version number to keep mesh in sync with other objects. Updates on mesh refinement
     int _version;
 
-    // Max depth of tree
-    int _max_depth;
+    // Halos associated with this mesh version
+    std::vector<std::shared_ptr<halo_aosoa>> _vert_halo_export;
+    std::vector<std::shared_ptr<halo_aosoa>> _edge_halo_export;
+    std::vector<std::shared_ptr<halo_aosoa>> _face_halo_export;
+    int _halo_level, _halo_depth;
+
+    // Max local depth of tree
+    int _local_max_tree_depth;
+
+    // Global maximum amd minimum tree 
+    int _global_min_max_tree_depth, _global_max_max_tree_depth;
 };
 //---------------------------------------------------------------------------//
 

@@ -8,7 +8,7 @@
 #include <Kokkos_Core.hpp>
 #include <NuMesh_Core.hpp>
 
-#include "tstMesh2D.hpp"
+#include "tstMesh.hpp"
 
 #include <mpi.h>
 
@@ -16,7 +16,7 @@ namespace NuMeshTest
 {
 
 template <class T>
-class HaloTest : public Mesh2DTest<T>
+class HaloTest : public MeshTest<T>
 {
     using ExecutionSpace = typename T::ExecutionSpace;
     using MemorySpace = typename T::MemorySpace;
@@ -33,12 +33,12 @@ class HaloTest : public Mesh2DTest<T>
 
     void SetUp() override
     {
-        Mesh2DTest<T>::SetUp();
+        MeshTest<T>::SetUp();
     }
 
     void TearDown() override
     { 
-        Mesh2DTest<T>::TearDown();
+        MeshTest<T>::TearDown();
     }
     
     /**
@@ -49,48 +49,52 @@ class HaloTest : public Mesh2DTest<T>
      * 
      * @param check_vert_connectivity 1 if should check if
      *  all vertices are connected to at least 6 faces.
-     *  Only is true with uniform refinement.
+     *  Only is true with uniform refinement and if the 
+     *  mesh was created from a structured grid.
      */
-    void test_halo_depth_1(int check_vert_connectivity)
+    void test_halo_depth_1(bool check_vert_connectivity)
     {
         const int rank = this->rank_;
 
-        auto halo = NuMesh::createHalo(this->mesh_, 0, 1);
-        halo.gather();
+        this->mesh_->gather(0, 1);
+
+        // printf("Mesh verts: %d\n", this->mesh_->count(NuMesh::Own(), NuMesh::Vertex())+this->mesh_->count(NuMesh::Ghost(), NuMesh::Vertex()));
         
         this->copytoHost();
 
-        auto vertices = this->vertices;
-        auto edges = this->edges;
-        auto faces = this->faces;
+        int total_verts = this->vertices->size();
+        int total_edges = this->edges->size();
+        int total_faces = this->faces->size();
+        int owned_verts = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
+        int owned_edges = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
+        int owned_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
 
-        int total_verts = vertices.size();
-        int total_edges = edges.size();
-        int total_faces = faces.size();
+        ASSERT_GT(total_verts, 0); ASSERT_GT(total_edges, 0); ASSERT_GT(total_faces, 0);
 
         // Slices for access
-        auto v_gid = Cabana::slice<V_GID>(vertices);
-        auto v_owner = Cabana::slice<V_OWNER>(vertices);
-        auto e_gid = Cabana::slice<E_GID>(edges);
-        auto e_vids = Cabana::slice<E_VIDS>(edges);
-        auto f_gid = Cabana::slice<F_GID>(faces);
-        auto f_vids = Cabana::slice<F_VIDS>(faces);
-        auto f_eids = Cabana::slice<F_EIDS>(faces);
-        auto f_cids = Cabana::slice<F_CID>(faces);
+        auto v_gid = Cabana::slice<V_GID>(*this->vertices);
+        auto v_owner = Cabana::slice<V_OWNER>(*this->vertices);
+        auto e_gid = Cabana::slice<E_GID>(*this->edges);
+        auto e_vids = Cabana::slice<E_VIDS>(*this->edges);
+        auto f_gid = Cabana::slice<F_GID>(*this->faces);
+        auto f_vids = Cabana::slice<F_VIDS>(*this->faces);
+        auto f_eids = Cabana::slice<F_EIDS>(*this->faces);
+        auto f_cids = Cabana::slice<F_CID>(*this->faces);
 
-        auto v2f = NuMesh::Maps::V2F(this->mesh_);
+        auto v2f = NuMesh::Maps::V2F(this->mesh_, 0);
         auto offsets_d = v2f.offsets();
         auto indices_d = v2f.indices();
         auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
         auto indices = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), indices_d);
 
         // Collect all global IDs for owned and ghosted vertices and edges
-        std::vector<int> vertex_gids(total_verts);
-        std::vector<int> edge_gids(total_edges);
-        for (int i = 0; i < total_verts; ++i) vertex_gids[i] = v_gid(i);
-        for (int i = 0; i < total_edges; ++i) edge_gids[i] = e_gid(i);
+        // std::vector<int> vertex_gids(total_verts);
+        // std::vector<int> edge_gids(total_edges);
+        // for (int i = 0; i < total_verts; ++i) vertex_gids[i] = v_gid(i);
+        // for (int i = 0; i < total_edges; ++i) edge_gids[i] = e_gid(i);
 
         // Iterate over all owned vertices
+        // printf("total_verts: %d\n", total_verts);
         for (int vlid = 0; vlid < total_verts; vlid++)
         {
             int vowner = v_owner(vlid);
@@ -104,9 +108,10 @@ class HaloTest : public Mesh2DTest<T>
                             offsets(vlid + 1) : 
                             (int)indices.extent(0);
             
-            // Each vert should be connected to at least six faces
+            // Each owned vert should be connected to at least six faces
             // NOTE: This only holds with uniform refinement
             int connected_faces = next_offset - offset;
+            // printf("vlid: %d, offsets: %d, %d\n", vlid, offset, next_offset);
             if (check_vert_connectivity)
                 ASSERT_GE(connected_faces, 6) << "VGID " << vgid << " is connected to " << connected_faces << " faces\n";
 
@@ -133,23 +138,23 @@ class HaloTest : public Mesh2DTest<T>
                     front = (front + 1) % capacity;
 
                     // Check we have this face
-                    int flid = NuMesh::Utils::get_lid(f_gid, fgid, 0, total_faces);
+                    int flid = NuMesh::Utils::get_lid(f_gid, fgid, owned_faces, total_faces);
                     ASSERT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << " not found" << std::endl;
                     
                     // Check vertices of this face
                     for (int i = 0; i < 3; ++i)
                     {
                         int vid = f_vids(flid, i);
-                        int vlid = NuMesh::Utils::get_lid(v_gid, vid, 0, total_verts);
-                        ASSERT_NE(vlid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
+                        int vlid = NuMesh::Utils::get_lid(v_gid, vid, owned_verts, total_verts);
+                        EXPECT_NE(vlid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
                     }
-
+                    
                     // Check edges of this face
                     for (int i = 0; i < 3; ++i)
                     {
                         int eid = f_eids(flid, i);
-                        int elid = NuMesh::Utils::get_lid(e_gid, eid, 0, total_edges);
-                        ASSERT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing egid " << eid << std::endl;
+                        int elid = NuMesh::Utils::get_lid(e_gid, eid, owned_edges, total_edges);
+                        EXPECT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing egid " << eid << std::endl;
                     }     
 
                     // Check for children faces

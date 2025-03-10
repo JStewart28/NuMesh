@@ -4,6 +4,9 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 blt_add_executable( NAME build_from_grid
                 SOURCES build_from_grid.cpp 
                 OUTPUT_DIR ${EXAMPLE_OUTPUT_DIRECTORY})
+blt_add_executable( NAME build_sphere
+                SOURCES build_sphere.cpp 
+                OUTPUT_DIR ${EXAMPLE_OUTPUT_DIRECTORY})
 
 # Tell CMAKE we need to link with these libraries. Our "FindMPI_Advance" script
 # does not define an explicit target, but it does set the variable below.
@@ -15,6 +18,12 @@ blt_add_executable( NAME build_from_grid
 # target_include_directories( build_from_grid PRIVATE ${MPI_Advance_INCLUDE_DIR} )
 
 target_link_libraries( build_from_grid PRIVATE numesh )
-
+# Need SEACASIoss_LIBRARIES and OpenGL::GL to correctly link on Tioga
+target_link_libraries( build_from_grid PRIVATE ${SEACASIoss_LIBRARIES})
+target_link_libraries( build_from_grid PRIVATE OpenGL::GL) 
+target_link_libraries( build_sphere PRIVATE numesh )
+target_link_libraries( build_sphere PRIVATE ${SEACASIoss_LIBRARIES})
+target_link_libraries( build_sphere PRIVATE OpenGL::GL)
 
 install(TARGETS build_from_grid DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS build_sphere DESTINATION ${CMAKE_INSTALL_BINDIR})
