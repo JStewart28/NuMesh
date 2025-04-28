@@ -48,14 +48,37 @@ endif()
 set(gtest_disable_pthreads ON CACHE BOOL "")
 include(${BLT_SOURCE_DIR}/SetupBLT.cmake)
 
-# Tell CMAKE to find MPIAdvance
-# find_package(MPI_Advance REQUIRED)
+#------------------------------------------------------------------------------#
+# Dependencies
+#------------------------------------------------------------------------------#
+
+# standard dependency macro
+# Copied from the macro used in Cabana's CMakeLists.txt:
+# https://github.com/ECP-copa/Cabana/blob/master/CMakeLists.txt
+macro(Numesh_add_dependency)
+  cmake_parse_arguments(Numesh_DEPENDENCY "" "PACKAGE;VERSION" "COMPONENTS" ${ARGN})
+  find_package( ${Numesh_DEPENDENCY_PACKAGE} ${Numesh_DEPENDENCY_VERSION} QUIET COMPONENTS ${Numesh_DEPENDENCY_COMPONENTS} )
+  string(TOUPPER "${Numesh_DEPENDENCY_PACKAGE}" Numesh_DEPENDENCY_OPTION )
+  option(
+    Numesh_REQUIRE_${Numesh_DEPENDENCY_OPTION}
+    "Require Numesh to build with ${Numesh_DEPENDENCY_PACKAGE} support" ${Numesh_DEPENDENCY_PACKAGE}_FOUND)
+  if(Numesh_REQUIRE_${Numesh_DEPENDENCY_OPTION})
+    find_package( ${Numesh_DEPENDENCY_PACKAGE} ${Numesh_DEPENDENCY_VERSION} REQUIRED COMPONENTS ${Numesh_DEPENDENCY_COMPONENTS} )
+  endif()
+  set(Numesh_ENABLE_${Numesh_DEPENDENCY_OPTION} ${${Numesh_DEPENDENCY_PACKAGE}_FOUND})
+endmacro()
 
 # We also need MPI for this example
 find_package(MPI REQUIRED)
 
+# find mpiadvance
+Numesh_add_dependency( PACKAGE mpiadvance )
+set_package_properties(MPIADVANCE PROPERTIES TYPE OPTIONAL PURPOSE "Advanced MPI communication support")
+
 # Add VTK include directories
-find_package(VTK REQUIRED)
+Numesh_add_dependency( PACKAGE VTK )
+set_package_properties(VTK PROPERTIES TYPE REQUIRED PURPOSE "Mesh I/O")
+# find_package(VTK REQUIRED)
 find_package(SEACASIoss REQUIRED)
 include_directories(${VTK_INCLUDE_DIRS})
 find_package(OpenGL REQUIRED) # Needed to correctly link on Tioga
@@ -63,9 +86,6 @@ find_package(OpenGL REQUIRED) # Needed to correctly link on Tioga
 # find dependencies
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 
-# Include MPI_Advance
-# set( MPI_Advance_PREFIX "~/executables/mpi_advance" CACHE PATH "")
-# find_package(MPI_Advance REQUIRED)
 
 ##---------------------------------------------------------------------------##
 ## Get the dependent packages we need: Cabana, Silo, and ClangFormat         ##
@@ -98,3 +118,31 @@ if(CLANG_FORMAT_FOUND)
     COMMAND ${CLANG_FORMAT_EXECUTABLE} -i -style=file ${FORMAT_SOURCES}
     DEPENDS ${FORMAT_SOURCES})
 endif()
+
+include(CMakePackageConfigHelpers)
+
+# Install the actual target(s) and register them for export
+install(TARGETS numesh
+        EXPORT numeshTargets
+        DESTINATION lib)
+
+# Export the targets into a CMake package
+install(EXPORT numeshTargets
+        NAMESPACE numesh::
+        DESTINATION lib/cmake/numesh)
+
+# Generate the Config and Version files
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/numeshConfigVersion.cmake"
+  VERSION 1.0.0
+  COMPATIBILITY SameMajorVersion)
+
+configure_package_config_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/numeshConfig.cmake"
+  "${CMAKE_CURRENT_BINARY_DIR}/numeshConfig.cmake"
+  INSTALL_DESTINATION lib/cmake/numesh)
+
+install(FILES
+  "${CMAKE_CURRENT_BINARY_DIR}/numeshConfig.cmake"
+  "${CMAKE_CURRENT_BINARY_DIR}/numeshConfigVersion.cmake"
+  DESTINATION lib/cmake/numesh)
