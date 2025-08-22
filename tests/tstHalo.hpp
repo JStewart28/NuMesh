@@ -6,13 +6,13 @@
 #include <Cabana_Core.hpp>
 #include <Cabana_Grid.hpp>
 #include <Kokkos_Core.hpp>
-#include <NuMesh_Core.hpp>
+#include <Tessera_Core.hpp>
 
 #include "tstMesh.hpp"
 
 #include <mpi.h>
 
-namespace NuMeshTest
+namespace TesseraTest
 {
 
 template <class T>
@@ -20,10 +20,10 @@ class HaloTest : public MeshTest<T>
 {
     using ExecutionSpace = typename T::ExecutionSpace;
     using MemorySpace = typename T::MemorySpace;
-    using numesh_t = NuMesh::Mesh<ExecutionSpace, MemorySpace>;
-    using vertex_data = typename numesh_t::vertex_data;
-    using edge_data = typename numesh_t::edge_data;
-    using face_data = typename numesh_t::face_data;
+    using Tessera_t = Tessera::Mesh<ExecutionSpace, MemorySpace>;
+    using vertex_data = typename Tessera_t::vertex_data;
+    using edge_data = typename Tessera_t::edge_data;
+    using face_data = typename Tessera_t::face_data;
     using v_array_type = Cabana::AoSoA<vertex_data, Kokkos::HostSpace, 4>;
     using e_array_type = Cabana::AoSoA<edge_data, Kokkos::HostSpace, 4>;
     using f_array_type = Cabana::AoSoA<face_data, Kokkos::HostSpace, 4>;
@@ -58,16 +58,16 @@ class HaloTest : public MeshTest<T>
 
         this->mesh_->gather(0, 1);
 
-        // printf("Mesh verts: %d\n", this->mesh_->count(NuMesh::Own(), NuMesh::Vertex())+this->mesh_->count(NuMesh::Ghost(), NuMesh::Vertex()));
+        // printf("Mesh verts: %d\n", this->mesh_->count(Tessera::Own(), Tessera::Vertex())+this->mesh_->count(Tessera::Ghost(), Tessera::Vertex()));
         
         this->copytoHost();
 
         int total_verts = this->vertices->size();
         int total_edges = this->edges->size();
         int total_faces = this->faces->size();
-        int owned_verts = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
-        int owned_edges = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
-        int owned_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int owned_verts = this->mesh_->count(Tessera::Own(), Tessera::Vertex());
+        int owned_edges = this->mesh_->count(Tessera::Own(), Tessera::Edge());
+        int owned_faces = this->mesh_->count(Tessera::Own(), Tessera::Face());
 
         ASSERT_GT(total_verts, 0); ASSERT_GT(total_edges, 0); ASSERT_GT(total_faces, 0);
 
@@ -81,7 +81,7 @@ class HaloTest : public MeshTest<T>
         auto f_eids = Cabana::slice<F_EIDS>(*this->faces);
         auto f_cids = Cabana::slice<F_CID>(*this->faces);
 
-        auto v2f = NuMesh::Maps::V2F(this->mesh_, 0);
+        auto v2f = Tessera::Maps::V2F(this->mesh_, 0);
         auto offsets_d = v2f.offsets();
         auto indices_d = v2f.indices();
         auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
@@ -138,14 +138,14 @@ class HaloTest : public MeshTest<T>
                     front = (front + 1) % capacity;
 
                     // Check we have this face
-                    int flid = NuMesh::Utils::get_lid(f_gid, fgid, owned_faces, total_faces);
+                    int flid = Tessera::Utils::get_lid(f_gid, fgid, owned_faces, total_faces);
                     ASSERT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << " not found" << std::endl;
                     
                     // Check vertices of this face
                     for (int i = 0; i < 3; ++i)
                     {
                         int vid = f_vids(flid, i);
-                        int vlid = NuMesh::Utils::get_lid(v_gid, vid, owned_verts, total_verts);
+                        int vlid = Tessera::Utils::get_lid(v_gid, vid, owned_verts, total_verts);
                         EXPECT_NE(vlid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing vgid " << vid << std::endl;
                     }
                     
@@ -153,7 +153,7 @@ class HaloTest : public MeshTest<T>
                     for (int i = 0; i < 3; ++i)
                     {
                         int eid = f_eids(flid, i);
-                        int elid = NuMesh::Utils::get_lid(e_gid, eid, owned_edges, total_edges);
+                        int elid = Tessera::Utils::get_lid(e_gid, eid, owned_edges, total_edges);
                         EXPECT_NE(flid, -1) << "Rank " << rank << " from vgid " << vgid << ": FGID " << fgid << ": missing egid " << eid << std::endl;
                     }     
 
@@ -178,6 +178,6 @@ class HaloTest : public MeshTest<T>
     }
 };
 
-} // end namespace NuMeshTest
+} // end namespace TesseraTest
 
 #endif // _TSTHALO_HPP_

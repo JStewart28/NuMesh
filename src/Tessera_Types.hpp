@@ -1,14 +1,14 @@
-#ifndef NUMESH_TYPES_HPP
-#define NUMESH_TYPES_HPP
+#ifndef TESSERA_TYPES_HPP
+#define TESSERA_TYPES_HPP
 
 #include <Cabana_Core.hpp>
 #include <type_traits>
 #include <tuple>
 
-namespace NuMesh
+namespace Tessera
 {
 
-// Design ideas for the NuMesh::Array taken from Cabana::Grid:Array
+// Design ideas for the Tessera::Array taken from Cabana::Grid:Array
 
 //---------------------------------------------------------------------------//
 // Enums
@@ -221,6 +221,6 @@ struct ExtractArraySize<Cabana::MemberTypes<Ts...>>
     static_assert(sizeof...(Ts) == 1, "ExtractArraySize can only be used with a single Cabana::MemberType.");
 };
 
-} // end namespace NuMesh
+} // end namespace Tessera
 
-#endif // NUMESH_TYPES_HPP
+#endif // TESSERA_TYPES_HPP

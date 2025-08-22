@@ -2,7 +2,7 @@
 #include <Cabana_Grid.hpp>
 #include <Kokkos_Core.hpp>
 
-#include <NuMesh_Core.hpp>
+#include <Tessera_Core.hpp>
 
 #include <mpi.h>
 
@@ -12,7 +12,7 @@ int main( int argc, char* argv[] )
     using memory_space = execution_space::memory_space;
     // using execution_space = Kokkos::Cuda;
     // using memory_space = Kokkos::CudaSpace;
-    using nu_mesh_type = NuMesh::Mesh<execution_space, memory_space>;
+    using nu_mesh_type = Tessera::Mesh<execution_space, memory_space>;
 
     MPI_Init( &argc, &argv );         // Initialize MPI
     Kokkos::initialize( argc, argv ); // Initialize Kokkos
@@ -28,12 +28,12 @@ int main( int argc, char* argv[] )
 
     // Convert the first command-line argument to an integer
     int mesh_size = -1;
-    enum NuMesh::BoundaryType boundary_type;
+    enum Tessera::BoundaryType boundary_type;
     try {
         mesh_size = std::stoi(argv[1]);  // Convert argument to integer
         int val = std::stoi(argv[2]);
-        if (val) boundary_type = NuMesh::BoundaryType::PERIODIC;
-        else boundary_type = NuMesh::BoundaryType::FREE;
+        if (val) boundary_type = Tessera::BoundaryType::PERIODIC;
+        else boundary_type = Tessera::BoundaryType::FREE;
     } catch (const std::invalid_argument& e) {
         std::cerr << "Usage: ./build_from_grid [mesh_size] [periodic]" << std::endl;
         std::cerr << "Invalid argument for mesh_size: " << argv[1] << std::endl;
@@ -74,7 +74,7 @@ int main( int argc, char* argv[] )
     int halo_width = 2;
     auto local_grid = Cabana::Grid::createLocalGrid( global_grid, halo_width );
 
-    auto mesh = NuMesh::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
+    auto mesh = Tessera::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
 
     using tuple_type = Cabana::MemberTypes<double[3]>;
 
@@ -83,23 +83,23 @@ int main( int argc, char* argv[] )
     mesh->initializeFromArray(*array);
     auto vef_gid_start = mesh->vef_gid_start();
 
-    auto vertex_triple_layout = NuMesh::Array::createArrayLayout<tuple_type>(mesh, 3, NuMesh::Vertex());
-    auto positions = NuMesh::Array::createArray<memory_space>("positions", vertex_triple_layout);
+    auto vertex_triple_layout = Tessera::Array::createArrayLayout<tuple_type>(mesh, 3, Tessera::Vertex());
+    auto positions = Tessera::Array::createArray<memory_space>("positions", vertex_triple_layout);
     
     // auto wslice = Cabana::slice<0>(waosoa);
-    // auto halo = NuMesh::createHalo(mesh, 0, 1, NuMesh::Vertex());
+    // auto halo = Tessera::createHalo(mesh, 0, 1, Tessera::Vertex());
     // positions->update();
     // auto zslice = Cabana::slice<0>(positions->aosoa());
     // printf("R%d: positions: %d, mesh verts: %d\n", mesh->rank(), positions->aosoa().size(), mesh->vertices().size());
     // positions->update();
     // printf("R%d: after: positions: %d, verts: %d\n", rank, positions->aosoa().size(), mesh->vertices().size());
     // positions->update();
-    // NuMesh::gather(halo, positions);
+    // Tessera::gather(halo, positions);
 
     // Uniform refinement
     // for (int i = 0; i < 1; i++)
     // {
-    //     int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
+    //     int num_local_faces = mesh->count(Tessera::Own(), Tessera::Face());
     //     int face_gid_start = vef_gid_start(rank, 2);
     //     Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
     //     Kokkos::parallel_for("mark_faces_to_refine", Kokkos::RangePolicy<execution_space>(0, num_local_faces),

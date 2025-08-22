@@ -1,5 +1,5 @@
 #include <Kokkos_Core.hpp>
-#include <NuMesh_Core.hpp>
+#include <Tessera_Core.hpp>
 #include <mpi.h>
 #include <vtkSmartPointer.h>
 #include <vtkXMLUnstructuredGridReader.h>
@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
     using memory_space = execution_space::memory_space;
     // using execution_space = Kokkos::Cuda;
     // using memory_space = Kokkos::CudaSpace;
-    using nu_mesh_type = NuMesh::Mesh<execution_space, memory_space>;
+    using nu_mesh_type = Tessera::Mesh<execution_space, memory_space>;
 
     MPI_Init( &argc, &argv );         // Initialize MPI
     Kokkos::initialize( argc, argv ); // Initialize Kokkos
@@ -205,7 +205,7 @@ int main(int argc, char** argv) {
 
     // std::cout << "Rank " << rank << " has " << ghost_cells_count << " cells containing ghost points.\n";
 
-    auto mesh = NuMesh::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
+    auto mesh = Tessera::createEmptyMesh<execution_space, memory_space>(MPI_COMM_WORLD);
 
     // Copy AoSoAs to deivce, then initialize
     using vert_aosoa_device = Cabana::AoSoA<vertices_d, memory_space, 4>;
@@ -222,13 +222,13 @@ int main(int argc, char** argv) {
 
     // Create positions array
     using tuple_type = Cabana::MemberTypes<double[3]>;
-    auto vertex_triple_layout = NuMesh::Array::createArrayLayout<tuple_type>(mesh, 3, NuMesh::Vertex());
-    auto positions = NuMesh::Array::createArray<memory_space>("positions", vertex_triple_layout);
+    auto vertex_triple_layout = Tessera::Array::createArrayLayout<tuple_type>(mesh, 3, Tessera::Vertex());
+    auto positions = Tessera::Array::createArray<memory_space>("positions", vertex_triple_layout);
     auto paosoa = positions->aosoa();
 
-    // auto numesh_halo = NuMesh::createHalo(mesh, 0, 1, NuMesh::Vertex());
+    // auto Tessera_halo = Tessera::createHalo(mesh, 0, 1, Tessera::Vertex());
     // positions->update();
-    // NuMesh::gather(numesh_halo, positions);
+    // Tessera::gather(Tessera_halo, positions);
     // // printf("After gather / before refine: R%d: pos: %d, verts: %d\n", rank, paosoa->size(), mesh->vertices().size());
 
 
@@ -249,7 +249,7 @@ int main(int argc, char** argv) {
     // Uniform refinement
     for (int i = 0; i < 4; i++)
     {
-        int num_local_faces = mesh->count(NuMesh::Own(), NuMesh::Face());
+        int num_local_faces = mesh->count(Tessera::Own(), Tessera::Face());
         auto vef_gid_start = mesh->vef_gid_start();
         int face_gid_start = vef_gid_start(rank, 2);
         Kokkos::View<int*, memory_space> fin("fin", num_local_faces);
@@ -266,11 +266,11 @@ int main(int argc, char** argv) {
         // if (rank == 0) printf("R%d: global min/max depths: %d, %d\n", rank, global_min_tree_depth, global_max_tree_depth);
         if (rank == 0) printf("R%d: Creating halo %d at level %d...\n", rank, i+1, global_min_tree_depth);
 
-        auto numesh_halo = NuMesh::createHalo(mesh, global_min_tree_depth, 1, NuMesh::Vertex());
+        auto Tessera_halo = Tessera::createHalo(mesh, global_min_tree_depth, 1, Tessera::Vertex());
         // mesh->gather(global_min_tree_depth, 1);
         if (rank == 0) printf("R%d: gathering positions...\n", rank);
         positions->update();
-        NuMesh::gather(numesh_halo, positions);
+        Tessera::gather(Tessera_halo, positions);
 
     }
     if (rank == 0) printf("R%d: done\n", rank);
@@ -281,7 +281,7 @@ int main(int argc, char** argv) {
 
 
 
-    // auto v2e = NuMesh::Maps::V2E(mesh);
+    // auto v2e = Tessera::Maps::V2E(mesh);
 
     } // Scope guard
 

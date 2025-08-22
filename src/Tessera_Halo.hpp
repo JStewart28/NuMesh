@@ -1,18 +1,18 @@
-#ifndef NUMESH_HALO_HPP
-#define NUMESH_HALO_HPP
+#ifndef TESSERA_HALO_HPP
+#define TESSERA_HALO_HPP
 
 #include <Cabana_Core.hpp>
 #include <Kokkos_Core.hpp>
 #include <memory>
 
-#include <NuMesh_Utils.hpp>
-#include <NuMesh_Mesh.hpp>
-#include <NuMesh_Maps.hpp>
-#include <NuMesh_Array.hpp>
+#include <Tessera_Utils.hpp>
+#include <Tessera_Mesh.hpp>
+#include <Tessera_Maps.hpp>
+#include <Tessera_Array.hpp>
 
 #include <mpi.h>
 
-namespace NuMesh
+namespace Tessera
 {
 
 //---------------------------------------------------------------------------//
@@ -40,11 +40,11 @@ public:
     {
         Kokkos::Profiling::pushRegion("Halo::constructor");
 
-        static_assert(is_numesh_mesh<Mesh>::value, "NuMesh::Halo: NuMesh Mesh required");
+        static_assert(is_tessera_mesh<Mesh>::value, "Tessera::Halo: Tessera Mesh required");
 
         if (_depth < 1)
         {
-            throw std::runtime_error("NuMesh::Halo must be initialized with a halo depth of at least 1.");
+            throw std::runtime_error("Tessera::Halo must be initialized with a halo depth of at least 1.");
         }
 
         auto comm = _mesh->comm();
@@ -113,7 +113,7 @@ void gather(std::shared_ptr<HaloType>& halo, std::shared_ptr<ArrayType> data)
 {
     Kokkos::Profiling::pushRegion("gather");
 
-    static_assert( Array::is_array<ArrayType>::value, "NuMesh::Array required" );
+    static_assert( Array::is_array<ArrayType>::value, "Tessera::Array required" );
 
     using entity_type = typename ArrayType::entity_type;
     using memory_space = typename ArrayType::memory_space;
@@ -125,7 +125,7 @@ void gather(std::shared_ptr<HaloType>& halo, std::shared_ptr<ArrayType> data)
     if (mesh_halo_depth < halo_halo_depth)
     {
         throw std::runtime_error(
-                    "NuMesh::gather: Mesh not haloed to depth of halo");
+                    "Tessera::gather: Mesh not haloed to depth of halo");
     }
     
     // Check that the data view is large anough for the gather
@@ -135,7 +135,7 @@ void gather(std::shared_ptr<HaloType>& halo, std::shared_ptr<ArrayType> data)
     if (aosoa->size() != (num_local+num_ghost))
     {
         throw std::runtime_error(
-                    "NuMesh::gather: Array extents not large enough for gather. Call update()");
+                    "Tessera::gather: Array extents not large enough for gather. Call update()");
     }
     auto cabana_halo = halo->cabana_halo();
     Cabana::gather(*cabana_halo, *aosoa);
@@ -143,7 +143,7 @@ void gather(std::shared_ptr<HaloType>& halo, std::shared_ptr<ArrayType> data)
     Kokkos::Profiling::popRegion();
 }
 
-} // end namespce NuMesh
+} // end namespce Tessera
 
 
-#endif // NUMESH_HALO_HPP
+#endif // TESSERA_HALO_HPP

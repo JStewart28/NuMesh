@@ -10,7 +10,7 @@
 #include <Cabana_Core.hpp>
 #include <Cabana_Grid.hpp>
 #include <Kokkos_Core.hpp>
-#include <NuMesh_Core.hpp>
+#include <Tessera_Core.hpp>
 
 #include <vtkSmartPointer.h>
 #include <vtkXMLUnstructuredGridReader.h>
@@ -25,7 +25,7 @@
 
 #include <mpi.h>
 
-namespace NuMeshTest
+namespace TesseraTest
 {
 
 template <class T>
@@ -33,7 +33,7 @@ class MeshTest : public ::testing::Test
 {
     using ExecutionSpace = typename T::ExecutionSpace;
     using MemorySpace = typename T::MemorySpace;
-    using mesh_t = NuMesh::Mesh<ExecutionSpace, MemorySpace>;
+    using mesh_t = Tessera::Mesh<ExecutionSpace, MemorySpace>;
     using vertex_data = typename mesh_t::vertex_data;
     using edge_data = typename mesh_t::edge_data;
     using face_data = typename mesh_t::face_data;
@@ -45,7 +45,7 @@ class MeshTest : public ::testing::Test
   protected:
     int rank_, comm_size_;
     int periodic_;
-    std::shared_ptr<mesh_t> mesh_ = NuMesh::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
+    std::shared_ptr<mesh_t> mesh_ = Tessera::createEmptyMesh<ExecutionSpace, MemorySpace>(MPI_COMM_WORLD);
     std::shared_ptr<v_array_type> vertices;
     std::shared_ptr<e_array_type> edges;
     std::shared_ptr<f_array_type> faces;
@@ -107,9 +107,9 @@ class MeshTest : public ::testing::Test
         this->mesh_->initializeFromArray(*array);
 
         // Ensure the size of the mesh is greater than 0
-        int num_verts = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
-        int num_edges = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
-        int num_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int num_verts = this->mesh_->count(Tessera::Own(), Tessera::Vertex());
+        int num_edges = this->mesh_->count(Tessera::Own(), Tessera::Edge());
+        int num_faces = this->mesh_->count(Tessera::Own(), Tessera::Face());
 
         ASSERT_GT(num_verts, 0); ASSERT_GT(num_edges, 0); ASSERT_GT(num_faces, 0);
     }
@@ -282,9 +282,9 @@ class MeshTest : public ::testing::Test
         auto& faces_ptr = mesh_->faces();
 
          // Local counts for each rank
-        int local_vef_count[3] = {mesh_->count(NuMesh::Own(), NuMesh::Vertex()),
-                                mesh_->count(NuMesh::Own(), NuMesh::Edge()),
-                                mesh_->count(NuMesh::Own(), NuMesh::Face())};
+        int local_vef_count[3] = {mesh_->count(Tessera::Own(), Tessera::Vertex()),
+                                mesh_->count(Tessera::Own(), Tessera::Edge()),
+                                mesh_->count(Tessera::Own(), Tessera::Face())};
 
         // Get vertices
         Kokkos::View<int*, MemorySpace> element_export_ids("element_export_ids", local_vef_count[0]);
@@ -400,9 +400,9 @@ class MeshTest : public ::testing::Test
     void verifyRefinement(int expected_verts, int expected_edges, int expected_faces)
     {
         // Check that the correct number of new vertices, edges, and faces were created
-        int vcount = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
-        int ecount = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
-        int fcount = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int vcount = this->mesh_->count(Tessera::Own(), Tessera::Vertex());
+        int ecount = this->mesh_->count(Tessera::Own(), Tessera::Edge());
+        int fcount = this->mesh_->count(Tessera::Own(), Tessera::Face());
         int actual_verts, actual_edges, actual_faces;
         MPI_Allreduce(&vcount, &actual_verts, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(&ecount, &actual_edges, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -531,7 +531,7 @@ class MeshTest : public ::testing::Test
         auto e_vid = Cabana::slice<E_VIDS>(*edges);
         auto e_children = Cabana::slice<E_CIDS>(*edges);
         auto e_parent = Cabana::slice<E_PID>(*edges);
-        // for (int i = 0; i < mesh_->count(NuMesh::Own(), NuMesh::Edge()); i++)
+        // for (int i = 0; i < mesh_->count(Tessera::Own(), Tessera::Edge()); i++)
         // {
            
         // }
@@ -623,7 +623,7 @@ class MeshTest : public ::testing::Test
         auto e_layer = Cabana::slice<E_LAYER>(*edges);
 
         int total_edges = edges->size();
-        int owned_edges = mesh_->count(NuMesh::Own(), NuMesh::Edge());
+        int owned_edges = mesh_->count(Tessera::Own(), Tessera::Edge());
 
         for (int i = 0; i < le+ge; i++)
         {
@@ -637,7 +637,7 @@ class MeshTest : public ::testing::Test
             // Child vertices
             int c0v0, c0v1, c1v0, c1v1;
 
-            ce0 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 0), owned_edges, total_edges); ce1 = NuMesh::Utils::get_lid(e_gid, e_cid(i, 1), owned_edges, total_edges);
+            ce0 = Tessera::Utils::get_lid(e_gid, e_cid(i, 0), owned_edges, total_edges); ce1 = Tessera::Utils::get_lid(e_gid, e_cid(i, 1), owned_edges, total_edges);
             pv0 = e_vid(i, 0); pv1 = e_vid(i, 1); pvm = e_vid(i, 2);
 
             // Check child edge 0
@@ -677,14 +677,14 @@ class MeshTest : public ::testing::Test
         auto e_layer = Cabana::slice<E_LAYER>(*edges);
 
         int total_edges = edges->size();
-        int owned_edges = mesh_->count(NuMesh::Own(), NuMesh::Edge());
+        int owned_edges = mesh_->count(Tessera::Own(), Tessera::Edge());
 
         for (int i = 0; i < lf+gf; i++)
         {
             int e0, e1, e2;
-            e0 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 0), owned_edges, total_edges);
-            e1 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 1), owned_edges, total_edges);
-            e2 = NuMesh::Utils::get_lid(e_gid, f_eid(i, 2), owned_edges, total_edges);
+            e0 = Tessera::Utils::get_lid(e_gid, f_eid(i, 0), owned_edges, total_edges);
+            e1 = Tessera::Utils::get_lid(e_gid, f_eid(i, 1), owned_edges, total_edges);
+            e2 = Tessera::Utils::get_lid(e_gid, f_eid(i, 2), owned_edges, total_edges);
             // if (f_gid(i) == 258)
             // {
             //     int egid;
@@ -702,6 +702,6 @@ class MeshTest : public ::testing::Test
     }
 };
 
-} // end namespace NuMeshTest
+} // end namespace TesseraTest
 
 #endif // _TSTMESH_HPP_

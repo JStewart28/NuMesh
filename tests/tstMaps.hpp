@@ -6,13 +6,13 @@
 #include <Cabana_Core.hpp>
 #include <Cabana_Grid.hpp>
 #include <Kokkos_Core.hpp>
-#include <NuMesh_Core.hpp>
+#include <Tessera_Core.hpp>
 
 #include "tstMesh.hpp"
 
 #include <mpi.h>
 
-namespace NuMeshTest
+namespace TesseraTest
 {
 
 template <class T>
@@ -20,10 +20,10 @@ class MapsTest : public MeshTest<T>
 {
     using ExecutionSpace = typename T::ExecutionSpace;
     using MemorySpace = typename T::MemorySpace;
-    using numesh_t = NuMesh::Mesh<ExecutionSpace, MemorySpace>;
-    using vertex_data = typename numesh_t::vertex_data;
-    using edge_data = typename numesh_t::edge_data;
-    using face_data = typename numesh_t::face_data;
+    using Tessera_t = Tessera::Mesh<ExecutionSpace, MemorySpace>;
+    using vertex_data = typename Tessera_t::vertex_data;
+    using edge_data = typename Tessera_t::edge_data;
+    using face_data = typename Tessera_t::face_data;
     using v_array_type = Cabana::AoSoA<vertex_data, Kokkos::HostSpace, 4>;
     using e_array_type = Cabana::AoSoA<edge_data, Kokkos::HostSpace, 4>;
     using f_array_type = Cabana::AoSoA<face_data, Kokkos::HostSpace, 4>;
@@ -49,7 +49,7 @@ class MapsTest : public MeshTest<T>
     {
         this->copytoHost();
 
-        auto v2e = NuMesh::Maps::V2E(this->mesh_);
+        auto v2e = Tessera::Maps::V2E(this->mesh_);
         auto offsets_d = v2e.offsets();
         auto indices_d = v2e.indices();
         auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
@@ -106,7 +106,7 @@ class MapsTest : public MeshTest<T>
     {
         this->copytoHost();
 
-        auto v2f = NuMesh::Maps::V2F(this->mesh_, level);
+        auto v2f = Tessera::Maps::V2F(this->mesh_, level);
         auto offsets_d = v2f.offsets();
         auto indices_d = v2f.indices();
         auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
@@ -163,7 +163,7 @@ class MapsTest : public MeshTest<T>
     {
         this->copytoHost();
     
-        auto v2v = NuMesh::Maps::V2V(this->mesh_, level);
+        auto v2v = Tessera::Maps::V2V(this->mesh_, level);
         auto offsets_d = v2v.offsets();
         auto indices_d = v2v.indices();
         auto offsets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), offsets_d);
@@ -175,7 +175,7 @@ class MapsTest : public MeshTest<T>
         auto v_gid = Cabana::slice<V_GID>(*this->vertices);
     
         int total_vertices = this->vertices->size();
-        int owned_vertices = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
+        int owned_vertices = this->mesh_->count(Tessera::Own(), Tessera::Vertex());
     
         // Check that offsets are properly increasing
         for (int v = 0; v < total_vertices-1; v++) {
@@ -200,7 +200,7 @@ class MapsTest : public MeshTest<T>
                     // Collect all neighboring vertices from this face
                     for (int j = 0; j < 3; j++) {
                         int vgid_face = f_vid(f, j);
-                        int vlid_face = NuMesh::Utils::get_lid(v_gid, vgid_face, owned_vertices, total_vertices); 
+                        int vlid_face = Tessera::Utils::get_lid(v_gid, vgid_face, owned_vertices, total_vertices); 
                         if ((vlid_face != v) && (vlid_face != -1)) { // Avoid adding self and vertices not owned or ghosted
                             expected_neighbors.insert(f_vid(f, j));
                         }
@@ -223,6 +223,6 @@ class MapsTest : public MeshTest<T>
     
 };
 
-} // end namespace NuMeshTest
+} // end namespace TesseraTest
 
 #endif // _TSTMAPS_HPP_

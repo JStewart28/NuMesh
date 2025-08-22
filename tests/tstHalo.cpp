@@ -8,7 +8,7 @@
 
 #include <mpi.h>
 
-namespace NuMeshTest
+namespace TesseraTest
 {
 
 TYPED_TEST_SUITE(HaloTest, DeviceTypes);
@@ -48,7 +48,7 @@ TYPED_TEST(HaloTest, grid_test_halo_depth_1_uniform_refinement1)
     // Uniform refinement
     for (int i = 0; i < 1; i++)
     {
-        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int num_local_faces = this->mesh_->count(Tessera::Own(), Tessera::Face());
         int face_gid_start = vef_gid_start(this->rank_, 2);
         Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
         for (int i = 0; i < num_local_faces; i++)
@@ -80,7 +80,7 @@ TYPED_TEST(HaloTest, grid_test_halo_depth_1_uniform_refinement2)
     // Uniform refinement
     for (int i = 0; i < 2; i++)
     {
-        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int num_local_faces = this->mesh_->count(Tessera::Own(), Tessera::Face());
         int face_gid_start = vef_gid_start(this->rank_, 2);
         Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
         for (int i = 0; i < num_local_faces; i++)
@@ -144,7 +144,7 @@ TYPED_TEST(HaloTest, sphere_test_halo_depth_1_uniform_refinement1)
     // Uniform refinement
     for (int i = 0; i < 1; i++)
     {
-        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int num_local_faces = this->mesh_->count(Tessera::Own(), Tessera::Face());
         int face_gid_start = vef_gid_start(this->rank_, 2);
         Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
         for (int i = 0; i < num_local_faces; i++)
@@ -182,7 +182,7 @@ TYPED_TEST(HaloTest, sphere_test_halo_depth_1_uniform_refinement2)
     // Uniform refinement
     for (int i = 0; i < 2; i++)
     {
-        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int num_local_faces = this->mesh_->count(Tessera::Own(), Tessera::Face());
         int face_gid_start = vef_gid_start(this->rank_, 2);
         Kokkos::View<int*, Kokkos::HostSpace> fin("fin", num_local_faces);
         for (int i = 0; i < num_local_faces; i++)
@@ -196,4 +196,4 @@ TYPED_TEST(HaloTest, sphere_test_halo_depth_1_uniform_refinement2)
 }
 
  
-} // end namespace NuMeshTest
+} // end namespace TesseraTest

@@ -1,15 +1,15 @@
-#ifndef NUMESH_MAPS_HPP
-#define NUMESH_MAPS_HPP
+#ifndef TESSERA_MAPS_HPP
+#define TESSERA_MAPS_HPP
 
 #include <Cabana_Core.hpp>
 #include <Kokkos_Core.hpp>
 #include <memory>
 
-#include <NuMesh_Mesh.hpp>
+#include <Tessera_Mesh.hpp>
 
 #include <mpi.h>
 
-namespace NuMesh
+namespace Tessera
 {
 
 namespace Maps
@@ -37,7 +37,7 @@ class V2E
         , _comm ( mesh->comm() )
         , _map_version ( mesh->version() )
     {
-        static_assert( is_numesh_mesh<Mesh>::value, "NuMesh::V2E: NuMesh Mesh required" );
+        static_assert( is_tessera_mesh<Mesh>::value, "Tessera::V2E: Tessera Mesh required" );
 
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
@@ -170,7 +170,7 @@ class V2F
         , _map_version ( mesh->version() )
         , _level ( level )
     {
-        static_assert( is_numesh_mesh<Mesh>::value, "NuMesh::V2F: NuMesh Mesh required" );
+        static_assert( is_tessera_mesh<Mesh>::value, "Tessera::V2F: Tessera Mesh required" );
 
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
@@ -310,7 +310,7 @@ class V2V
         , _map_version ( mesh->version() )
         , _level ( level )
     {
-        static_assert( is_numesh_mesh<Mesh>::value, "NuMesh::V2V: NuMesh Mesh required" );
+        static_assert( is_tessera_mesh<Mesh>::value, "Tessera::V2V: Tessera Mesh required" );
 
         MPI_Comm_rank( _comm, &_rank );
         MPI_Comm_size( _comm, &_comm_size );
@@ -339,7 +339,7 @@ class V2V
         };
 
         // Retrieve the vertex-to-face mapping
-        auto v2f = NuMesh::Maps::V2F(_mesh, _level);
+        auto v2f = Tessera::Maps::V2F(_mesh, _level);
         auto face_offsets = v2f.offsets();
         auto face_indices = v2f.indices();
 
@@ -465,7 +465,7 @@ class V2V
 
 } // end namespace Maps
 
-} // end namespce NuMesh
+} // end namespce Tessera
 
 
-#endif // NUMESH_MAPS_HPP
+#endif // TESSERA_MAPS_HPP

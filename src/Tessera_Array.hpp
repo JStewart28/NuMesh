@@ -1,23 +1,23 @@
-#ifndef NUMESH_ARRAY_HPP
-#define NUMESH_ARRAY_HPP
+#ifndef TESSERA_ARRAY_HPP
+#define TESSERA_ARRAY_HPP
 
 
 #include <Cabana_Grid.hpp>
 #include <Kokkos_Core.hpp>
 
-#include <NuMesh_Mesh.hpp>
+#include <Tessera_Mesh.hpp>
 
 #include <cmath>
 #include <memory>
 #include <type_traits>
 #include <vector>
 
-namespace NuMesh
+namespace Tessera
 {
 namespace Array
 {
 
-// Design ideas for the NuMesh::Array taken from Cabana::Grid:Array
+// Design ideas for the Tessera::Array taken from Cabana::Grid:Array
 
 /* ArrayOp functions copied directly from Cabana::Grid::Array - can't
  * use Cabana::Grid::ArrayOp functions because they either type check
@@ -50,10 +50,10 @@ class ArrayLayout
     static constexpr std::size_t num_space_dim = 1;
 
     //! Ensure tuple_type is a Cabana::MemberTypes
-    static_assert(IsCabanaMemberTypes<tuple_type>::value, "NuMesh::ArrayLayout: Tuple must be a Cabana::MemberType");
+    static_assert(IsCabanaMemberTypes<tuple_type>::value, "Tessera::ArrayLayout: Tuple must be a Cabana::MemberType");
 
     //! Ensure tuple_type contains only a single type or array of types
-    static_assert(IsSinglePartMemberTypes<tuple_type>::value, "NuMesh::ArrayLayout: Tuple of single type required");
+    static_assert(IsSinglePartMemberTypes<tuple_type>::value, "Tessera::ArrayLayout: Tuple of single type required");
 
     /*!
       \brief Constructor.
@@ -481,7 +481,7 @@ clone( const Array<MemorySpace, LayoutType>& array )
 template <class Array_t, class DecompositionTag>
 void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
 {
-    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    static_assert( is_array<Array_t>::value, "Tessera::Array required" );
 
     using execution_space = typename Array_t::execution_space;
     using entity_type = typename Array_t::entity_type;
@@ -490,7 +490,7 @@ void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
     auto a_space = a.layout()->indexSpace( tag, entity_type(), Local() );
     auto b_space = b.layout()->indexSpace( tag, entity_type(), Local() );
     if ( a_space != b_space )
-        throw std::logic_error( "NuMesh::ArrayOp::copy: Incompatible index spaces" );
+        throw std::logic_error( "Tessera::ArrayOp::copy: Incompatible index spaces" );
     // auto subview_a = Cabana::subview( a, a.view(), a_space );
     // auto subview_b = Cabana::Grid::createSubview( b.view(), b_space );
     // Kokkos::deep_copy( subview_a, subview_b );
@@ -508,7 +508,7 @@ void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
         // Slices for array tuple AoSoAs have the form slice(i, j)
         auto space = a.layout()->indexSpace( tag, entity_type(), Local(), Element() );
         auto policy = Cabana::Grid::createExecutionPolicy(space, execution_space());
-        Kokkos::parallel_for( "NuMesh::ArrayOp::copy", policy,
+        Kokkos::parallel_for( "Tessera::ArrayOp::copy", policy,
             KOKKOS_LAMBDA( const int i ) {
                 a_data( i ) = b_data( i );
             } );
@@ -517,7 +517,7 @@ void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
     {
         // Slices for array tuple AoSoAs have the form slice(i, j)
         auto policy = Cabana::Grid::createExecutionPolicy(a_space, execution_space());
-        Kokkos::parallel_for( "NuMesh::ArrayOp::copy", policy,
+        Kokkos::parallel_for( "Tessera::ArrayOp::copy", policy,
             KOKKOS_LAMBDA( const int i, const int j) {
                 a_data( i, j ) = b_data( i, j );
             } );
@@ -525,7 +525,7 @@ void copy( Array_t& a, const Array_t& b, DecompositionTag tag )
     else
     {
         static_assert(tuple_size > 1 || tuple_size == 1,
-            "NuMesh::ArrayOp::copy: Invalid tuple size!");
+            "Tessera::ArrayOp::copy: Invalid tuple size!");
     }
 }
 
@@ -565,8 +565,8 @@ std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
     using new_tuple_type = Cabana::MemberTypes<base_type>;
 
     // Create new layout with updated tuple type
-    auto layout = NuMesh::Array::createArrayLayout<new_tuple_type>( a.layout(), 1, entity_type() );
-    auto out = NuMesh::Array::createArray<memory_space>("copyDim_out", layout);
+    auto layout = Tessera::Array::createArrayLayout<new_tuple_type>( a.layout(), 1, entity_type() );
+    auto out = Tessera::Array::createArray<memory_space>("copyDim_out", layout);
     auto out_aosoa = out->aosoa();
     auto out_slice = Cabana::slice<0>(*out_aosoa);
 
@@ -577,7 +577,7 @@ std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
 
     if (dimA >= aw) {
         throw std::invalid_argument(
-            "NuMesh::ArrayOp::copyDim: Provided dimension is larger than the number of dimensions in the array.");
+            "Tessera::ArrayOp::copyDim: Provided dimension is larger than the number of dimensions in the array.");
     }
 
     auto policy = Cabana::Grid::createExecutionPolicy(
@@ -585,7 +585,7 @@ std::shared_ptr<Array_t> copyDim( Array_t& a, int dimA, DecompositionTag tag )
         execution_space());
 
     Kokkos::parallel_for(
-        "NuMesh::ArrayOp::copyDim", policy,
+        "Tessera::ArrayOp::copyDim", policy,
         KOKKOS_LAMBDA(const int i) {
             out_slice(i) = a_slice(i, dimA);
         });
@@ -610,11 +610,11 @@ void copyDim( A_t& a, int dimA, B_t& b, int dimB, DecompositionTag tag )
 
     // Check that the types are equal for both arrays
     static_assert(std::is_same<a_entity_type, b_entity_type>::value,
-        "NuMesh::ArrayOp::copyDim: Types are not the same!");
+        "Tessera::ArrayOp::copyDim: Types are not the same!");
     static_assert(std::is_same<a_memory_space, b_memory_space>::value,
-        "NuMesh::ArrayOp::copyDim: Types are not the same!");
+        "Tessera::ArrayOp::copyDim: Types are not the same!");
     static_assert(std::is_same<a_execution_space, b_execution_space>::value,
-        "NuMesh::ArrayOp::copyDim: Types are not the same!");
+        "Tessera::ArrayOp::copyDim: Types are not the same!");
 
     // Check dimensions
     auto a_aosoa = a.aosoa();
@@ -627,16 +627,16 @@ void copyDim( A_t& a, int dimA, B_t& b, int dimB, DecompositionTag tag )
     constexpr int am = ExtractArraySize<a_tuple_type>::value;
     constexpr int bm = ExtractArraySize<b_tuple_type>::value;
     
-    static_assert(!((am == 1) && (bm == 1)), "NuMesh::ArrayOp::copyDim: Use copy when tuples are the same size");
+    static_assert(!((am == 1) && (bm == 1)), "Tessera::ArrayOp::copyDim: Use copy when tuples are the same size");
 
     if (an != bn) {
-        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: First dimension of a and b arrays do not match.");
+        throw std::invalid_argument("Tessera::ArrayOp::copyDim: First dimension of a and b arrays do not match.");
     }
     if (dimA >= am) {
-        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension for 'a' is larger than the number of dimensions in the b array.");
+        throw std::invalid_argument("Tessera::ArrayOp::copyDim: Provided dimension for 'a' is larger than the number of dimensions in the b array.");
     }
     if (dimB >= bm) {
-        throw std::invalid_argument("NuMesh::ArrayOp::copyDim: Provided dimension for 'b' is larger than the number of dimensions in the b array.");
+        throw std::invalid_argument("Tessera::ArrayOp::copyDim: Provided dimension for 'b' is larger than the number of dimensions in the b array.");
     }
 
     if constexpr ((am == bm) && (am != 1))
@@ -646,7 +646,7 @@ void copyDim( A_t& a, int dimA, B_t& b, int dimB, DecompositionTag tag )
             a.layout()->indexSpace( tag, a_entity_type(), Local() ),
             a_execution_space() );
         Kokkos::parallel_for(
-            "NuMesh::ArrayOp::copyDim", policy,
+            "Tessera::ArrayOp::copyDim", policy,
             KOKKOS_LAMBDA( const int i, const int j) {
                 a_slice( i, dimA ) = b_slice( i, dimB );
         } );
@@ -658,7 +658,7 @@ void copyDim( A_t& a, int dimA, B_t& b, int dimB, DecompositionTag tag )
             a.layout()->indexSpace( tag, a_entity_type(), Local(), Element() ),
             a_execution_space() );
         Kokkos::parallel_for(
-            "NuMesh::ArrayOp::copyDim", policy,
+            "Tessera::ArrayOp::copyDim", policy,
             KOKKOS_LAMBDA( const int i ) {
                 a_slice( i ) = b_slice( i, dimB );
         } );
@@ -670,7 +670,7 @@ void copyDim( A_t& a, int dimA, B_t& b, int dimB, DecompositionTag tag )
             a.layout()->indexSpace( tag, a_entity_type(), Local(), Element() ),
             a_execution_space() );
         Kokkos::parallel_for(
-            "NuMesh::ArrayOp::copyDim", policy,
+            "Tessera::ArrayOp::copyDim", policy,
             KOKKOS_LAMBDA( const int i ) {
                 a_slice( i, dimA ) = b_slice( i );
         } );
@@ -693,7 +693,7 @@ template <class Array_t, class DecompositionTag>
 void assign( Array_t& array, typename Array_t::value_type alpha, 
              DecompositionTag tag )
 {
-    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    static_assert( is_array<Array_t>::value, "Tessera::Array required" );
 
     using execution_space = typename Array_t::execution_space;
     using value_type = typename Array_t::value_type;
@@ -708,7 +708,7 @@ void assign( Array_t& array, typename Array_t::value_type alpha,
         auto policy = Cabana::Grid::createExecutionPolicy(
             array.layout()->indexSpace(tag, entity_t(), Local()), execution_space() );
    
-        Kokkos::parallel_for("NuMesh::ArrayOp::assign", policy,
+        Kokkos::parallel_for("Tessera::ArrayOp::assign", policy,
            KOKKOS_LAMBDA( const int i, const int j ) {
             slice(i, j) = alpha;
         });
@@ -718,7 +718,7 @@ void assign( Array_t& array, typename Array_t::value_type alpha,
         auto policy = Cabana::Grid::createExecutionPolicy(
             array.layout()->indexSpace(tag, entity_t(), Local(), Element()), execution_space() );
    
-        Kokkos::parallel_for("NuMesh::ArrayOp::assign", policy,
+        Kokkos::parallel_for("Tessera::ArrayOp::assign", policy,
            KOKKOS_LAMBDA( const int i ) {
             slice(i) = alpha;
         });
@@ -726,7 +726,7 @@ void assign( Array_t& array, typename Array_t::value_type alpha,
     else
     {
         static_assert(tuple_size > 1 || tuple_size == 1,
-            "NuMesh::ArrayOp::assign: Invalid tuple size");
+            "Tessera::ArrayOp::assign: Invalid tuple size");
     }
 }
 
@@ -742,7 +742,7 @@ std::enable_if_t<1 == Array_t::num_space_dim, void>
 scale( Array_t& array, const typename Array_t::value_type alpha, 
        DecompositionTag tag )
 {
-    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    static_assert( is_array<Array_t>::value, "Tessera::Array required" );
 
     using entity_t = typename Array_t::entity_type;
     using tuple_type = typename Array_t::tuple_type;
@@ -755,7 +755,7 @@ scale( Array_t& array, const typename Array_t::value_type alpha,
         auto policy = Cabana::Grid::createExecutionPolicy(
             array.layout()->indexSpace(tag, entity_t(), Local()), execution_space() );
    
-        Kokkos::parallel_for("NuMesh::ArrayOp::scale", policy,
+        Kokkos::parallel_for("Tessera::ArrayOp::scale", policy,
            KOKKOS_LAMBDA( const int i, const int j ) {
             slice(i, j) *= alpha;
         });
@@ -765,7 +765,7 @@ scale( Array_t& array, const typename Array_t::value_type alpha,
         auto policy = Cabana::Grid::createExecutionPolicy(
             array.layout()->indexSpace(tag, entity_t(), Local(), Element()), execution_space() );
    
-        Kokkos::parallel_for("NuMesh::ArrayOp::scale", policy,
+        Kokkos::parallel_for("Tessera::ArrayOp::scale", policy,
            KOKKOS_LAMBDA( const int i ) {
             slice(i) *= alpha;
         });
@@ -773,7 +773,7 @@ scale( Array_t& array, const typename Array_t::value_type alpha,
     else
     {
         static_assert(tuple_size > 1 || tuple_size == 1, 
-            "NuMesh::ArrayOp::scale: Invalid tuple size");
+            "Tessera::ArrayOp::scale: Invalid tuple size");
     }
 }
 
@@ -787,7 +787,7 @@ template <class Array_t, class Function, class DecompositionTag>
 std::enable_if_t<1 == Array_t::num_space_dim, void>
 apply( Array_t& array, Function& function, DecompositionTag tag )
 {
-    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    static_assert( is_array<Array_t>::value, "Tessera::Array required" );
 
     using tuple_type = typename Array_t::tuple_type;
     using entity_t = typename Array_t::entity_type;
@@ -800,7 +800,7 @@ apply( Array_t& array, Function& function, DecompositionTag tag )
         auto policy = Cabana::Grid::createExecutionPolicy(
             array.layout()->indexSpace(tag, entity_t(), Local()), execution_space() );
    
-        Kokkos::parallel_for("NuMesh::ArrayOp::scale", policy,
+        Kokkos::parallel_for("Tessera::ArrayOp::scale", policy,
            KOKKOS_LAMBDA( const int i, const int j ) {
             slice(i, j) *= function(slice( i, j ));
         });
@@ -810,7 +810,7 @@ apply( Array_t& array, Function& function, DecompositionTag tag )
         auto policy = Cabana::Grid::createExecutionPolicy(
             array.layout()->indexSpace(tag, entity_t(), Local(), Element()), execution_space());
    
-        Kokkos::parallel_for("NuMesh::ArrayOp::scale", policy,
+        Kokkos::parallel_for("Tessera::ArrayOp::scale", policy,
            KOKKOS_LAMBDA( const int i ) {
             slice(i) *= function(slice( i ));
         });
@@ -818,7 +818,7 @@ apply( Array_t& array, Function& function, DecompositionTag tag )
     else
     {
         static_assert(tuple_size > 1 || tuple_size == 1, 
-            "NuMesh::ArrayOp::apply: Invalid tuple size");
+            "Tessera::ArrayOp::apply: Invalid tuple size");
     }
 }
 
@@ -836,7 +836,7 @@ update( Array_t& a, const typename Array_t::tuple_type alpha,
         const Array_t& b, const typename Array_t::tuple_type beta, 
         DecompositionTag tag )
 {
-    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    static_assert( is_array<Array_t>::value, "Tessera::Array required" );
     using entity_type = typename Array_t::entity_type;
     using tuple_type = typename Array_t::tuple_type;
     auto a_aosoa = a.aosoa();
@@ -867,7 +867,7 @@ update( Array_t& a, const typename Array_t::tuple_type alpha,
     else
     {
         static_assert(tuple_size > 1 || tuple_size == 1, 
-            "NuMesh::ArrayOp::update: Invalid tuple size");
+            "Tessera::ArrayOp::update: Invalid tuple size");
     }
 }
 
@@ -888,7 +888,7 @@ update( Array_t& a, const typename Array_t::tuple_type alpha,
         const Array_t& c, const typename Array_t::tuple_type gamma,
         DecompositionTag tag )
 {
-    static_assert( is_array<Array_t>::value, "NuMesh::Array required" );
+    static_assert( is_array<Array_t>::value, "Tessera::Array required" );
     using entity_type = typename Array_t::entity_type;
     using tuple_type = typename Array_t::tuple_type;
     auto a_aosoa = a.aosoa();
@@ -923,7 +923,7 @@ update( Array_t& a, const typename Array_t::tuple_type alpha,
     else
     {
         static_assert(tuple_size > 1 || tuple_size == 1, 
-            "NuMesh::ArrayOp::update: Invalid tuple size");
+            "Tessera::ArrayOp::update: Invalid tuple size");
     }
 }
 
@@ -949,8 +949,8 @@ std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, Decompositio
     using scalar_tuple_type = Cabana::MemberTypes<base_type>;
 
     // Create new layout for the scalar output
-    auto scalar_layout = NuMesh::Array::createArrayLayout<scalar_tuple_type>(a.layout()->mesh(), 1, entity_type());
-    auto dot = NuMesh::Array::createArray<memory_space>("dot", scalar_layout);
+    auto scalar_layout = Tessera::Array::createArrayLayout<scalar_tuple_type>(a.layout()->mesh(), 1, entity_type());
+    auto dot = Tessera::Array::createArray<memory_space>("dot", scalar_layout);
     auto dot_aosoa = dot->aosoa();
     auto dot_slice = Cabana::slice<0>(*dot_aosoa);
 
@@ -973,7 +973,7 @@ std::shared_ptr<Array_t> element_dot( Array_t& a, const Array_t& b, Decompositio
     }
 
     auto policy = Cabana::Grid::createExecutionPolicy(
-            scalar_layout->indexSpace(tag, entity_type(), NuMesh::Local(), Element()),
+            scalar_layout->indexSpace(tag, entity_type(), Tessera::Local(), Element()),
             execution_space());
     
     Kokkos::parallel_for("compute_dot_product", policy,
@@ -1000,8 +1000,8 @@ std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, Decomposit
     using execution_space = typename Array_t::execution_space;
 
     // The resulting 'dot' array has the shape (i, j, 3)
-    auto layout = NuMesh::Array::createArrayLayout<tuple_type>(a.layout()->mesh(), 3, entity_type());
-    auto cross = NuMesh::Array::createArray<memory_space>("cross", layout);
+    auto layout = Tessera::Array::createArrayLayout<tuple_type>(a.layout()->mesh(), 3, entity_type());
+    auto cross = Tessera::Array::createArray<memory_space>("cross", layout);
     auto cross_aosoa = cross->aosoa();
     auto cross_slice = Cabana::slice<0>(*cross_aosoa);
 
@@ -1024,7 +1024,7 @@ std::shared_ptr<Array_t> element_cross( Array_t& a, const Array_t& b, Decomposit
     }
 
     auto policy = Cabana::Grid::createExecutionPolicy(
-            layout->indexSpace( tag, entity_type(), NuMesh::Local(), Element() ),
+            layout->indexSpace( tag, entity_type(), Tessera::Local(), Element() ),
             execution_space() );
     // Create output view for cross product results
     Kokkos::parallel_for("CrossProductKernel", policy,
@@ -1067,11 +1067,11 @@ std::shared_ptr<A_t> element_multiply( A_t& a, const B_t& b, DecompositionTag ta
 
     // Check that the types are equal for both arrays
     static_assert(std::is_same<a_entity_type, b_entity_type>::value,
-        "NuMesh::ArrayOp::copyDim: Types are not the same!");
+        "Tessera::ArrayOp::copyDim: Types are not the same!");
     static_assert(std::is_same<a_memory_space, b_memory_space>::value,
-        "NuMesh::ArrayOp::copyDim: Types are not the same!");
+        "Tessera::ArrayOp::copyDim: Types are not the same!");
     static_assert(std::is_same<a_execution_space, b_execution_space>::value,
-        "NuMesh::ArrayOp::copyDim: Types are not the same!");
+        "Tessera::ArrayOp::copyDim: Types are not the same!");
 
     auto out = clone(a);
     auto out_aosoa = out->aosoa();
@@ -1143,6 +1143,6 @@ std::shared_ptr<A_t> element_multiply( A_t& a, const B_t& b, DecompositionTag ta
 
 } // end namespace Array
 
-} // end namespace NuMesh
+} // end namespace Tessera
 
-#endif // NUMESH_ARRAY_HPP
+#endif // TESSERA_ARRAY_HPP
