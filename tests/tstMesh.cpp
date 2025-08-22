@@ -8,7 +8,7 @@
 
 #include <mpi.h>
 
-namespace NuMeshTest
+namespace TesseraTest
 {
 
 TYPED_TEST_SUITE(MeshTest, DeviceTypes);
@@ -30,9 +30,9 @@ TYPED_TEST(MeshTest, grid_test0_refinement)
     fin(0) = 30; 
     fin(1) = 31;
 
-    int vcount = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
-    int ecount = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
-    int fcount = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+    int vcount = this->mesh_->count(Tessera::Own(), Tessera::Vertex());
+    int ecount = this->mesh_->count(Tessera::Own(), Tessera::Edge());
+    int fcount = this->mesh_->count(Tessera::Own(), Tessera::Face());
     int v, e, f;
     MPI_Allreduce(&vcount, &v, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&ecount, &e, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -56,7 +56,7 @@ TYPED_TEST(MeshTest, grid_test1_refinement)
     
     this->init_from_grid(mesh_size, 1);
 
-    int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+    int num_local_faces = this->mesh_->count(Tessera::Own(), Tessera::Face());
     auto vef_gid_start = this->mesh_->vef_gid_start();
     auto vef_gid_start_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), vef_gid_start);
     int face_gid_start = vef_gid_start_h(this->rank_, 2);
@@ -67,9 +67,9 @@ TYPED_TEST(MeshTest, grid_test1_refinement)
         fin(i) = face_gid_start + i;
     }
 
-    int vcount = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
-    int ecount = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
-    int fcount = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+    int vcount = this->mesh_->count(Tessera::Own(), Tessera::Vertex());
+    int ecount = this->mesh_->count(Tessera::Own(), Tessera::Edge());
+    int fcount = this->mesh_->count(Tessera::Own(), Tessera::Face());
     int v, e, f;
     MPI_Allreduce(&vcount, &v, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&ecount, &e, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -93,9 +93,9 @@ TYPED_TEST(MeshTest, grid_test2_refinement)
     
     this->init_from_grid(mesh_size, 1);
 
-    int vcount = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
-    int ecount = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
-    int fcount = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+    int vcount = this->mesh_->count(Tessera::Own(), Tessera::Vertex());
+    int ecount = this->mesh_->count(Tessera::Own(), Tessera::Edge());
+    int fcount = this->mesh_->count(Tessera::Own(), Tessera::Face());
     int v, e, f;
     MPI_Allreduce(&vcount, &v, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&ecount, &e, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -103,7 +103,7 @@ TYPED_TEST(MeshTest, grid_test2_refinement)
 
     for (int i = 0; i < 2; i++)
     {
-        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int num_local_faces = this->mesh_->count(Tessera::Own(), Tessera::Face());
         auto vef_gid_start = this->mesh_->vef_gid_start();
         auto vef_gid_start_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), vef_gid_start);
         int face_gid_start = vef_gid_start_h(this->rank_, 2);
@@ -143,9 +143,9 @@ TYPED_TEST(MeshTest, sphere_test0_refinement0)
         return;
     }
 
-    int vcount = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
-    int ecount = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
-    int fcount = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+    int vcount = this->mesh_->count(Tessera::Own(), Tessera::Vertex());
+    int ecount = this->mesh_->count(Tessera::Own(), Tessera::Edge());
+    int fcount = this->mesh_->count(Tessera::Own(), Tessera::Face());
     int v, e, f;
     MPI_Allreduce(&vcount, &v, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&ecount, &e, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -181,9 +181,9 @@ TYPED_TEST(MeshTest, sphere_test0_refinement1)
         return;
     }
 
-    int vcount = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
-    int ecount = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
-    int fcount = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+    int vcount = this->mesh_->count(Tessera::Own(), Tessera::Vertex());
+    int ecount = this->mesh_->count(Tessera::Own(), Tessera::Edge());
+    int fcount = this->mesh_->count(Tessera::Own(), Tessera::Face());
     int v, e, f;
     MPI_Allreduce(&vcount, &v, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&ecount, &e, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -221,9 +221,9 @@ TYPED_TEST(MeshTest, sphere_test1_refinement)
         return;
     }
 
-    int vcount = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
-    int ecount = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
-    int fcount = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+    int vcount = this->mesh_->count(Tessera::Own(), Tessera::Vertex());
+    int ecount = this->mesh_->count(Tessera::Own(), Tessera::Edge());
+    int fcount = this->mesh_->count(Tessera::Own(), Tessera::Face());
     int v, e, f;
     MPI_Allreduce(&vcount, &v, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&ecount, &e, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -231,7 +231,7 @@ TYPED_TEST(MeshTest, sphere_test1_refinement)
 
     for (int i = 0; i < 1; i++)
     {
-        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int num_local_faces = this->mesh_->count(Tessera::Own(), Tessera::Face());
         auto vef_gid_start = this->mesh_->vef_gid_start();
         auto vef_gid_start_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), vef_gid_start);
         int face_gid_start = vef_gid_start_h(this->rank_, 2);
@@ -267,9 +267,9 @@ TYPED_TEST(MeshTest, sphere_test2_refinement)
         return;
     }
     
-    int vcount = this->mesh_->count(NuMesh::Own(), NuMesh::Vertex());
-    int ecount = this->mesh_->count(NuMesh::Own(), NuMesh::Edge());
-    int fcount = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+    int vcount = this->mesh_->count(Tessera::Own(), Tessera::Vertex());
+    int ecount = this->mesh_->count(Tessera::Own(), Tessera::Edge());
+    int fcount = this->mesh_->count(Tessera::Own(), Tessera::Face());
     int v, e, f;
     MPI_Allreduce(&vcount, &v, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(&ecount, &e, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -277,7 +277,7 @@ TYPED_TEST(MeshTest, sphere_test2_refinement)
 
     for (int i = 0; i < 2; i++)
     {
-        int num_local_faces = this->mesh_->count(NuMesh::Own(), NuMesh::Face());
+        int num_local_faces = this->mesh_->count(Tessera::Own(), Tessera::Face());
         auto vef_gid_start = this->mesh_->vef_gid_start();
         auto vef_gid_start_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), vef_gid_start);
         int face_gid_start = vef_gid_start_h(this->rank_, 2);
@@ -294,4 +294,4 @@ TYPED_TEST(MeshTest, sphere_test2_refinement)
     this->verifyRefinement(v+3*e+3*f, 7*e+21*f, 21*f);
 }
 
-} // end namespace NuMeshTest
+} // end namespace TesseraTest

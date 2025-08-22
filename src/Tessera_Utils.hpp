@@ -1,5 +1,5 @@
-#ifndef NUMESH_UTILS_HPP
-#define NUMESH_UTILS_HPP
+#ifndef TESSERA_UTILS_HPP
+#define TESSERA_UTILS_HPP
 
 #include <Cabana_Core.hpp>
 #include <Kokkos_Core.hpp>
@@ -8,7 +8,7 @@
 
 #include <mpi.h>
 
-namespace NuMesh
+namespace Tessera
 {
 
 namespace Utils
@@ -314,7 +314,7 @@ int vertex_from_parent_edges(Slice_t e_vids, int elid0, int elid1, int elid2, in
 // }
 
 } // end namespace Utils
-} // end namespce NuMesh
+} // end namespce Tessera
 
 
-#endif // NUMESH_UTILS_HPP
+#endif // TESSERA_UTILS_HPP

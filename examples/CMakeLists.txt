@@ -17,11 +17,11 @@ blt_add_executable( NAME build_sphere
 # Finally, we also need to tell CMAKE where the library header is. 
 # target_include_directories( build_from_grid PRIVATE ${MPI_Advance_INCLUDE_DIR} )
 
-target_link_libraries( build_from_grid PRIVATE numesh )
+target_link_libraries( build_from_grid PRIVATE Tessera )
 # Need SEACASIoss_LIBRARIES and OpenGL::GL to correctly link on Tioga
 target_link_libraries( build_from_grid PRIVATE ${SEACASIoss_LIBRARIES})
 target_link_libraries( build_from_grid PRIVATE OpenGL::GL) 
-target_link_libraries( build_sphere PRIVATE numesh )
+target_link_libraries( build_sphere PRIVATE Tessera )
 target_link_libraries( build_sphere PRIVATE ${SEACASIoss_LIBRARIES})
 target_link_libraries( build_sphere PRIVATE OpenGL::GL)
 

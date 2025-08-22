@@ -1,5 +1,5 @@
-#ifndef NUMESH_MESH_HPP
-#define NUMESH_MESH_HPP
+#ifndef Tessera_MESH_HPP
+#define Tessera_MESH_HPP
 
 // XXX - Add mapping class.
 
@@ -17,7 +17,7 @@
 
 #include <mpi.h>
 
-#include <NuMesh_Utils.hpp>
+#include <Tessera_Utils.hpp>
 
 // #include "_hypre_parcsr_ls.h"
 
@@ -44,11 +44,11 @@
     #define F_OWNER 6
 #endif
 
-#include <NuMesh_Types.hpp>
+#include <Tessera_Types.hpp>
 
 #include <limits>
 
-namespace NuMesh
+namespace Tessera
 {
 
 //---------------------------------------------------------------------------//
@@ -1950,11 +1950,11 @@ class Mesh
     {
         Kokkos::Profiling::pushRegion("initializeFromArray");
 
-        static_assert( Cabana::Grid::is_array<CabanaArray>::value, "NuMesh::Mesh::initializeFromArray: Cabana::Grid::Array required" );
+        static_assert( Cabana::Grid::is_array<CabanaArray>::value, "Tessera::Mesh::initializeFromArray: Cabana::Grid::Array required" );
         
         if (!Utils::isPerfectSquare(_comm_size))
         {
-            std::cerr << "NuMesh::initializeFromArray only supports communicator sizes that are square numbers\n";
+            std::cerr << "Tessera::initializeFromArray only supports communicator sizes that are square numbers\n";
         }
 
         auto local_grid = array.layout()->localGrid();
@@ -2743,13 +2743,13 @@ class Mesh
 
         if (depth < 1)
             throw std::runtime_error(
-                    "NuMesh::Mesh: halo depth of gather must be at least 1." );
+                    "Tessera::Mesh: halo depth of gather must be at least 1." );
         if (level < 0)
             throw std::runtime_error(
-                    "NuMesh::Mesh: level of gather must be at least 0." );
+                    "Tessera::Mesh: level of gather must be at least 0." );
         if (level > _local_max_tree_depth)
             throw std::runtime_error(
-                    "NuMesh::Mesh: level of gather must be at <= max tree level." );
+                    "Tessera::Mesh: level of gather must be at <= max tree level." );
         
         _halo_level = level; _halo_depth = depth;
         _gather_depth_one();
@@ -2959,9 +2959,9 @@ class Mesh
 
 // Static type checkers
 template <typename T>
-struct is_numesh_mesh : std::false_type {};
+struct is_tessera_mesh : std::false_type {};
 template <typename ExecutionSpace, typename MemSpace>
-struct is_numesh_mesh<NuMesh::Mesh<ExecutionSpace, MemSpace>> : std::true_type {};
+struct is_tessera_mesh<Tessera::Mesh<ExecutionSpace, MemSpace>> : std::true_type {};
 
 /**
  *  Returns a mesh with no vertices, edges, or faces.
@@ -2972,7 +2972,7 @@ auto createEmptyMesh( MPI_Comm comm )
     return std::make_shared<Mesh<ExecutionSpace, MemorySpace>>(comm);
 }
 
-} // end namespace NuMesh
+} // end namespace Tessera
 
 
-#endif // NUMESH_MESH_HPP
+#endif // Tessera_MESH_HPP

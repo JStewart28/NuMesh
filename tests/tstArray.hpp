@@ -6,7 +6,7 @@
 #include <Cabana_Core.hpp>
 #include <Cabana_Grid.hpp>
 #include <Kokkos_Core.hpp>
-#include <NuMesh_Core.hpp>
+#include <Tessera_Core.hpp>
 
 #include "tstMesh.hpp"
 
@@ -15,7 +15,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace NuMeshTest
+namespace TesseraTest
 {
 
 template <class T>
@@ -23,7 +23,7 @@ class ArrayTest : public MeshTest<T>
 {
     using ExecutionSpace = typename T::ExecutionSpace;
     using MemorySpace = typename T::MemorySpace;
-    using mesh_t = NuMesh::Mesh<ExecutionSpace, MemorySpace>;
+    using mesh_t = Tessera::Mesh<ExecutionSpace, MemorySpace>;
     using vertex_data = typename mesh_t::vertex_data;
     using edge_data = typename mesh_t::edge_data;
     using face_data = typename mesh_t::face_data;
@@ -64,9 +64,9 @@ class ArrayTest : public MeshTest<T>
     template <class EntityType>
     auto populateTripleArray(EntityType, int seed)
     {
-        constexpr int tuple_size = NuMesh::ExtractArraySize<triple_tuple_type>::value;
-        auto layout = NuMesh::Array::createArrayLayout<triple_tuple_type>(this->mesh_, tuple_size, EntityType());
-        auto array = NuMesh::Array::createArray<Kokkos::HostSpace>("array", layout);
+        constexpr int tuple_size = Tessera::ExtractArraySize<triple_tuple_type>::value;
+        auto layout = Tessera::Array::createArrayLayout<triple_tuple_type>(this->mesh_, tuple_size, EntityType());
+        auto array = Tessera::Array::createArray<Kokkos::HostSpace>("array", layout);
         auto aosoa = array->aosoa();
         auto slice = Cabana::slice<0>(*aosoa);
         int max0 = aosoa->size();
@@ -82,7 +82,7 @@ class ArrayTest : public MeshTest<T>
         }
 
         // Copy to device memory
-        auto array_d = NuMesh::Array::createArray<MemorySpace>("array_d", layout);
+        auto array_d = Tessera::Array::createArray<MemorySpace>("array_d", layout);
         auto aosoa_d = array_d->aosoa();
         Cabana::deep_copy(*aosoa_d, *aosoa);
 
@@ -92,9 +92,9 @@ class ArrayTest : public MeshTest<T>
     template <class EntityType>
     auto populateDoubleArray(EntityType, int seed)
     {
-        constexpr int tuple_size = NuMesh::ExtractArraySize<double_tuple_type>::value;
-        auto layout = NuMesh::Array::createArrayLayout<double_tuple_type>(this->mesh_, tuple_size, EntityType());
-        auto array = NuMesh::Array::createArray<Kokkos::HostSpace>("array", layout);
+        constexpr int tuple_size = Tessera::ExtractArraySize<double_tuple_type>::value;
+        auto layout = Tessera::Array::createArrayLayout<double_tuple_type>(this->mesh_, tuple_size, EntityType());
+        auto array = Tessera::Array::createArray<Kokkos::HostSpace>("array", layout);
         auto aosoa = array->aosoa();
         auto slice = Cabana::slice<0>(*aosoa);
         int max0 = aosoa->size();
@@ -109,7 +109,7 @@ class ArrayTest : public MeshTest<T>
         }
 
         // Copy to device memory
-        auto array_d = NuMesh::Array::createArray<MemorySpace>("array_d", layout);
+        auto array_d = Tessera::Array::createArray<MemorySpace>("array_d", layout);
         auto aosoa_d = array_d->aosoa();
         Cabana::deep_copy(*aosoa_d, *aosoa);
 
@@ -119,9 +119,9 @@ class ArrayTest : public MeshTest<T>
     template <class EntityType>
     auto populateScalarArray(EntityType, int seed)
     {
-        constexpr int tuple_size = NuMesh::ExtractArraySize<scalar_tuple_type>::value;
-        auto layout = NuMesh::Array::createArrayLayout<scalar_tuple_type>(this->mesh_, tuple_size, EntityType());
-        auto array = NuMesh::Array::createArray<Kokkos::HostSpace>("array", layout);
+        constexpr int tuple_size = Tessera::ExtractArraySize<scalar_tuple_type>::value;
+        auto layout = Tessera::Array::createArrayLayout<scalar_tuple_type>(this->mesh_, tuple_size, EntityType());
+        auto array = Tessera::Array::createArray<Kokkos::HostSpace>("array", layout);
         auto aosoa = array->aosoa();
         auto slice = Cabana::slice<0>(*aosoa);
         int max0 = aosoa->size();
@@ -132,7 +132,7 @@ class ArrayTest : public MeshTest<T>
         }
 
         // Copy to device memory
-        auto array_d = NuMesh::Array::createArray<MemorySpace>("array_d", layout);
+        auto array_d = Tessera::Array::createArray<MemorySpace>("array_d", layout);
         auto aosoa_d = array_d->aosoa();
         Cabana::deep_copy(*aosoa_d, *aosoa);
 
@@ -167,8 +167,8 @@ class ArrayTest : public MeshTest<T>
 
         const int amax0 = a_aosoa->size();
         const int bmax0 = b_aosoa->size();
-        constexpr int amax1 = NuMesh::ExtractArraySize<a_tuple_type>::value;
-        constexpr int bmax1 = NuMesh::ExtractArraySize<b_tuple_type>::value;
+        constexpr int amax1 = Tessera::ExtractArraySize<a_tuple_type>::value;
+        constexpr int bmax1 = Tessera::ExtractArraySize<b_tuple_type>::value;
 
         // Ensure bounds are the same
         ASSERT_EQ(amax0, bmax0); ASSERT_EQ(amax1, asize); ASSERT_EQ(bmax1, bsize);
@@ -214,6 +214,6 @@ class ArrayTest : public MeshTest<T>
 
 };
 
-} // end namespace NuMeshTest
+} // end namespace TesseraTest
 
 #endif // _TSTARRAY_HPP_

@@ -2,14 +2,14 @@
 
 #include <Cabana_Grid.hpp>
 #include <Kokkos_Core.hpp>
-#include <NuMesh_Core.hpp>
+#include <Tessera_Core.hpp>
 
 #include "tstArray.hpp"
 #include "tstDriver.hpp"
 
 #include <mpi.h>
 
-namespace NuMeshTest
+namespace TesseraTest
 {
 
 TYPED_TEST_SUITE(ArrayTest, DeviceTypes);
@@ -26,8 +26,8 @@ TYPED_TEST(ArrayTest, test_cloneCopy)
     }
     this->init_from_grid(mesh_size, 1);
 
-    auto correct = this->populateTripleArray(NuMesh::Vertex(), 847);
-    auto test = NuMesh::Array::ArrayOp::cloneCopy(*correct, NuMesh::Own());
+    auto correct = this->populateTripleArray(Tessera::Vertex(), 847);
+    auto test = Tessera::Array::ArrayOp::cloneCopy(*correct, Tessera::Own());
     this->checkEqual(*correct, *test, 3, 3);
 }
 
@@ -44,10 +44,10 @@ TYPED_TEST(ArrayTest, test_assignDim3)
     
     this->init_from_grid(mesh_size, 1);
 
-    auto three_size = this->populateTripleArray(NuMesh::Vertex(), 938);
+    auto three_size = this->populateTripleArray(Tessera::Vertex(), 938);
 
     // Manually assign
-    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*three_size, NuMesh::Own());
+    auto correct = Tessera::Array::ArrayOp::cloneCopy(*three_size, Tessera::Own());
     auto slice_c = Cabana::slice<0>(*correct->aosoa());
     for (size_t i = 0; i < three_size->aosoa()->size(); i++)
     {
@@ -57,7 +57,7 @@ TYPED_TEST(ArrayTest, test_assignDim3)
         }
     }
 
-    NuMesh::Array::ArrayOp::assign(*three_size, 8.8, NuMesh::Own());
+    Tessera::Array::ArrayOp::assign(*three_size, 8.8, Tessera::Own());
     this->checkEqual(*correct, *three_size, 3, 3);
 }
 
@@ -74,17 +74,17 @@ TYPED_TEST(ArrayTest, test_assignDim1)
     
     this->init_from_grid(mesh_size, 1);
 
-    auto one_size = this->populateScalarArray(NuMesh::Vertex(), 938);
+    auto one_size = this->populateScalarArray(Tessera::Vertex(), 938);
 
     // Manually assign
-    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*one_size, NuMesh::Own());
+    auto correct = Tessera::Array::ArrayOp::cloneCopy(*one_size, Tessera::Own());
     auto slice_c = Cabana::slice<0>(*correct->aosoa());
     for (size_t i = 0; i < one_size->aosoa()->size(); i++)
     {
         slice_c(i) = 8.8;
     }
 
-    NuMesh::Array::ArrayOp::assign(*one_size, 8.8, NuMesh::Own());
+    Tessera::Array::ArrayOp::assign(*one_size, 8.8, Tessera::Own());
     this->checkEqual(*correct, *one_size, 1, 1);
 }
 
@@ -101,10 +101,10 @@ TYPED_TEST(ArrayTest, test_scaleDim3)
     
     this->init_from_grid(mesh_size, 1);
 
-    auto three_size = this->populateTripleArray(NuMesh::Vertex(), 938);
+    auto three_size = this->populateTripleArray(Tessera::Vertex(), 938);
 
     // Manually scale
-    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*three_size, NuMesh::Own());
+    auto correct = Tessera::Array::ArrayOp::cloneCopy(*three_size, Tessera::Own());
     auto slice_c = Cabana::slice<0>(*correct->aosoa());
     for (size_t i = 0; i < three_size->aosoa()->size(); i++)
     {
@@ -114,7 +114,7 @@ TYPED_TEST(ArrayTest, test_scaleDim3)
         }
     }
 
-    NuMesh::Array::ArrayOp::scale(*three_size, 8.8, NuMesh::Own());
+    Tessera::Array::ArrayOp::scale(*three_size, 8.8, Tessera::Own());
     this->checkEqual(*correct, *three_size, 3, 3);
 }
 
@@ -131,17 +131,17 @@ TYPED_TEST(ArrayTest, test_scaleDim1)
     
     this->init_from_grid(mesh_size, 1);
 
-    auto one_size = this->populateScalarArray(NuMesh::Vertex(), 938);
+    auto one_size = this->populateScalarArray(Tessera::Vertex(), 938);
 
     // Manually scale
-    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*one_size, NuMesh::Own());
+    auto correct = Tessera::Array::ArrayOp::cloneCopy(*one_size, Tessera::Own());
     auto slice_c = Cabana::slice<0>(*correct->aosoa());
     for (size_t i = 0; i < one_size->aosoa()->size(); i++)
     {
         slice_c(i) *= 8.8;
     }
 
-    NuMesh::Array::ArrayOp::scale(*one_size, 8.8, NuMesh::Own());
+    Tessera::Array::ArrayOp::scale(*one_size, 8.8, Tessera::Own());
     this->checkEqual(*correct, *one_size, 1, 1);
 }
 
@@ -160,11 +160,11 @@ TYPED_TEST(ArrayTest, test_elementMultiplyDim1)
     
     this->init_from_grid(mesh_size, 1);
 
-    auto three_size = this->populateTripleArray(NuMesh::Vertex(), 938);
-    auto one_size = this->populateScalarArray(NuMesh::Vertex(), 235);
+    auto three_size = this->populateTripleArray(Tessera::Vertex(), 938);
+    auto one_size = this->populateScalarArray(Tessera::Vertex(), 235);
 
     // Manually multiply the first dimension of three_size into one_size
-    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*one_size, NuMesh::Own());
+    auto correct = Tessera::Array::ArrayOp::cloneCopy(*one_size, Tessera::Own());
     auto slice3 = Cabana::slice<0>(*three_size->aosoa());
     auto slice1 = Cabana::slice<0>(*correct->aosoa());
     for (size_t i = 0; i < three_size->aosoa()->size(); i++)
@@ -173,7 +173,7 @@ TYPED_TEST(ArrayTest, test_elementMultiplyDim1)
         slice1(i) = slice1(i) * slice3(i, 0);
     }
 
-    auto test = NuMesh::Array::ArrayOp::element_multiply(*one_size, *three_size, NuMesh::Own());
+    auto test = Tessera::Array::ArrayOp::element_multiply(*one_size, *three_size, Tessera::Own());
     this->checkEqual(*correct, *test, 1, 1);
 }
 
@@ -192,11 +192,11 @@ TYPED_TEST(ArrayTest, test_elementMultiplyDim3)
     
     this->init_from_grid(mesh_size, 1);
 
-    auto three_size0 = this->populateTripleArray(NuMesh::Vertex(), 857);
-    auto three_size1 = this->populateTripleArray(NuMesh::Vertex(), 286);
+    auto three_size0 = this->populateTripleArray(Tessera::Vertex(), 857);
+    auto three_size1 = this->populateTripleArray(Tessera::Vertex(), 286);
 
     // Manually multiply the first dimension of three_size into one_size
-    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*three_size0, NuMesh::Own());
+    auto correct = Tessera::Array::ArrayOp::cloneCopy(*three_size0, Tessera::Own());
     auto slice0 = Cabana::slice<0>(*three_size1->aosoa());
     auto slice_c = Cabana::slice<0>(*correct->aosoa());
     for (size_t i = 0; i < three_size0->aosoa()->size(); i++)
@@ -207,7 +207,7 @@ TYPED_TEST(ArrayTest, test_elementMultiplyDim3)
         }
     }
 
-    auto test = NuMesh::Array::ArrayOp::element_multiply(*three_size0, *three_size1, NuMesh::Own());
+    auto test = Tessera::Array::ArrayOp::element_multiply(*three_size0, *three_size1, Tessera::Own());
     this->checkEqual(*correct, *test, 3, 3);
 }
 
@@ -228,11 +228,11 @@ TYPED_TEST(ArrayTest, test_copyDim0)
     
     this->init_from_grid(mesh_size, 1);
 
-    auto double_array = this->populateDoubleArray(NuMesh::Vertex(), 482);
-    auto scalar_array = this->populateScalarArray(NuMesh::Vertex(), 915);
+    auto double_array = this->populateDoubleArray(Tessera::Vertex(), 482);
+    auto scalar_array = this->populateScalarArray(Tessera::Vertex(), 915);
 
     // Manually copy the first dimension of B in to the first dim of A
-    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*double_array, NuMesh::Own());
+    auto correct = Tessera::Array::ArrayOp::cloneCopy(*double_array, Tessera::Own());
     auto slice_s = Cabana::slice<0>(*scalar_array->aosoa());
     auto slice_d = Cabana::slice<0>(*correct->aosoa());
     for (size_t i = 0; i < double_array->aosoa()->size(); i++)
@@ -240,7 +240,7 @@ TYPED_TEST(ArrayTest, test_copyDim0)
         slice_d(i, 0) = slice_s(i);
     }
 
-    NuMesh::Array::ArrayOp::copyDim(*double_array, 0, *scalar_array, 0, NuMesh::Own());
+    Tessera::Array::ArrayOp::copyDim(*double_array, 0, *scalar_array, 0, Tessera::Own());
     this->checkEqual(*correct, *double_array, 2, 2);
 }
 
@@ -261,11 +261,11 @@ TYPED_TEST(ArrayTest, test_copyDim1)
     
     this->init_from_grid(mesh_size, 1);
 
-    auto double_array = this->populateDoubleArray(NuMesh::Vertex(), 207);
-    auto scalar_array = this->populateScalarArray(NuMesh::Vertex(), 374);
+    auto double_array = this->populateDoubleArray(Tessera::Vertex(), 207);
+    auto scalar_array = this->populateScalarArray(Tessera::Vertex(), 374);
 
     // Manually copy the first dimension of B in to the first dim of A
-    auto correct = NuMesh::Array::ArrayOp::cloneCopy(*double_array, NuMesh::Own());
+    auto correct = Tessera::Array::ArrayOp::cloneCopy(*double_array, Tessera::Own());
     auto slice_s = Cabana::slice<0>(*scalar_array->aosoa());
     auto slice_d = Cabana::slice<0>(*correct->aosoa());
     for (size_t i = 0; i < double_array->aosoa()->size(); i++)
@@ -273,9 +273,9 @@ TYPED_TEST(ArrayTest, test_copyDim1)
         slice_d(i, 1) = slice_s(i);
     }
 
-    NuMesh::Array::ArrayOp::copyDim(*double_array, 1, *scalar_array, 0, NuMesh::Own());
+    Tessera::Array::ArrayOp::copyDim(*double_array, 1, *scalar_array, 0, Tessera::Own());
     this->checkEqual(*correct, *double_array, 2, 2);
 }
 
 
-} // end namespace NuMeshTest
+} // end namespace TesseraTest
