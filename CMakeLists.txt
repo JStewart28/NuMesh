@@ -155,8 +155,8 @@ endif()
 ##---------------------------------------------------------------------------##
 ## Code coverage testing - copied from Cabana
 ##---------------------------------------------------------------------------##
-option(Canopy_ENABLE_COVERAGE_BUILD "Do a coverage build" OFF)
-if(Canopy_ENABLE_COVERAGE_BUILD)
+option(Tessera_ENABLE_COVERAGE_BUILD "Do a coverage build" OFF)
+if(Tessera_ENABLE_COVERAGE_BUILD)
   message(STATUS "Enabling coverage build")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage -O0")
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
@@ -191,12 +191,12 @@ IF(GIT_FOUND AND IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/.git)
   EXECUTE_PROCESS(
     COMMAND           ${GIT_EXECUTABLE} log --pretty=format:%H -n 1
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    OUTPUT_VARIABLE   Canopy_GIT_COMMIT_HASH
+    OUTPUT_VARIABLE   Tessera_GIT_COMMIT_HASH
     )
 ELSE()
-  SET(Canopy_GIT_COMMIT_HASH "Not a git repository")
+  SET(Tessera_GIT_COMMIT_HASH "Not a git repository")
 ENDIF()
-MESSAGE(STATUS "Canopy Revision = '${Canopy_GIT_COMMIT_HASH}'")
+MESSAGE(STATUS "Tessera Revision = '${Tessera_GIT_COMMIT_HASH}'")
 
 ##---------------------------------------------------------------------------##
 ## Package Configuration - copied from Cabana
