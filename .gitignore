@@ -1,5 +1,5 @@
 # Ignore directories
-build
+build*
 .vscode
 
 # Prerequisites
