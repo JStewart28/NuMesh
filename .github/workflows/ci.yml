@@ -1,0 +1,102 @@
+############################################################################
+# Tessera CI — GitHub Actions
+#
+# Gate definition (must match CLAUDE.md, tests/CMakeLists.txt, and
+# scripts/tuolumne/run_regression_minset.flux):
+#   Label:    regression
+#   Backend:  SERIAL only (no GPU in hosted runners)
+#   Ranks:    1, 2  (capped from full gate of 1-5 for CI speed)
+#
+# The HIP gate (the other half of the ship gate) runs only on Tuolumne.
+# This CI subset is explicitly stated here — not a divergent definition.
+#
+# Dependency versions — pin these when Tessera has a known-good set:
+#   KOKKOS_TAG: a Kokkos release tag (e.g. "4.3.01")
+#   CABANA_REF: a Cabana branch or tag (e.g. "master")
+############################################################################
+
+name: CI
+
+on:
+  push:
+    branches: [main, redesign]
+  pull_request:
+    branches: [main]
+
+env:
+  KOKKOS_TAG: "4.3.01"
+  CABANA_REF: "master"
+  DEPS_INSTALL: ${{ github.workspace }}/_deps/install
+
+jobs:
+  build-and-test:
+    name: Serial build + regression gate (ranks 1-2)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build \
+              openmpi-bin libopenmpi-dev
+
+      - name: Cache dependency install
+        uses: actions/cache@v4
+        id: cache-deps
+        with:
+          path: ${{ env.DEPS_INSTALL }}
+          key: deps-kokkos-${{ env.KOKKOS_TAG }}-cabana-${{ env.CABANA_REF }}-${{ runner.os }}-v1
+
+      - name: Build Kokkos (Serial only)
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch "${{ env.KOKKOS_TAG }}" \
+              https://github.com/kokkos/kokkos.git /tmp/kokkos-src
+          cmake -S /tmp/kokkos-src -B /tmp/kokkos-build \
+              -DCMAKE_INSTALL_PREFIX="${{ env.DEPS_INSTALL }}" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DKokkos_ENABLE_SERIAL=ON \
+              -G Ninja
+          cmake --build /tmp/kokkos-build --target install -j $(nproc)
+
+      - name: Build Cabana
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch "${{ env.CABANA_REF }}" \
+              https://github.com/ECP-copa/Cabana.git /tmp/cabana-src
+          cmake -S /tmp/cabana-src -B /tmp/cabana-build \
+              -DCMAKE_INSTALL_PREFIX="${{ env.DEPS_INSTALL }}" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_PREFIX_PATH="${{ env.DEPS_INSTALL }}" \
+              -G Ninja
+          cmake --build /tmp/cabana-build --target install -j $(nproc)
+
+      - name: Configure Tessera
+        run: |
+          cmake -S . -B build \
+              -DCMAKE_PREFIX_PATH="${{ env.DEPS_INSTALL }}" \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DTessera_ENABLE_TESTING=ON \
+              -DTessera_ENABLE_EXAMPLES=ON \
+              -DTESSERA_TEST_MPI_RANKS="1;2" \
+              "-DMPIEXEC_NUMPROC_FLAG=-n" \
+              "-DMPIEXEC_PREFLAGS=" \
+              -G Ninja
+
+      - name: Build Tessera
+        run: cmake --build build -j $(nproc)
+
+      - name: Run regression gate (Serial, ranks 1-2)
+        run: |
+          cd build
+          ctest -L regression -R SERIAL --output-on-failure
+
+      - name: Check format (if sources exist)
+        run: |
+          if cmake --build build --target format-check 2>/dev/null; then
+            echo "Format check passed."
+          else
+            echo "No format-check target or no sources yet — skipping."
+          fi

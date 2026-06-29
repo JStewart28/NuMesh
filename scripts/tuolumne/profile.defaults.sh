@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 ############################################################################
 # Copyright (c) 2024, JStewart28                                           #
 # All rights reserved.                                                     #
@@ -10,22 +9,17 @@
 # SPDX-License-Identifier: BSD-3-Clause                                    #
 ############################################################################
 #
-# Configure Tessera for a local workstation (Serial + OpenMP; no GPU).
+# Tuolumne committed defaults for Tessera.
+# Sourced automatically by scripts/lib/tessera_env.sh.
 #
-# Usage (run from a build directory OR from the repo root):
-#   mkdir build-local && cd build-local
-#   bash ../run_cmake.sh [-DCMAKE_PREFIX_PATH=<deps>] [extra cmake args]
-#
-# Dependencies (Kokkos, Cabana, MPI) must be installed and findable via
-# CMAKE_PREFIX_PATH or your system package manager.
+# To override for your checkout, create scripts/tuolumne/profile.local.sh
+# (gitignored). Never edit this file for personal settings.
 
-set -euo pipefail
+# Build mode: only manual is active (no spack package for Tessera yet).
+TESSERA_BUILD_MODE="${TESSERA_BUILD_MODE:-manual}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Spack environment path.
+TESSERA_SPACK_ENV="${TESSERA_SPACK_ENV:-${HOME}/spack_envs/tuolumne_trilinos/}"
 
-cmake \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DTessera_ENABLE_TESTING=ON \
-    -DTessera_ENABLE_EXAMPLES=ON \
-    "$@" \
-    "${SCRIPT_DIR}"
+# Out-of-tree build directory.
+TESSERA_BUILD_DIR="${TESSERA_BUILD_DIR:-${TESSERA_REPO}/build-tuolumne}"

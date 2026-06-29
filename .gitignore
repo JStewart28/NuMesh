@@ -2,6 +2,9 @@
 build*
 .vscode
 
+# Per-checkout build profile overrides — never commit these
+scripts/**/profile.local.sh
+
 # Prerequisites
 *.d
 

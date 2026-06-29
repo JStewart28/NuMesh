@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 ############################################################################
 # Copyright (c) 2024, JStewart28                                           #
 # All rights reserved.                                                     #
@@ -9,23 +8,6 @@
 #                                                                          #
 # SPDX-License-Identifier: BSD-3-Clause                                    #
 ############################################################################
-#
-# Configure Tessera for a local workstation (Serial + OpenMP; no GPU).
-#
-# Usage (run from a build directory OR from the repo root):
-#   mkdir build-local && cd build-local
-#   bash ../run_cmake.sh [-DCMAKE_PREFIX_PATH=<deps>] [extra cmake args]
-#
-# Dependencies (Kokkos, Cabana, MPI) must be installed and findable via
-# CMAKE_PREFIX_PATH or your system package manager.
 
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-cmake \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DTessera_ENABLE_TESTING=ON \
-    -DTessera_ENABLE_EXAMPLES=ON \
-    "$@" \
-    "${SCRIPT_DIR}"
+add_executable(hello_tessera hello_tessera.cpp)
+target_link_libraries(hello_tessera PRIVATE Tessera::Tessera)
