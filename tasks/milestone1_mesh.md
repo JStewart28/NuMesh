@@ -162,3 +162,24 @@ migration path).
     returns 0); verifies global conservation, correct landing rank, payload
     integrity, no duplicates. All 16 unit tests pass (incl. migrate np1–5 on HIP).
     **Next:** Step 4b (HaloExchangePlan + field-sync + topology-exchange).
+- 2026-07-01 — **Step 4b landed (Opus).** Halo substrate:
+  - `Tessera_AllToAllV.hpp` — `allToAllV<T>(comm, send)`: variable-arity neighbour
+    topology exchange (Alltoall counts + Alltoallv bytes), host-side; the primitive
+    Step 5 uses to advertise boundary gids/keys and build ghosts / discover sharing
+    sets. Result groups received items by source rank. `T` trivially copyable.
+  - `Tessera_HaloExchange.hpp` — `HaloExchangePlan<Mem>` (per-peer send/recv index
+    maps grouped by peer + offsets, persistent registered pools, `clear()`,
+    `setFromHost()` which drops self-peer; **alignment contract**: builder orders
+    shared entities by gid on both sides so pack/unpack align) and
+    `haloExchange(comm, aosoa, plan)` — whole-tuple field sync (syncs the entire
+    field pack of every ghost from its owner), in place (no resize), GPU-resident,
+    self-peer never posted. Invalidation invariant documented: any local-count/
+    ghost-set change → rebuild before next sync.
+  - Test `tests/test_halo.cpp` (unit, SERIAL+HIP, np1–5): allToAllV variable-length
+    correctness; ring halo (send owned→rank+1, fill ghosts←rank-1) verifying every
+    ghost gets the owner's whole tuple, owned untouched, np1 empty-plan no-op. All
+    26 unit tests pass.
+  - Gotcha fixed: `Kokkos::view_alloc(WithoutInitializing, label)` with a
+    `const char*` variable is misread as a wrap-user-memory pointer; wrap in
+    `std::string(label)`. **Next:** Step 5 (distributed mesh + ownership + 1-deep
+    halo build).

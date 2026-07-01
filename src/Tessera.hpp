@@ -15,8 +15,10 @@
 // Umbrella header for the Tessera distributed unstructured triangle-mesh
 // library.
 
+#include "Tessera_AllToAllV.hpp"
 #include "Tessera_CsrAdjacency.hpp"
 #include "Tessera_Fields.hpp"
+#include "Tessera_HaloExchange.hpp"
 #include "Tessera_Icosphere.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_MeshBuilder.hpp"

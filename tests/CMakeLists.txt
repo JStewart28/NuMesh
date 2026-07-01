@@ -167,3 +167,20 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_migrate.cpp
 )
+
+# Halo primitives: allToAllV neighbour topology exchange + HaloExchangePlan
+# whole-tuple field sync (ring halo) over 1-5 ranks.
+tessera_add_test(
+    NAME     halo
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_halo.cpp
+)
+tessera_add_test(
+    NAME     halo
+    BACKEND  HIP
+    TIER     unit
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_halo.cpp
+)
