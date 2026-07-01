@@ -10,3 +10,6 @@ BreakConstructorInitializersBeforeComma: true
 PointerAlignment: Left
 AlwaysBreakAfterReturnType: None
 KeepEmptyLinesAtTheStartOfBlocks: false
+# Do not reflow/rewrap comment text: it mangles hand-aligned comment blocks
+# (e.g. multi-column template-parameter docs). Authors control comment wrapping.
+ReflowComments: false

@@ -91,3 +91,36 @@ migration path).
   midpoint for `position` + linear average for user fields, with a per-field override
   hook for a later curvature-aware/physics-correct rule. No code yet; Step 2 remains
   the next action.
+- 2026-07-01 — **Step 2 landed (Opus; Sonnet delegation unavailable this env — the
+  `sonnet` alias 403s for this subscription and raw model ids are rejected, so all
+  steps run on Opus; the Sonnet/Opus column is advisory here).** Core data model
+  implemented header-first under `src/` (flat `Tessera_*.hpp`, included as
+  `<Tessera_Mesh.hpp>` per the README):
+  - `Tessera_Types.hpp` — `GlobalId`/`LocalIndex`; structured `Key<N>` (EdgeKey=Key<2>,
+    FaceKey=Key<3>) with order-invariant `makeEdgeKey`/`makeFaceKey`, device-callable.
+    **Key-scheme decision resolved:** the 128-bit key is the cross-rank *matching
+    identity* (side table); the 64-bit gid is the persistent identity; midpoint gid
+    *assignment* (local exscan interior + owner-broadcast on boundary) is deferred to
+    Step 6, which keeps keys bounded at Key<2>/Key<3> across refinement depth.
+  - `Tessera_Fields.hpp` — core member layouts + `MemberTypesCat` to append the
+    compile-time user field pack; named core slice indices (`VertexField::*` etc.) and
+    `userVertexField<M>()`/`userEdgeField`/`userFaceField` for user slices.
+  - `Tessera_CsrAdjacency.hpp` — CSR 1-ring container (built Step 3).
+  - `Tessera_Mesh.hpp` — `Mesh<Scalar, int Dim=3, VUser, EUser, FUser, Mem, Exec>`
+    skeleton: 3 AoSoAs, CSR members, key side tables, slice/resize/accessors.
+  - Umbrella `Tessera.hpp`.
+  Unit tests `tests/test_keys.cpp` + `tests/test_data_model.cpp` (self-contained, no
+  gtest) run host **Serial** and device **Default(HIP)**, for **double and float**,
+  incl. a **Dim=2** build; wired via `tessera_add_test` (unit tier, SERIAL+HIP, np1).
+  All 4 pass. Build: `run_cmake_toulumne.sh` + make (SERIAL+HIP compile clean);
+  `format-check` clean.
+  - **Env fix (reach-Flux-tasks):** Cray `CC` links libsci and ROCm dlopens large-TLS
+    libs → every binary aborted at load with *"libsci_cray_mp.so.6: cannot allocate
+    memory in static TLS block"*. Fixed by `export
+    GLIBC_TUNABLES=glibc.rtld.optional_static_tls=8388608` in
+    `scripts/tuolumne/runtime_env.sh` (LD_PRELOAD of libsci does NOT fix it and breaks
+    flux itself; the tunable is the right remedy).
+  - **Dev runner:** `scripts/tuolumne/run_unit_tests.flux` submits a ctest label to the
+    pdebug queue via `flux batch` (login nodes can't `flux run` directly). Requires
+    `export TESSERA_REPO=$(pwd)` before submit. Not a release artifact (Step 9
+    formalizes runners). **Next:** Step 3 (serial icosphere builder + connectivity).

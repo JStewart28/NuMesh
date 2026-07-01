@@ -93,32 +93,42 @@ macro(tessera_add_test)
 endmacro()
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
-# No tests yet — add tessera_add_test() calls here as features are implemented.
 #
-# Regression example (uncomment and adapt):
-#
-# tessera_add_test(
-#     NAME     mesh_partition
-#     BACKEND  SERIAL
-#     TIER     regression
-#     RANKS    ${TESSERA_TEST_MPI_RANKS}
-#     SOURCES  test_mesh_partition.cpp
-# )
-#
-# tessera_add_test(
-#     NAME     mesh_partition
-#     BACKEND  HIP
-#     TIER     regression
-#     RANKS    ${TESSERA_TEST_MPI_RANKS}
-#     SOURCES  test_mesh_partition.cpp
-# )
-#
-# Unit test example (single rank, no backend suffix requirement):
-#
-# tessera_add_test(
-#     NAME     partition_utils
-#     BACKEND  SERIAL
-#     TIER     unit
-#     RANKS    "1"
-#     SOURCES  test_partition_utils.cpp
-# )
+# Step 2 (core data model) unit tests. Each source internally exercises BOTH the
+# host (Kokkos::Serial) and device (Kokkos::DefaultExecutionSpace, = HIP on
+# Tuolumne) execution spaces, so the SERIAL- and HIP-labelled registrations run
+# the same coverage; the label selects which the gate/ctest filter picks up.
+# Single rank (no MPI decomposition exercised until Step 5).
+
+# Structured-key (EdgeKey/FaceKey) determinism.
+tessera_add_test(
+    NAME     keys
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_keys.cpp
+)
+tessera_add_test(
+    NAME     keys
+    BACKEND  HIP
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_keys.cpp
+)
+
+# Core data model: Mesh construction + core/user field-pack slices (double+float,
+# Dim=3 and Dim=2).
+tessera_add_test(
+    NAME     data_model
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_data_model.cpp
+)
+tessera_add_test(
+    NAME     data_model
+    BACKEND  HIP
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_data_model.cpp
+)

@@ -1,0 +1,23 @@
+/****************************************************************************
+ * Copyright (c) 2024, JStewart28                                           *
+ * All rights reserved.                                                     *
+ *                                                                          *
+ * This file is part of the Tessera library. Tessera is distributed under a *
+ * BSD 3-Clause license. For the licensing terms see the LICENSE file in   *
+ * the top-level directory.                                                 *
+ *                                                                          *
+ * SPDX-License-Identifier: BSD-3-Clause                                    *
+ ****************************************************************************/
+
+#ifndef TESSERA_HPP
+#define TESSERA_HPP
+
+// Umbrella header for the Tessera distributed unstructured triangle-mesh
+// library.
+
+#include "Tessera_CsrAdjacency.hpp"
+#include "Tessera_Fields.hpp"
+#include "Tessera_Mesh.hpp"
+#include "Tessera_Types.hpp"
+
+#endif // TESSERA_HPP

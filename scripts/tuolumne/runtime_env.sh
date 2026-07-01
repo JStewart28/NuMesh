@@ -24,6 +24,15 @@ export FI_CXI_ATS=0
 export HSA_XNACK=1
 export MPICH_SMP_SINGLE_COPY_MODE=NONE
 
+# Enlarge glibc's surplus static-TLS block. The Cray CC wrapper links libsci
+# (libsci_cray_mp), and the ROCm/HIP runtime dlopens libraries with sizeable
+# thread-local storage; on this toolchain that overflows the default static-TLS
+# surplus and aborts every binary at load with
+#   "libsci_cray_mp.so.6: cannot allocate memory in static TLS block".
+# Raising the surplus fixes it and is harmless otherwise. Must reach the Flux
+# task environment (this file does).
+export GLIBC_TUNABLES=glibc.rtld.optional_static_tls=8388608
+
 # OpenMP thread placement (also used by the OpenMP backend; harmless for Serial).
 export OMP_NUM_THREADS=24
 export OMP_PROC_BIND=close
