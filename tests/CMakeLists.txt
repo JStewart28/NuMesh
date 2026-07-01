@@ -223,6 +223,25 @@ tessera_add_test(
     SOURCES  test_distribute.cpp
 )
 
+# Mesh migration + general (non-replicated) 1-deep halo rebuild (Step 7):
+# external face assignment lands entities on requested ranks, ownership is a
+# partition, every owned vertex's 1-ring is local, rank-count-independent topology
+# checksum preserved, ghost halo sync. The general ghost builder deferred from 6b.
+tessera_add_test(
+    NAME     migrate_mesh
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_migrate_mesh.cpp
+)
+tessera_add_test(
+    NAME     migrate_mesh
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_migrate_mesh.cpp
+)
+
 # Distributed 2:1-balanced refinement (Step 6b): cross-rank midpoint-gid
 # agreement, 2:1 level invariant, owned-only Euler (uniform), fixpoint
 # termination (adaptive). Owned-entity invariants; halo rebuild is Step 7.

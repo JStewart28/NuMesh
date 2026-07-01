@@ -202,18 +202,25 @@ overridden per field with `if constexpr` on `M`.
 Load balancing is **optional**; building, haloing, and refining never require it.
 The public contract is **migration**, not partitioning:
 
-- `mesh.migrate(dest_rank_per_owned_face)` applies an externally-computed assignment
-  through the hand-built comm layer: faces move to their destination ranks, their
-  vertices/edges follow, the whole field pack rides along, and ownership + the halo
-  plan are rebuilt. Read accessors (`ownedFaceCentroids()`, `ownedFaceGids()`,
-  `ownedFaceWeights()`) let an external partitioner compute the assignment. This is
-  the path **Canopy** uses to drive redistribution from its FMM-tree partition,
-  avoiding an intermediate Tessera↔Canopy migration.
-- `mesh.loadBalance()` is a thin convenience wrapper: it runs Zoltan2 geometric
-  **MultiJagged** on face centroids (weight = per-face work / AMR descendant count),
-  deterministically (solve on rank 0, `MPI_Bcast` the assignment — RCB is avoided as
-  it breaks on Tuolumne), then calls the **same** `migrate()`. There is no separate
-  internal-vs-external migration code path.
+- `Tessera::migrate(mesh, halo, dest_rank_per_owned_face)` applies an externally-
+  computed assignment through the hand-built comm layer: faces move to their
+  destination ranks, their vertices/edges follow, the whole field pack rides along,
+  ownership is recomputed (lowest-rank), and a fresh 1-deep ghost layer + halo plans
+  are rebuilt. Read accessors (`ownedFaceCentroids(mesh)`, `ownedFaceGids(mesh)`,
+  `ownedFaceWeights(mesh)`) let an external partitioner compute the assignment. This
+  is the path **Canopy** uses to drive redistribution from its FMM-tree partition,
+  avoiding an intermediate Tessera↔Canopy migration. Unlike `distribute()`,
+  `migrate()` assumes **no replicated knowledge** — every rank holds only its own
+  entities, so ownership and the ghost set are discovered by communication (whole
+  Cabana tuples travel over `allToAllV`; ownership and ghost-face discovery route
+  through per-gid vertex/edge coordinators). This is the **general (non-replicated)
+  ghost builder** that distributed `refine()` (Step 6b) deferred.
+- `Tessera::loadBalance(mesh, halo)` *(planned — Step 7b)* is a thin convenience
+  wrapper: it runs Zoltan2 geometric **MultiJagged** on face centroids (weight =
+  per-face work / AMR descendant count), deterministically (solve on rank 0,
+  `MPI_Bcast` the assignment — RCB is avoided as it breaks on Tuolumne), then calls
+  the **same** `migrate()`. There is no separate internal-vs-external migration code
+  path.
 
 ### Parallel I/O
 
@@ -246,13 +253,13 @@ auto vort = mesh.slice<Tessera::Field::Vorticity>();   // typed Cabana slice
 // ... fill/evolve owned vertices ...
 mesh.haloExchange();                          // refresh ghosts (whole field pack)
 
-mesh.refine( face_refine_mask );              // conforming 2:1 split refinement
+Tessera::refine( mesh, halo, face_refine_mask ); // conforming 2:1 split refinement
 
-mesh.loadBalance();                           // internal Zoltan2 (optional)
+Tessera::loadBalance( mesh, halo );           // internal Zoltan2 (optional, Step 7b)
 // or, external (e.g. Canopy-driven):
-//   auto c = mesh.ownedFaceCentroids();
-//   std::vector<int> dest = external_partition( c );
-//   mesh.migrate( dest );
+//   auto c = Tessera::ownedFaceCentroids( mesh );
+//   std::vector<Tessera::Rank> dest = external_partition( c );
+//   Tessera::migrate( mesh, halo, dest );
 
 Tessera::writeHDF5( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
 ```
@@ -317,9 +324,12 @@ make -j $(nproc)
 
 - **A distributed mesh must be re-haloed after `refine()` before `haloExchange()`.**
   Distributed `refine()` (Step 6b) leaves each rank holding only its refined *owned*
-  entities and clears the halo; the general (non-replicated) halo rebuild lands in
-  Step 7. Calling `haloExchange()` in between is a no-op on an empty plan, not a
-  correctly-synced ghost layer. Predates I/O work; tracked for Step 7.
+  entities and clears the halo. The general (non-replicated) halo rebuild now exists
+  (Step 7, inside `migrate()`), but it is currently coupled to `migrate()` and is not
+  yet invoked automatically at the end of `refine()`; calling `haloExchange()` on a
+  freshly-refined-but-not-migrated mesh is a no-op on an empty plan, not a synced
+  ghost layer. Factoring the rebuild into a standalone `rebuildHalo()` that `refine()`
+  also calls is a tracked follow-up.
 - **Adaptive `refine()` is non-conforming (bounded hanging nodes).** A partial
   refine mask leaves T-junctions bounded to a 2:1 level jump; the owned-only Euler
   number equals 2 only for a uniform (conforming) refine. Green-closure to a fully

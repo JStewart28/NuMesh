@@ -23,6 +23,7 @@
 #include "Tessera_Icosphere.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_MeshBuilder.hpp"
+#include "Tessera_MeshMigrate.hpp"
 #include "Tessera_Migrate.hpp"
 #include "Tessera_Refine.hpp"
 #include "Tessera_RefineParallel.hpp"

@@ -289,3 +289,52 @@ migration path).
     (marks only turn on), not literally strictly-decreasing; termination is by mark
     saturation + Allreduce==0, cap is a backstop. **Next:** Step 7 (migration API +
     general halo rebuild + optional Zoltan2 LB).
+- 2026-07-01 — **Step 7 core landed (Opus). Third regression-tier test.** Migration
+  API + the general (non-replicated) 1-deep halo rebuild:
+  - **Scope decision (user-approved):** land `migrate()` + the general ghost builder
+    + read accessors now, tested at ranks 1–5; **defer the Zoltan2 internal
+    `loadBalance()` to a 7b commit** so the Trilinos-link dependency-surface change is
+    isolated from the core algorithmic work. `migrate()` is the actual public contract
+    (Canopy drives it externally; Zoltan2 is the optional, thin wrapper).
+  - `src/Tessera_MeshMigrate.hpp` — `migrate(mesh, halo, dest)` (dest indexed by
+    owned face local index). Unlike `distribute()` (Step 5), it assumes **no
+    replicated mesh**: every rank holds only its own entities, so ownership and the
+    ghost set are discovered by communication. This is the **general ghost builder
+    deferred from Step 6b**. Host-orchestrated over `allToAllV` (like `distribute`);
+    entity payloads travel as whole Cabana tuples wrapped in a fixed-size
+    `TupleBlob` (Cabana::Tuple is **not** `is_trivially_copyable`, so it can't go
+    through `allToAllV` directly — memcpy'd byte image does, matching the assumption
+    the device migrate primitive already makes with `MPI_Type_contiguous`). Four
+    rounds: (A) move each owned face + its 3 vertices + 3 edges to `dest`; (B)
+    ownership (lowest-rank) + ghost discovery via per-gid vertex/edge coordinators
+    (`gid % size`) — the vertex coordinator returns to a vertex's owner the list of
+    incident faces owned by *other* ranks; (C) each vertex owner fetches those remote
+    ghost faces (+ their 3 vertex/edge tuples, owners stamped by the sender who knows
+    them); (D) assemble owned-first local AoSoAs, rebuild the vertex CSR + key side
+    tables + the three halo plans via the existing `buildKindPlan`. Read accessors
+    `ownedFaceCentroids/Gids/Weights(mesh)` for external partitioners (weights = 1.0
+    per leaf face for now).
+  - **Ordering that avoids phantom sends (report-back):** the halo plan's alignment
+    contract is satisfied by ordering owned-first then ghost, each **ascending by
+    gid**, on every kind — `buildKindPlan`'s send side is discovered by the ghoster
+    advertising gids to the owner (`allToAllV`), and both sides visit a peer pair's
+    entities in ascending-gid order, so pack/unpack align with no extra metadata (same
+    contract as Step 5). Ghost entity owners are resolved once at the vertex/edge
+    coordinator and **stamped into the tuple by the sending owner** before the ghost
+    fetch, so a rank that holds an entity only as a ghost still learns its true owner
+    without a second query.
+  - **Deviation from the plan's "faces move via 4a" wording:** the mesh-level migrate
+    is host-orchestrated (multi-destination vertex/edge follow + ghost rebuild can't
+    be expressed by the single-destination device primitive). The Step-4a device
+    `migrate()` remains the tested building block for pure single-dest AoSoA moves.
+  - Test `tests/test_migrate_mesh.cpp` (**regression**, SERIAL+HIP, np1–5): distribute
+    subdiv-3, then two external assignments — (A) per-gid hash re-partition: every
+    owned face lands on the hash-requested rank; (B) global rotation `(rank+1)%size`
+    of the whole partition. After each: ownership is a partition (Σ owned == global
+    V/E/F), every owned vertex's 1-ring is local, the rank-count-independent topology
+    checksum is **unchanged** from the post-distribute mesh, and a corrupt→sync→verify
+    halo exchange restores every ghost. **Regression 30/30, unit 28/28**,
+    `format-check` clean.
+  - **Next:** Step 7b (Zoltan2 `loadBalance()`: link Trilinos/Zoltan2, gather
+    centroids to rank 0 → MultiJagged → `MPI_Bcast` → `migrate()`; internal-path
+    balance-improvement test), then Step 0 (HDF5 spack env) right before Step 8.
