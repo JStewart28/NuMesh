@@ -45,20 +45,25 @@ boundaries for free. (Topology surgery — pinch-off, edge collapse/flip — is
 milestone 2+ and out of scope here, but the data model leaves room for it, including
 an optional per-entity `component_id`.)
 
-### Templated precision
+### Templated precision and embedding dimension
 
-The mesh is templated on its **scalar type** — the user chooses the floating-point
-precision; Tessera never hard-codes `double`:
+The mesh is templated on its **scalar type** and its **coordinate embedding
+dimension** — the user chooses the floating-point precision (Tessera never
+hard-codes `double`) and the ambient dimension (`Dim`, default 3):
 
 ```cpp
-template <class Scalar,
+template <class Scalar, int Dim = 3,
           class VertexFields, class EdgeFields, class FaceFields,
           class MemorySpace, class ExecutionSpace>
 class Mesh;
 ```
 
-Coordinates and all user field data use `Scalar`. Global identifiers and local
-indices are integer-typed independent of `Scalar` (see *Global IDs*).
+Coordinates and all user field data use `Scalar`; `position` is `Scalar[Dim]`.
+Milestone 1 uses `Dim=3` (a closed surface lives in ℝ³); templating `Dim` keeps a
+planar 2D triangle mesh (`Dim=2`) expressible later with no retrofit. All
+coordinate-dependent paths (Zoltan2 centroid, normals/area, I/O) are written against
+`Dim`. Global identifiers and local indices are integer-typed independent of `Scalar`
+and `Dim` (see *Global IDs*).
 
 ### Data model — AoSoA layout
 
@@ -69,7 +74,7 @@ Per entity kind, Tessera stores two Cabana AoSoAs:
 
    | Entity | Core fields |
    |---|---|
-   | Vertex | `gid`, `owner`, `flags`, `position` (`Scalar[3]`, mandatory) |
+   | Vertex | `gid`, `owner`, `flags`, `position` (`Scalar[Dim]`, mandatory) |
    | Edge | `gid`, `owner`, `level`, `v[2]` (vertex gids), `f[2]` (face gids) |
    | Face | `gid`, `owner`, `level`, `v[3]` (vertex gids), `e[3]` (edge gids) |
 
@@ -79,7 +84,8 @@ Per entity kind, Tessera stores two Cabana AoSoAs:
 Variable-valence vertex adjacency (`vertex → edges/faces`) is held in **CSR side
 arrays** (offsets + neighbor lists), not in the AoSoA, so the AoSoA slices stay
 fixed-arity and vectorizable. `position` is a core vertex field (not user data)
-because the partitioner centroid, I/O, and local operators all require it.
+because the partitioner centroid, I/O, and local operators all require it. (For a
+`Dim`-dimensional embedding, `position` is `Scalar[Dim]`.)
 
 This design is sized for **100M+ entities** and leaves room for collapse/flip later.
 
@@ -96,7 +102,7 @@ using VFields = Tessera::VertexFields<Tessera::Field::Vorticity /*Scalar[2]*/>;
 using FFields = Tessera::FaceFields  <Tessera::Field::Curvature  /*Scalar*/>;
 using EFields = Tessera::EdgeFields  <>;
 
-using MeshT = Tessera::Mesh<double, VFields, EFields, FFields,
+using MeshT = Tessera::Mesh<double, /*Dim=*/3, VFields, EFields, FFields,
                             Kokkos::HIPSpace, Kokkos::HIP>;
 ```
 
@@ -152,6 +158,16 @@ refine decision is a pure function of gids + levels (synced each iteration), so 
 ranks agree, and the structured midpoint keys guarantee a shared edge refines
 identically on both sides. (Edge collapse/flip is out of scope.)
 
+**Midpoint placement is a pluggable interpolation policy.** The default sets a new
+midpoint vertex's `position` to the linear edge midpoint `0.5·(p(v0)+p(v1))` and
+every user field to the linear average of the two endpoints. A **per-field override
+hook** lets a curvature-aware geometric scheme (e.g. modified Butterfly, which the
+1-deep halo's 1-ring makes available) or a physics-correct field rule (e.g. a
+vorticity/sheet-strength conservation rule from the reference solver) be substituted
+without touching the topology/refinement machinery. Initial icosphere *generation*
+separately projects new vertices onto the sphere — that is a generation step, not
+AMR.
+
 ### Load balancing — optional, external-first
 
 Load balancing is **optional**; building, haloing, and refining never require it.
@@ -190,7 +206,8 @@ checksum is independent of rank count.
 ```cpp
 #include <Tessera_Mesh.hpp>
 
-using MeshT = Tessera::Mesh<double, VFields, EFields, FFields, MemSpace, ExecSpace>;
+using MeshT = Tessera::Mesh<double, /*Dim=*/3, VFields, EFields, FFields,
+                            MemSpace, ExecSpace>;
 
 MeshT mesh( MPI_COMM_WORLD );
 mesh.buildIcosphere( /*subdivisions=*/3 );   // initial coarse closed surface
