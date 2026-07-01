@@ -222,3 +222,21 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_distribute.cpp
 )
+
+# Distributed 2:1-balanced refinement (Step 6b): cross-rank midpoint-gid
+# agreement, 2:1 level invariant, owned-only Euler (uniform), fixpoint
+# termination (adaptive). Owned-entity invariants; halo rebuild is Step 7.
+tessera_add_test(
+    NAME     refine_parallel
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_refine_parallel.cpp
+)
+tessera_add_test(
+    NAME     refine_parallel
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_refine_parallel.cpp
+)

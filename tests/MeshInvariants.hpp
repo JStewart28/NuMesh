@@ -24,8 +24,10 @@
 
 #include <mpi.h>
 
+#include <map>
 #include <set>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace TesseraTest
@@ -177,6 +179,127 @@ void topologyChecksum( MeshT& mesh, unsigned long long& cv,
     cv = xorKind( ownedGids( mesh.vertices(), 0, mesh.numOwnedVertices() ) );
     ce = xorKind( ownedGids( mesh.edges(), 0, mesh.numOwnedEdges() ) );
     cf = xorKind( ownedGids( mesh.faces(), 0, mesh.numOwnedFaces() ) );
+}
+
+// ---------------------------------------------------------------------------
+// Step 6b (distributed refinement) invariants
+// ---------------------------------------------------------------------------
+
+// Global owned-only Euler number Σ_ranks( ownedV - ownedE + ownedF ). For a
+// conforming closed genus-0 surface (e.g. after a UNIFORM refine) this is 2;
+// adaptive refinement introduces bounded hanging nodes and does not preserve it.
+template <class MeshT>
+long long ownedEulerGlobal( MeshT& mesh )
+{
+    long long local = static_cast<long long>( mesh.numOwnedVertices() ) -
+                      static_cast<long long>( mesh.numOwnedEdges() ) +
+                      static_cast<long long>( mesh.numOwnedFaces() );
+    long long global = 0;
+    MPI_Allreduce( &local, &global, 1, MPI_LONG_LONG, MPI_SUM, mesh.comm() );
+    return global;
+}
+
+// Sum of an owned count across ranks (owned entities partition the global mesh).
+template <class MeshT>
+long long globalOwnedVertices( MeshT& mesh )
+{
+    long long l = static_cast<long long>( mesh.numOwnedVertices() ), g = 0;
+    MPI_Allreduce( &l, &g, 1, MPI_LONG_LONG, MPI_SUM, mesh.comm() );
+    return g;
+}
+template <class MeshT>
+long long globalOwnedEdges( MeshT& mesh )
+{
+    long long l = static_cast<long long>( mesh.numOwnedEdges() ), g = 0;
+    MPI_Allreduce( &l, &g, 1, MPI_LONG_LONG, MPI_SUM, mesh.comm() );
+    return g;
+}
+template <class MeshT>
+long long globalOwnedFaces( MeshT& mesh )
+{
+    long long l = static_cast<long long>( mesh.numOwnedFaces() ), g = 0;
+    MPI_Allreduce( &l, &g, 1, MPI_LONG_LONG, MPI_SUM, mesh.comm() );
+    return g;
+}
+
+// 2:1 balance: no edge's two incident (owned) faces differ by more than one
+// refinement level. Each face advertises (edge, level) to the edge's coordinator,
+// which compares the two incidences. Returns LOCAL fails (sum == global).
+template <class MeshT>
+int check21Balance( MeshT& mesh )
+{
+    MPI_Comm comm = mesh.comm();
+    const int size = mesh.commSize();
+    const std::size_t nof = mesh.numOwnedFaces();
+
+    Cabana::AoSoA<typename MeshT::face_member_types, Kokkos::HostSpace> hf(
+        "hf", mesh.numFaces() );
+    Cabana::deep_copy( hf, mesh.faces() );
+    auto fv = Cabana::slice<Tessera::FaceField::Verts>( hf );
+    auto fl = Cabana::slice<Tessera::FaceField::Level>( hf );
+
+    struct LvMsg
+    {
+        Tessera::EdgeKey key;
+        Tessera::Level level;
+    };
+    std::vector<std::vector<LvMsg>> send( size );
+    for ( std::size_t f = 0; f < nof; ++f )
+        for ( int k = 0; k < 3; ++k )
+        {
+            const Tessera::EdgeKey key =
+                Tessera::makeEdgeKey( fv( f, k ), fv( f, ( k + 1 ) % 3 ) );
+            send[Tessera::detail::edgeCoordRank( key, size )].push_back(
+                { key, fl( f ) } );
+        }
+    auto got = Tessera::allToAllV( comm, send );
+
+    std::map<Tessera::EdgeKey, std::vector<Tessera::Level>> byEdge;
+    for ( const auto& m : got.data )
+        byEdge[m.key].push_back( m.level );
+
+    int fails = 0;
+    for ( const auto& kv : byEdge )
+        if ( kv.second.size() == 2 )
+        {
+            const int d = static_cast<int>( kv.second[0] ) -
+                          static_cast<int>( kv.second[1] );
+            if ( d > 1 || d < -1 )
+                ++fails;
+        }
+    return fails;
+}
+
+// Cross-rank midpoint-gid agreement (the key Step-6b guarantee): every rank that
+// creates a midpoint for a shared edge must use the same gid. Each (edge, gid)
+// pair is routed to the edge's coordinator, which flags any edge seen with two
+// distinct gids. Returns LOCAL fails (sum == global).
+inline int checkMidpointAgreement(
+    MPI_Comm comm, int size,
+    const std::vector<std::pair<Tessera::EdgeKey, Tessera::GlobalId>>& mids )
+{
+    struct KG
+    {
+        Tessera::EdgeKey key;
+        Tessera::GlobalId gid;
+    };
+    std::vector<std::vector<KG>> send( size );
+    for ( const auto& kg : mids )
+        send[Tessera::detail::edgeCoordRank( kg.first, size )].push_back(
+            { kg.first, kg.second } );
+    auto got = Tessera::allToAllV( comm, send );
+
+    std::map<Tessera::EdgeKey, Tessera::GlobalId> seen;
+    int fails = 0;
+    for ( const auto& m : got.data )
+    {
+        auto it = seen.find( m.key );
+        if ( it == seen.end() )
+            seen.emplace( m.key, m.gid );
+        else if ( it->second != m.gid )
+            ++fails; // same edge, different midpoint gid across ranks
+    }
+    return fails;
 }
 
 } // namespace TesseraTest

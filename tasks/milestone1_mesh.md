@@ -247,3 +247,45 @@ migration path).
     pack makes `slice<UserBegin>` ill-formed, so any user-field access must be behind
     `if constexpr` on the member count (hit in the test helper; fixed). **Next:**
     Step 6b (parallel 2:1 balance + re-halo).
+- 2026-07-01 — **Step 6b landed (Opus). Second regression-tier test.** Distributed
+  2:1-balanced refinement:
+  - **Scope decision (user-approved):** deliver + test the #1 risk (distributed 2:1
+    balance and bit-identical cross-rank midpoint gids); **defer the post-refinement
+    halo rebuild to Step 7**, where the general (non-replicated) ghost builder is
+    shared with migration. All three acceptance invariants are owned-entity
+    properties needing no halo, so this is a clean cut.
+  - **Key architecture — edge coordinators, not the halo.** The Step-5 vertex-based
+    1-ring halo does NOT guarantee a face sees its edge-neighbour across a partition
+    boundary (verified by case analysis: the edge/vertex owner can be a *lower* rank
+    than either incident face's owner at 3-way corners), so a halo-based level sync
+    would be incomplete. Every cross-rank decision is instead routed to
+    `edgeCoordRank(EdgeKey)=hash%nranks`, which gathers an edge's two incident faces
+    from whichever ranks own them. `src/Tessera_RefineParallel.hpp`:
+    - Phase 1 — 2:1 mark-propagation fixpoint: each round advertises (EdgeKey, face
+      level+mark, gid, owner) to coordinators; coordinator flags the coarser face of
+      any edge with final-level diff ≥2; mark-requests routed back to face owners;
+      `MPI_Allreduce(changed)`; marks monotone → terminates; hard cap 256.
+    - Phase 2 — midpoint gid agreement: refining faces advertise edges; coordinator
+      sets midpoint owner = min incident refining-face owner and returns
+      (EdgeKey→owner) to participants + cosharer lists to owners; owners `MPI_Exscan`
+      a global vertex-count-based block, assign, and **send gids to cosharers** →
+      bit-identical shared midpoints with no ordering assumption.
+    - Phase 3 — local red split of owned faces (reuses 6a child ordering + policy via
+      the new `detail::blendVertexUserCross` cross-AoSoA helper), then edges
+      re-derived from owned faces with a coordinator round assigning edge owner = min
+      incident child-face owner (keeps owned counts a global partition) + edge level.
+      Leaves owned-only entities; clears the halo.
+  - `refine()` returns `RefineResult{iterations, midpoints[(EdgeKey,gid)]}` for
+    verification. New `MeshInvariants` helpers: `check21Balance`,
+    `checkMidpointAgreement`, `ownedEulerGlobal`, `globalOwned{Vertices,Edges,Faces}`.
+  - Test `tests/test_refine_parallel.cpp` (**regression**, SERIAL+HIP, np1–5):
+    *uniform* refine of distributed subdiv-2 → global owned counts == one subdivision
+    level (V+E=642, 2E+3F=1920, 4F=1280), owned Euler=2, midpoint agreement,
+    iterations==1; *adaptive* (gid%7 predicate) → midpoint agreement + 2:1 invariant
+    hold across boundaries, fixpoint terminates in cap. **Regression 20/20, unit
+    28/28**, `format-check` clean.
+  - **Report-back:** iteration counts observed — uniform=1 (nothing to propagate),
+    adaptive terminated well under the 256 cap. The changed-count is monotone-progress
+    (marks only turn on), not literally strictly-decreasing; termination is by mark
+    saturation + Allreduce==0, cap is a backstop. **Next:** Step 7 (migration API +
+    general halo rebuild + optional Zoltan2 LB).

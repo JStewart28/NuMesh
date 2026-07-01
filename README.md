@@ -168,6 +168,23 @@ without touching the topology/refinement machinery. Initial icosphere *generatio
 separately projects new vertices onto the sphere — that is a generation step, not
 AMR.
 
+The distributed driver is `Tessera::refine(mesh, halo, ownedFaceMask, policy)`. It
+enforces the 2:1 balance and assigns midpoint gids entirely through **edge
+coordinators** (the deterministic rank `hash(EdgeKey) % nranks` gathers an edge's
+two incident faces from whichever ranks own them) rather than the vertex-based
+halo, which does not guarantee a face sees its cross-boundary edge-neighbour. Three
+coordinator phases run: (1) a monotone mark-propagation fixpoint (`MPI_Allreduce`
+on the changed-count, hard iteration cap) that flags the coarser face of any edge
+whose incident final levels would differ by >1; (2) midpoint-gid assignment — each
+split edge's midpoint is owned by the lowest incident refining-face owner, gids are
+allocated in a global block via `MPI_Exscan` over the pre-refinement global vertex
+count, and the owner **sends** the gid to co-sharers, so a shared edge's midpoint is
+bit-identical on every side with no reliance on matching local order; (3) edge
+ownership (lowest incident child-face owner) so owned counts stay a global
+partition. The refined mesh is left holding each rank's owned entities; the 1-deep
+halo is **rebuilt in Step 7** (shared with migration), so `haloExchange()` must not
+run on a freshly-refined mesh until then.
+
 The single-rank building block is the free function
 `Tessera::refineLocal(mesh, faceMask, policy = DefaultRefinePolicy)`: it red-splits
 every flagged face, deduplicates each edge's midpoint by the edge's `EdgeKey`, emits
@@ -298,4 +315,16 @@ make -j $(nproc)
 
 ## Known Issues
 
-*(None documented yet.)*
+- **A distributed mesh must be re-haloed after `refine()` before `haloExchange()`.**
+  Distributed `refine()` (Step 6b) leaves each rank holding only its refined *owned*
+  entities and clears the halo; the general (non-replicated) halo rebuild lands in
+  Step 7. Calling `haloExchange()` in between is a no-op on an empty plan, not a
+  correctly-synced ghost layer. Predates I/O work; tracked for Step 7.
+- **Adaptive `refine()` is non-conforming (bounded hanging nodes).** A partial
+  refine mask leaves T-junctions bounded to a 2:1 level jump; the owned-only Euler
+  number equals 2 only for a uniform (conforming) refine. Green-closure to a fully
+  conforming triangulation is a future enhancement.
+- **Edge user fields are reset by `refine()`/`refineLocal()`.** Edges are re-derived
+  from the new face connectivity, so any per-edge user data is re-initialized (M1
+  carries no edge user state through AMR). Vertex and face user fields are preserved
+  (interpolated / inherited).

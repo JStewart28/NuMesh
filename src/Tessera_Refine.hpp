@@ -151,6 +151,54 @@ void blendVertexUserFields( VAoSoA& V, int mid, int a, int b,
     blendVertexUserImpl( V, mid, a, b, policy, std::make_index_sequence<N>{} );
 }
 
+// -- cross-AoSoA variant (distributed refine: endpoints live in the current
+//    vertex AoSoA, the midpoint is written into a freshly-built one) -----------
+
+//! Blend one vertex user member (index Mabs) of midpoint `Dst[di]` from
+//! endpoints `Src[a]`,`Src[b]` via the policy hook (component-wise for arrays).
+template <std::size_t Mabs, class Dst, class Src, class Policy>
+void blendVertexMemberCross( Dst& dst, int di, Src& src, int a, int b,
+                             const Policy& policy )
+{
+    using MT = typename Dst::member_types;
+    using FieldT = typename Cabana::MemberTypeAtIndex<Mabs, MT>::type;
+    auto d = Cabana::slice<Mabs>( dst );
+    auto s = Cabana::slice<Mabs>( src );
+    if constexpr ( std::rank<FieldT>::value == 0 )
+    {
+        d( di ) =
+            policy.template interpolateVertexField<Mabs>( s( a ), s( b ) );
+    }
+    else
+    {
+        constexpr int C = static_cast<int>( std::extent<FieldT, 0>::value );
+        for ( int c = 0; c < C; ++c )
+            d( di, c ) = policy.template interpolateVertexField<Mabs>(
+                s( a, c ), s( b, c ) );
+    }
+}
+
+template <class Dst, class Src, class Policy, std::size_t... Js>
+void blendVertexUserCrossImpl( Dst& dst, int di, Src& src, int a, int b,
+                               const Policy& policy,
+                               std::index_sequence<Js...> )
+{
+    ( blendVertexMemberCross<VertexField::UserBegin + Js>( dst, di, src, a, b,
+                                                           policy ),
+      ... );
+}
+
+//! Blend every vertex user field of midpoint `dst[di]` from endpoints
+//! `src[a]`,`src[b]` (dst and src may be distinct AoSoAs).
+template <class Dst, class Src, class Policy>
+void blendVertexUserCross( Dst& dst, int di, Src& src, int a, int b,
+                           const Policy& policy )
+{
+    constexpr std::size_t N = Dst::member_types::size - VertexField::UserBegin;
+    blendVertexUserCrossImpl( dst, di, src, a, b, policy,
+                              std::make_index_sequence<N>{} );
+}
+
 } // namespace detail
 
 //! Red (1->4) refine every face flagged in `refineFace` (indexed by local face
