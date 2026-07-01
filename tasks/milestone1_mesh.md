@@ -209,3 +209,41 @@ migration path).
     10/10, unit 26/26.
   - Ran via `flux batch scripts/tuolumne/run_unit_tests.flux regression` (the dev
     runner takes a label arg). **Next:** Step 6a (local 1→4 refinement).
+- 2026-07-01 — **Step 6a landed (Opus).** Local single-rank 1→4 red refinement:
+  - `Tessera_RefinePolicy.hpp` — `DefaultRefinePolicy<Scalar>` with two hooks:
+    `interpolatePosition(mid,a,b,dim)` (linear midpoint; **no** sphere projection —
+    projection is icosphere-generation only) and `template<std::size_t M>
+    interpolateVertexField(a,b)` (linear average of one scalar component of the vertex
+    user field at ABSOLUTE member index `M`, called per component for `Scalar[N]`).
+    **Per-field override pattern:** derive + shadow `interpolateVertexField`,
+    dispatch on `M` with `if constexpr`, else fall through to the base — exactly one
+    field's rule changes.
+  - `Tessera_Refine.hpp` — `refineLocal(mesh, faceMask, policy=Default)`. Rebuild-
+    from-face-soup: read current verts+faces (old edges ignored — re-derived),
+    create one midpoint per split edge **deduped by `EdgeKey`** (endpoint-gid pair;
+    the mechanism 6b extends across ranks — midpoint gid == new local index,
+    preserving the single-rank `gid==index` invariant), emit kept + 4-child faces,
+    then re-derive edges/CSR/edge+face key tables like the builder. **Child ordering
+    `{a,ab,ca},{b,bc,ab},{c,ca,bc},{ab,bc,ca}`** matches the icosphere subdivision, so
+    a uniform mask reproduces one subdivision level (V,E,F + Euler). **Level
+    propagation:** child faces = parent+1; kept faces unchanged; derived edge level =
+    min incident face level. Face user fields inherited from parent (compile-time
+    member copy over the user pack, `MemberTypeAtIndex` + `std::rank`/`std::extent`,
+    empty pack → no-op); edge user fields reset on refine (M1 carries no edge user
+    state through AMR — documented). Partial masks leave bounded hanging nodes for
+    Step 6b to balance.
+  - Test `tests/test_refine.cpp` (unit, SERIAL+HIP, np1): (A) uniform refine of
+    subdiv-0 → V42/E120/F80, Euler=2, every midpoint == plain endpoint average and
+    strictly interior (no projection); (B) single-face refine → exactly 3 shared
+    midpoints + 4 children spanning `{corners}∪{midpoints}`, each corner used once,
+    each midpoint shared by ≥2 siblings; (C) default policy averages a user field vs
+    a custom `if constexpr` policy overriding field 0 to a constant while position
+    stays on the default. All 28 unit tests pass (refine np1 SERIAL+HIP);
+    `format-check` clean.
+  - **Report-back (per the contract):** child vertex/edge ordering = the subdivision
+    convention above; `level` = parent+1 on child faces/edges (edge = min incident
+    face level); policy hook signature = `interpolatePosition` + per-field
+    `interpolateVertexField<M>` on absolute member index. Cabana note: an empty user
+    pack makes `slice<UserBegin>` ill-formed, so any user-field access must be behind
+    `if constexpr` on the member count (hit in the test helper; fixed). **Next:**
+    Step 6b (parallel 2:1 balance + re-halo).

@@ -185,6 +185,24 @@ tessera_add_test(
     SOURCES  test_halo.cpp
 )
 
+# Local 1->4 red refinement (Step 6a): uniform Euler/counts, partial shared
+# midpoints + child incidence, default vs custom per-field interpolation policy.
+# Single rank (parallel 2:1 balance is Step 6b).
+tessera_add_test(
+    NAME     refine
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_refine.cpp
+)
+tessera_add_test(
+    NAME     refine
+    BACKEND  HIP
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_refine.cpp
+)
+
 # ── Regression tier (ship gate: label regression x {SERIAL,HIP} x ranks 1-5) ────
 
 # Distributed mesh + deterministic ownership + 1-deep halo (Step 5). First

@@ -168,6 +168,18 @@ without touching the topology/refinement machinery. Initial icosphere *generatio
 separately projects new vertices onto the sphere — that is a generation step, not
 AMR.
 
+The single-rank building block is the free function
+`Tessera::refineLocal(mesh, faceMask, policy = DefaultRefinePolicy)`: it red-splits
+every flagged face, deduplicates each edge's midpoint by the edge's `EdgeKey`, emits
+the four children under the convention `{a,ab,ca}, {b,bc,ab}, {c,ca,bc}, {ab,bc,ca}`
+(matching the icosphere subdivision, so a uniform mask reproduces one subdivision
+level and preserves Euler), propagates `level = parent + 1` to child faces/edges, and
+re-derives edges/CSR/key tables. A partial mask leaves bounded hanging nodes for the
+parallel 2:1 balance to resolve. The interpolation policy exposes two hooks —
+`interpolatePosition(mid, a, b, dim)` and `template<std::size_t M>
+interpolateVertexField(a, b)` (absolute member index `M`, called per component) —
+overridden per field with `if constexpr` on `M`.
+
 ### Load balancing — optional, external-first
 
 Load balancing is **optional**; building, haloing, and refining never require it.
