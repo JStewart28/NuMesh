@@ -146,3 +146,19 @@ migration path).
     run passes it to the task only; flux/compiler/linker env stays clean).
     `docs/tuolumne/claude.md` updated to match. **Reconfigure required** after
     pulling: re-run `run_cmake_toulumne.sh`. **Next:** Step 4a (comm migrate).
+- 2026-07-01 — **Step 4a landed (Opus).** Migrate comm primitive:
+  - `Tessera_RegisteredBufferPool.hpp` — verbatim port of Canopy's grow-only
+    registered device pool (1.5x headroom, stable base address) into
+    `Tessera::detail`; bounds CXI NIC registration churn.
+  - `Tessera_Migrate.hpp` — `MigrateBuffers<Mem>` (persistent send/recv/idx pools)
+    + `migrate(comm, aosoa, dest, bufs)`: generalizes Canopy migrate_particles to a
+    caller-supplied per-element destination-rank array (dest(i)=owning rank).
+    Alltoall(counts) → device pack into one registered send region → whole-tuple
+    `MPI_Type_contiguous(sizeof(tuple))` Isend/Irecv → rebuild AoSoA as kept++recv.
+    Self-peer never posted to MPI; np1/no-move fast path does zero MPI (MI300A
+    self-send guard). Generic over any AoSoA tuple / Scalar, GPU-resident pack.
+  - Test `tests/test_migrate.cpp` (unit, SERIAL+HIP, **np1–5**): scatter
+    (dest=gid%size), shift (dest=(rank+1)%size, num_kept==0), identity (fast path,
+    returns 0); verifies global conservation, correct landing rank, payload
+    integrity, no duplicates. All 16 unit tests pass (incl. migrate np1–5 on HIP).
+    **Next:** Step 4b (HaloExchangePlan + field-sync + topology-exchange).

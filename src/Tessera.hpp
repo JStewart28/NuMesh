@@ -20,6 +20,8 @@
 #include "Tessera_Icosphere.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_MeshBuilder.hpp"
+#include "Tessera_Migrate.hpp"
+#include "Tessera_RegisteredBufferPool.hpp"
 #include "Tessera_Types.hpp"
 
 #endif // TESSERA_HPP

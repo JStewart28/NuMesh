@@ -149,3 +149,21 @@ tessera_add_test(
     RANKS    "1"
     SOURCES  test_connectivity.cpp
 )
+
+# Whole-tuple AoSoA migration primitive: round-trip scatter/shift/identity over
+# 1-5 ranks (conservation + payload integrity). Multi-rank, so parameterized over
+# the full rank set.
+tessera_add_test(
+    NAME     migrate
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_migrate.cpp
+)
+tessera_add_test(
+    NAME     migrate
+    BACKEND  HIP
+    TIER     unit
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_migrate.cpp
+)
