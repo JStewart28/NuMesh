@@ -100,6 +100,23 @@ class Mesh
     std::size_t numEdges() const { return _edges.size(); }
     std::size_t numFaces() const { return _faces.size(); }
 
+    // -- distributed-state counts ---------------------------------------------
+    //
+    // Convention: entities are stored owned-first. Local indices [0, numOwnedX)
+    // are owned by this rank; [numOwnedX, numX) are ghosts (owned by a neighbour
+    // and kept locally to complete the 1-deep halo). For a replicated / serial
+    // mesh every entity is owned. distribute() (Step 5) sets these; migration and
+    // refinement (Steps 6-7) update them.
+    std::size_t numOwnedVertices() const { return _n_owned_v; }
+    std::size_t numOwnedEdges() const { return _n_owned_e; }
+    std::size_t numOwnedFaces() const { return _n_owned_f; }
+    void setOwnedCounts( std::size_t nv, std::size_t ne, std::size_t nf )
+    {
+        _n_owned_v = nv;
+        _n_owned_e = ne;
+        _n_owned_f = nf;
+    }
+
     // -- resize (used by builder / distribution / refinement) -----------------
     void resizeVertices( std::size_t n ) { _vertices.resize( n ); }
     void resizeEdges( std::size_t n ) { _edges.resize( n ); }
@@ -163,6 +180,10 @@ class Mesh
     MPI_Comm _comm;
     int _rank = 0;
     int _comm_size = 1;
+
+    std::size_t _n_owned_v = 0;
+    std::size_t _n_owned_e = 0;
+    std::size_t _n_owned_f = 0;
 
     vertex_aosoa_type _vertices;
     edge_aosoa_type _edges;

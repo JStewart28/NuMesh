@@ -17,6 +17,7 @@
 
 #include "Tessera_AllToAllV.hpp"
 #include "Tessera_CsrAdjacency.hpp"
+#include "Tessera_Distribute.hpp"
 #include "Tessera_Fields.hpp"
 #include "Tessera_HaloExchange.hpp"
 #include "Tessera_Icosphere.hpp"

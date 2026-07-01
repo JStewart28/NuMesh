@@ -184,3 +184,23 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_halo.cpp
 )
+
+# ── Regression tier (ship gate: label regression x {SERIAL,HIP} x ranks 1-5) ────
+
+# Distributed mesh + deterministic ownership + 1-deep halo (Step 5). First
+# end-to-end gate test: partition -> distribute -> ownership/1-ring invariants ->
+# halo sync.
+tessera_add_test(
+    NAME     distribute
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_distribute.cpp
+)
+tessera_add_test(
+    NAME     distribute
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_distribute.cpp
+)

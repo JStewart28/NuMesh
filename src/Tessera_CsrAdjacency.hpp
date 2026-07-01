@@ -16,6 +16,9 @@
 
 #include <Kokkos_Core.hpp>
 
+#include <string>
+#include <vector>
+
 namespace Tessera
 {
 
@@ -74,6 +77,33 @@ struct CsrAdjacency
             static_cast<std::size_t>( num_entries ) );
     }
 };
+
+namespace detail
+{
+
+//! Fill a mesh CSR relation from host offset/neighbor vectors (deep-copied into
+//! the CSR's own memory space). `offsets` has size num_sources+1.
+template <class Csr>
+void fillCsr( Csr& csr, const std::vector<int>& offsets,
+              const std::vector<LocalIndex>& neighbors,
+              const std::string& label )
+{
+    const int num_sources = static_cast<int>( offsets.size() ) - 1;
+    const int num_entries = static_cast<int>( neighbors.size() );
+    csr.allocate( num_sources, num_entries, label );
+
+    auto h_off = Kokkos::create_mirror_view( csr.offsets );
+    for ( int i = 0; i <= num_sources; ++i )
+        h_off( i ) = offsets[i];
+    Kokkos::deep_copy( csr.offsets, h_off );
+
+    auto h_nbr = Kokkos::create_mirror_view( csr.neighbors );
+    for ( int i = 0; i < num_entries; ++i )
+        h_nbr( i ) = neighbors[i];
+    Kokkos::deep_copy( csr.neighbors, h_nbr );
+}
+
+} // namespace detail
 
 } // namespace Tessera
 

@@ -183,3 +183,29 @@ migration path).
     `const char*` variable is misread as a wrap-user-memory pointer; wrap in
     `std::string(label)`. **Next:** Step 5 (distributed mesh + ownership + 1-deep
     halo build).
+- 2026-07-01 — **Step 5 landed (Opus). First regression-tier test.** Distributed
+  mesh + ownership + 1-deep halo:
+  - `Mesh`: added owned-count state (`numOwned{Vertices,Edges,Faces}`,
+    `setOwnedCounts`); convention = entities stored owned-first, `[0,n_owned)` owned
+    then ghosts. Serial builder marks all-owned. `fillCsr` moved to
+    `Tessera_CsrAdjacency.hpp` (shared by builder + distribute).
+  - `Tessera_Distribute.hpp`: `facePartitionByAxis` (deterministic geometric block
+    partition — sort faces by centroid axis, tie-break gid, block into bands;
+    replicated → identical on all ranks, no comm; Zoltan2 deferred to Step 7).
+    `distribute(mesh, halo, faceOwner)`: lowest-rank ownership (vertex/edge = min
+    incident faceOwner), 1-deep local closure (local faces = owned + incident-to-
+    owned-vertex; local v/e = union over local faces), compacts to owned-first local
+    AoSoAs, rebuilds local CSR, and builds the 3 `HaloExchangePlan`s. Send side of
+    each plan discovered via `allToAllV` (advertise ghost gids to owners); recv/send
+    aligned by ghoster gid order. `MeshHalo<Mem>` holds the 3 plans;
+    `haloExchange(mesh, halo)` syncs V/E/F.
+  - `tests/MeshInvariants.hpp` (shared, Steps 5–8): `checkOwnershipPartition`
+    (Σowned==global + no gid double-owned via coordinator), `owned1RingLocal`,
+    `topologyChecksum` (rank-count-independent BXOR). LOCAL-fail convention (sum ==
+    global).
+  - `tests/test_distribute.cpp` (**regression**, SERIAL+HIP, np1–5): partition →
+    distribute → invariants → halo sync (corrupt ghosts, `haloExchange`, verify
+    restored to owner's gid/owner; owned untouched; np1 no-op). All pass: regression
+    10/10, unit 26/26.
+  - Ran via `flux batch scripts/tuolumne/run_unit_tests.flux regression` (the dev
+    runner takes a label arg). **Next:** Step 6a (local 1→4 refinement).
