@@ -38,7 +38,7 @@ Current task logs:
 
 | Task | File | Status |
 |------|------|--------|
-| Milestone 1 — distributed triangle mesh | [tasks/milestone1_mesh.md](tasks/milestone1_mesh.md) | In progress (Step 2 done) |
+| Milestone 1 — distributed triangle mesh | [tasks/milestone1_mesh.md](tasks/milestone1_mesh.md) | In progress (Step 3 done) |
 
 ---
 

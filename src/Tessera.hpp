@@ -17,7 +17,9 @@
 
 #include "Tessera_CsrAdjacency.hpp"
 #include "Tessera_Fields.hpp"
+#include "Tessera_Icosphere.hpp"
 #include "Tessera_Mesh.hpp"
+#include "Tessera_MeshBuilder.hpp"
 #include "Tessera_Types.hpp"
 
 #endif // TESSERA_HPP

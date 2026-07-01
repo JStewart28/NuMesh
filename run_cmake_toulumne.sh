@@ -41,6 +41,6 @@ cmake \
     -DTessera_PROFILING_LEVEL=2 \
     -DMPIEXEC_EXECUTABLE="$(which flux)" \
     "-DMPIEXEC_NUMPROC_FLAG=run;--ntasks" \
-    "-DMPIEXEC_PREFLAGS=--nodes=1;--exclusive;--cores-per-task=1" \
+    "-DMPIEXEC_PREFLAGS=--nodes=1;--exclusive;--cores-per-task=1;--env=GLIBC_TUNABLES=glibc.rtld.optional_static_tls=8388608" \
     "$@" \
     "${SCRIPT_DIR}"

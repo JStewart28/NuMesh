@@ -132,3 +132,20 @@ tessera_add_test(
     RANKS    "1"
     SOURCES  test_data_model.cpp
 )
+
+# Serial icosphere builder + connectivity: Euler, edge/face incidence, vertex
+# 1-ring CSR round-trip.
+tessera_add_test(
+    NAME     connectivity
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_connectivity.cpp
+)
+tessera_add_test(
+    NAME     connectivity
+    BACKEND  HIP
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_connectivity.cpp
+)

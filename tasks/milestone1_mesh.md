@@ -124,3 +124,25 @@ migration path).
     pdebug queue via `flux batch` (login nodes can't `flux run` directly). Requires
     `export TESSERA_REPO=$(pwd)` before submit. Not a release artifact (Step 9
     formalizes runners). **Next:** Step 3 (serial icosphere builder + connectivity).
+- 2026-07-01 — **Step 3 landed (Opus).** Serial builder + connectivity:
+  - `Tessera_Icosphere.hpp` — `generateIcosphere<Scalar>(subdiv)` → watertight
+    triangle soup (base icosahedron + 1→4 subdivision with shared-midpoint cache,
+    projected to the unit sphere); deterministic/replicable.
+  - `Tessera_MeshBuilder.hpp` — `buildFromTriangleSoup(mesh, soup)` /
+    `buildIcosphere(mesh, subdiv)`: derive unique edges (dedup by EdgeKey), fill
+    V/E/F AoSoAs (face convention `e[k]=edge(v[k],v[(k+1)%3])`), edge→face +
+    face→v/e, vertex→faces and vertex→edges CSR, edge/face key side tables. Host
+    derivation (ordered maps) then deep_copy into the mesh's (device) storage.
+    Serial: gid == local index (Step 5 introduces the gid→local map).
+  - Test `tests/test_connectivity.cpp` (unit, SERIAL+HIP, np1): exact V/E/F counts +
+    Euler, every edge has 2 faces, faces have 3 valid distinct v/e, both vertex CSR
+    relations round-trip (degrees 3F / 2E, membership), vertices on the unit sphere;
+    subdiv 0–3. All 6 unit tests pass.
+  - **Build/run env split fix (important, supersedes the Step-2 note):**
+    `GLIBC_TUNABLES` **segfaults the Cray linker** if present at build time, but the
+    run binaries need it. So it was REMOVED from `runtime_env.sh` (the resolver
+    sources that for builds too) and is instead injected per test task via
+    `MPIEXEC_PREFLAGS` `--env=GLIBC_TUNABLES=...` in `run_cmake_toulumne.sh` (flux
+    run passes it to the task only; flux/compiler/linker env stays clean).
+    `docs/tuolumne/claude.md` updated to match. **Reconfigure required** after
+    pulling: re-run `run_cmake_toulumne.sh`. **Next:** Step 4a (comm migrate).

@@ -29,12 +29,21 @@ invocation. Key flags:
 | `CMAKE_BUILD_TYPE` | `RelWithDebInfo` | Optimized with debug symbols |
 | `MPIEXEC_EXECUTABLE` | `$(which flux)` | ctest launches tests via flux run |
 | `MPIEXEC_NUMPROC_FLAG` | `run;--ntasks` | Flux run flag for rank count |
-| `MPIEXEC_PREFLAGS` | `--nodes=1;--exclusive;--cores-per-task=1` | Flux resource binding per test |
+| `MPIEXEC_PREFLAGS` | `--nodes=1;--exclusive;--cores-per-task=1;--env=GLIBC_TUNABLES=glibc.rtld.optional_static_tls=8388608` | Flux resource binding per test + per-task static-TLS surplus |
 
 The `MPIEXEC_*` overrides make `ctest` the single entry point: each test is
-launched as `flux run --ntasks N --nodes=1 --exclusive --cores-per-task=1 <exe>`.
-Without this, CMake's FindMPI auto-detects `srun`, which deadlocks at ≥3 ranks
-because unbound ranks contend on the MI300A APU during Kokkos::initialize.
+launched as `flux run --ntasks N --nodes=1 --exclusive --cores-per-task=1
+--env=GLIBC_TUNABLES=... <exe>`. Without the resource binding, CMake's FindMPI
+auto-detects `srun`, which deadlocks at ≥3 ranks because unbound ranks contend on
+the MI300A APU during Kokkos::initialize.
+
+The `--env=GLIBC_TUNABLES=glibc.rtld.optional_static_tls=8388608` enlarges glibc's
+surplus static-TLS block **for the launched task only**. The Cray `CC` wrapper
+links libsci and the ROCm/HIP runtime dlopens large-TLS libraries, which otherwise
+abort every binary at load with *"libsci_cray_mp.so.6: cannot allocate memory in
+static TLS block"*. It is injected here rather than in `runtime_env.sh` because the
+same variable **segfaults the Cray linker** if present in the build environment —
+so it must reach the run task without polluting the compiler/linker env.
 
 ## 3. Build command
 
