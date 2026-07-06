@@ -1,0 +1,7 @@
+spack:
+  specs:
+  - kokkos@4 +rocm amdgpu_target=gfx942
+  - cabana@master +grid +mpi +arborx +rocm amdgpu_target=gfx942
+  - hdf5 +mpi
+  - trilinos +zoltan2 +rocm amdgpu_target=gfx942 ~muelu ~ml ~ifpack2 ~ifpack ~fortran ~epetraext ~epetra ~belos ~aztec ~anasazi ~amesos2 ~amesos ldflags="-L/opt/cray/pe/mpich/9.0.1/gtl/lib" ldlibs="-lmpi_gtl_hsa"  ^kokkos +rocm amdgpu_target=gfx942 %cce
+  - googletest

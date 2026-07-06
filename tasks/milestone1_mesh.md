@@ -388,3 +388,38 @@ migration path).
     `docs/tuolumne/spack.yaml` snapshot, reconfirm the full gate still builds with
     HDF5 discoverable by CMake) right before Step 8 (parallel HDF5 + XDMF writer/
     reader).
+- 2026-07-06 — **Step 0 landed (Sonnet). Env-only, no source changes.** HDF5 for
+  the Tuolumne spack env:
+  - `hdf5 +mpi` was **already present** as a root spec in
+    `~/spack_envs/tuolumne_trilinos/spack.yaml` (added incidentally alongside an
+    earlier env edit) and resolves as an **external**: `spack find -p hdf5` →
+    `hdf5@1.14.3.7 +mpi` at `/opt/cray/pe/hdf5-parallel/1.14.3.7/crayclang/20.0`
+    (Cray's parallel HDF5 module, not a from-source spack build). No install/
+    reinstall was needed. Snapshot committed to
+    [docs/tuolumne/spack.yaml](docs/tuolumne/spack.yaml) (verbatim copy of the live
+    env file).
+  - Existing gate untouched (no rebuild needed — nothing in the mesh library or its
+    dependencies changed); Steps ≤7b remain green as last verified in the Step 7b
+    entry.
+  - **`find_package(HDF5)` gotcha for Step 8 (report-back, important):** a bare
+    `find_package(HDF5 REQUIRED COMPONENTS C)` with **no `HDF5_ROOT`/
+    `CMAKE_PREFIX_PATH` hint** silently resolves to the **wrong HDF5** — CMake
+    picks up the OS-default `/usr/lib64/libhdf5.so` (**1.10.5, serial, not
+    MPI-aware**, `HDF5_IS_PARALLEL=FALSE`) instead of the spack-external Cray
+    parallel build, because `spack env activate` does **not** add the external
+    HDF5's prefix to `CMAKE_PREFIX_PATH` (externals aren't view-linked) and the
+    Cray `h5cc` compiler-wrapper probe fails (`"HDF5 C compiler wrapper is unable
+    to compile a minimal HDF5 program"`, non-fatal, CMake falls back to searching
+    default paths). Verified experimentally: passing
+    `-DHDF5_ROOT=/opt/cray/pe/hdf5-parallel/1.14.3.7/crayclang/20.0` makes CMake
+    resolve the correct `1.14.3`/`HDF5_IS_PARALLEL=TRUE` build. **Step 8 must**
+    either set `HDF5_ROOT` (or `CMAKE_PREFIX_PATH`) explicitly — e.g. via
+    `spack location -i hdf5` piped into `run_cmake_toulumne.sh` — or add an
+    explicit check that `HDF5_IS_PARALLEL` is `TRUE` after `find_package`, so a
+    silent fallback to the serial system HDF5 fails loudly instead of building
+    a broken (non-parallel) I/O path. **Next:** Step 8 (parallel HDF5 + XDMF
+    writer + round-trip reader) — needs an **Opus scoping pass first** (dataset
+    layout + XDMF schema design per the Step-8 "Model" column: "Sonnet, layout
+    Opus-spec'd"): Opus should design the HDF5 dataset layout, the XDMF schema,
+    and the `HDF5_ROOT` discovery fix above, record it in this file, then a
+    Sonnet session implements against that spec.
