@@ -278,3 +278,21 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_loadbalance.cpp
 )
+
+# Parallel HDF5 + XDMF writer/reader round-trip (Step 8): write -> read ->
+# compare topology + user-field checksums, on-disk gid checksum independent
+# of rank count, and a post-read corrupt/haloExchange ghost-restoration check.
+tessera_add_test(
+    NAME     io
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_io.cpp
+)
+tessera_add_test(
+    NAME     io
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_io.cpp
+)

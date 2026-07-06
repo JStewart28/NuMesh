@@ -423,3 +423,423 @@ migration path).
     Opus-spec'd"): Opus should design the HDF5 dataset layout, the XDMF schema,
     and the `HDF5_ROOT` discovery fix above, record it in this file, then a
     Sonnet session implements against that spec.
+- 2026-07-06 — **Step 8 SPEC (Opus scoping pass; design only, no code).** Full
+  implementation spec for the parallel HDF5 + XDMF writer/reader below — detailed
+  enough for a Sonnet session to implement directly with no further design
+  decisions. **Report-back for the "Model" column deferred to the Sonnet
+  implementation session** (dataset layout + XDMF schema as-built, the dense-
+  numbering exscan, any collective-IO tuning); the design of all three is fixed
+  here.
+
+  ### 8.0 — Guiding decisions (rationale)
+  - **What is written = the OWNED entities of every rank, each exactly once.** The
+    mesh is stored owned-first (`[0,nOwnedX)` owned, invariant from Steps 5/7), so
+    "owned block" = the leading `nOwnedX` rows. Union of owned blocks = the global
+    mesh with no duplication → the file is a clean partition, and a checksum over
+    the on-disk persistent gids is **rank-count independent** (it is the same gid
+    set no matter how the writer partitioned).
+  - **Two identities per entity, both stored.** (1) The persistent 64-bit
+    `GlobalId` (`Gid` member) is the cross-run identity and the checksum key — it is
+    sparse/arbitrary after refine+migrate and is stored verbatim. (2) A **dense
+    global index** in `[0,Nglobal)` per kind, assigned owned-only via `MPI_Exscan`,
+    is what XDMF/Paraview connectivity must reference (0-based, contiguous). Both go
+    in the file; connectivity datasets use dense indices, a parallel `gid` dataset
+    carries the persistent identity.
+  - **Partition-dependent state is NOT written** (owner rank, flags, ghost layer,
+    CSR, key tables, edge→face incidence). It is *reconstructed* on read by re-
+    running the tested `migrate()` ghost/halo builder, so the reader trivially
+    re-passes the Step-5 invariants without duplicating that logic. Edge→face
+    incidence is left `{invalid_gid,invalid_gid}` on read (unused by any invariant;
+    Step 7 already documents it as carried-but-unused metadata).
+  - **Flat header convention** (matches the realized `src/Tessera_*.hpp` layout, not
+    the `src/io/` wording in the Step-8 contract row — same deviation already taken
+    for `src/mesh/`). New headers, all header-only, added to the umbrella
+    `src/Tessera.hpp`:
+    `Tessera_IoCommon.hpp`, `Tessera_HDF5Writer.hpp`, `Tessera_HDF5Reader.hpp`,
+    `Tessera_Xdmf.hpp`.
+
+  ### 8.1 — HDF5 dataset layout (single file `<stem>.h5`)
+  All datasets are 1-D or 2-D with **global** first dim = `N{v,e,f}` (the
+  `MPI_Allreduce(SUM)` of owned counts). Each rank writes its owned block as a
+  hyperslab `[off, off+nOwned)` where `off = MPI_Exscan(SUM, nOwned)` (exclusive
+  scan; rank 0 offset 0). H5 native types via a `h5_type<T>()` trait in
+  `Tessera_IoCommon.hpp` (`double→H5T_NATIVE_DOUBLE`, `float→…FLOAT`,
+  `uint64→…UINT64`, `int16→…INT16`, `int32→…INT32`).
+
+  Root attributes (scalars, written identically by all ranks): `format_version`
+  (int=1), `dim` (int = `MeshT::dim`), `scalar_bytes` (int, 4 or 8),
+  `Nv`,`Ne`,`Nf` (uint64), `n_user_v_fields`,`n_user_e_fields`,`n_user_f_fields`
+  (int), and for each user field its extent (1 for scalar, N for `Scalar[N]`) in
+  attrs `uv_ext_<j>`,`ue_ext_<j>`,`uf_ext_<j>`. The reader validates these against
+  its compile-time template and **hard-fails on mismatch** (dim, scalar_bytes,
+  field counts, extents).
+
+  Group `/vertices`:
+  | dataset | shape | H5 type | source (owned block) |
+  |---|---|---|---|
+  | `gid` | `Nv` | uint64 | `VertexField::Gid` |
+  | `position` | `Nv × Dim` | Scalar | `VertexField::Position` |
+  | `u<j>` (per user field j) | `Nv × ext_j` | field's scalar | `userVertexField<j>()` |
+
+  Group `/edges`:
+  | dataset | shape | H5 type | source |
+  |---|---|---|---|
+  | `gid` | `Ne` | uint64 | `EdgeField::Gid` |
+  | `verts` | `Ne × 2` | uint64 | **dense** vertex indices of `EdgeField::Verts` |
+  | `level` | `Ne` | int16 | `EdgeField::Level` |
+  | `u<j>` | `Ne × ext_j` | field scalar | `userEdgeField<j>()` |
+
+  Group `/faces`:
+  | dataset | shape | H5 type | source |
+  |---|---|---|---|
+  | `gid` | `Nf` | uint64 | `FaceField::Gid` |
+  | `verts` | `Nf × 3` | uint64 | **dense** vertex indices of `FaceField::Verts` (XDMF triangle connectivity) |
+  | `edges` | `Nf × 3` | uint64 | **dense** edge indices of `FaceField::Edges` |
+  | `level` | `Nf` | int16 | `FaceField::Level` |
+  | `u<j>` | `Nf × ext_j` | field scalar | `userFaceField<j>()` |
+
+  **Empty-user-pack guard (from Step 6a):** `slice<UserBegin>` is ill-formed when
+  the pack is empty. Every user-field dataset loop MUST be behind
+  `if constexpr (member_types::size > UserBegin)` and recurse member indices with
+  the Step-6a introspection pattern
+  (`Cabana::MemberTypeAtIndex<Mabs,MT>::type` + `std::rank`/`std::extent<…,0>` for
+  the extent; `member_types::size` for the loop bound).
+
+  ### 8.2 — Dense global numbering (writer) — the `MPI_Exscan` core
+  1. `nOwned{V,E,F}` from `mesh.numOwned*()`. `N{v,e,f}=Allreduce(SUM)`;
+     `{v,e,f}off = Exscan(SUM)` (rank 0 → 0). Store `N*` as attrs.
+  2. Owned entity at owned-local-index `i∈[0,nOwned)` → dense index `off+i`
+     (owned-first makes owned local indices exactly `[0,nOwned)`, no gather needed).
+     Build host maps `denseV[gid]=voff+i`, `denseE[gid]=eoff+i` for **owned** V/E.
+  3. **Ghost dense-index fetch** (faces/edges reference vertices/edges that may be
+     ghosts owned by another rank; only those ranks know the dense index). Two
+     `allToAllV` request/reply rounds, keyed by the ghost's `Owner` field (present
+     in every tuple; the halo plan is NOT needed):
+     - Requester groups its ghost vertex gids by `Owner`, sends gid lists; each
+       owner looks each up in its owned `denseV` map, replies the dense value **in
+       received order**; requester matches replies by position (same per-`(src,dst)`
+       ordering guarantee `buildKindPlan` relies on). Merge into `denseV`.
+     - Identical round for ghost edges → `denseE`.
+     (Owned edges' endpoints are always vertices of an owned face — edge owner =
+     min incident-face owner, so an owned edge has an incident owned face whose 3
+     verts include both endpoints — hence the vertex set referenced by owned faces
+     already covers owned-edge endpoints; still, a face may reference a **ghost
+     edge**, so the ghost-edge round is required.)
+  4. Faces reference no other faces → face dense index needs no exchange
+     (`foff+i`). Translate each owned face's `Verts`/`Edges` gids → dense via
+     `denseV`/`denseE`; each owned edge's `Verts` gids → dense via `denseV`. Pack
+     the owned-block hyperslab arrays and write.
+
+  ### 8.3 — Collective write mechanics
+  - `fapl = H5Pcreate(H5P_FILE_ACCESS); H5Pset_fapl_mpio(fapl, mesh.comm(),
+    MPI_INFO_NULL); H5Fcreate(<stem>.h5, H5F_ACC_TRUNC, H5P_DEFAULT, fapl)`.
+  - Per dataset: all ranks `H5Screate_simple` the **global** dims, `H5Dcreate2`
+    (collective/identical on every rank), then each rank
+    `H5Sselect_hyperslab(filespace, SET, start={off,0}, count={nOwned,width})`,
+    memspace `H5Screate_simple({nOwned,width})`, `dxpl` with
+    `H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE)`, `H5Dwrite`.
+  - **Zero-owned rank gotcha (must handle):** a rank with `nOwned==0` (possible at
+    high rank counts on a tiny mesh) MUST still call `H5Dcreate2`/`H5Dwrite`
+    collectively but select **none** (`H5Sselect_none(filespace)` +
+    `H5Sselect_none(memspace)`). Skipping the call deadlocks the collective. Call
+    this out in a comment.
+  - Root attributes written by all ranks with identical values (safe under MPIO).
+  - `H5Pclose`/`H5Sclose`/`H5Dclose`/`H5Fclose` everywhere (disciplined close
+    ordering; leaks exhaust the Lustre file-handle budget at rank 5).
+  - **Tuolumne collective-IO note:** start with `MPI_INFO_NULL`. If Lustre
+    write-hangs or slowness appear on larger meshes, pass an `MPI_Info` with
+    `romio_cb_write=enable`, `cb_nodes`, `striping_factor`/`striping_unit`; not
+    expected necessary for Milestone-1 coarse meshes. Record what was actually
+    needed in the implementation report-back.
+
+  ### 8.4 — XDMF sidecar (`<stem>.xmf`, written by rank 0 only)
+  Plain-text XML (no HDF5 dependency — `Tessera_Xdmf.hpp` just emits a file), written
+  once by rank 0 after the collective write completes (`MPI_Barrier` first).
+  References the dense datasets, so it is byte-identical regardless of writer rank
+  count. XDMF 3.0, single uniform `Unstructured` grid:
+  ```xml
+  <?xml version="1.0" ?>
+  <Xdmf Version="3.0"><Domain>
+    <Grid Name="Tessera" GridType="Uniform">
+      <Topology TopologyType="Triangle" NumberOfElements="Nf">
+        <DataItem Dimensions="Nf 3" NumberType="UInt" Precision="8" Format="HDF">
+          <stem>.h5:/faces/verts</DataItem>
+      </Topology>
+      <Geometry GeometryType="XYZ">            <!-- XY when Dim==2 -->
+        <DataItem Dimensions="Nv Dim" NumberType="Float" Precision="{4|8}" Format="HDF">
+          <stem>.h5:/vertices/position</DataItem>
+      </Geometry>
+      <Attribute Name="v_gid" Center="Node" AttributeType="Scalar">
+        <DataItem Dimensions="Nv" NumberType="UInt" Precision="8" Format="HDF">
+          <stem>.h5:/vertices/gid</DataItem></Attribute>
+      <Attribute Name="f_level" Center="Cell" AttributeType="Scalar">
+        <DataItem Dimensions="Nf" NumberType="Int" Precision="2" Format="HDF">
+          <stem>.h5:/faces/level</DataItem></Attribute>
+      <!-- one <Attribute Center="Node"> per vertex user field u<j> (scalar or
+           Vector when ext==Dim), one Center="Cell" per face user field -->
+    </Grid>
+  </Domain></Xdmf>
+  ```
+  - Use only the file **basename** (not the full path) in the `.h5:` reference so
+    the pair is relocatable. `Precision` = `scalar_bytes` for Float, `8` for
+    UInt gid/connectivity, `2` for int16 level.
+  - Edges are round-trip data, not a standard surface cell type — **not** placed in
+    XDMF (optional: a second `TopologyType="Polyline"` grid over `/edges/verts` if
+    edge visualization is later wanted; out of scope for the gate).
+  - `Dim∉{2,3}` → emit HDF5 only, skip the `<Geometry>`/`<Topology>` grid with a
+    one-line warning (Milestone 1 is Dim=3).
+
+  ### 8.5 — Reader reconstruction contract (re-passes Step-5 invariants by reuse)
+  `readMesh(mesh, halo, <stem>)` produces a distributed `Mesh` + `MeshHalo` that
+  passes `checkOwnershipPartition`, `owned1RingLocal`, and a corrupt→`haloExchange`
+  →restored ghost check — **without re-deriving ownership/halo logic**, by handing a
+  covering to the tested `migrate()`:
+  1. Open with `H5Pset_fapl_mpio(comm)`. Read root attrs; **validate** dim/
+     scalar_bytes/field-counts/extents against the compile-time template
+     (runtime check → `MPI_Abort` with a clear message on mismatch). Read
+     `Nv,Ne,Nf`.
+  2. **Block-partition dense FACE indices**: rank R reads faces
+     `[fs,fe) = [R*Nf/size, (R+1)*Nf/size)` (a fresh partition, deliberately
+     unrelated to the writer's — this also exercises rank-count independence).
+     Collectively read that hyperslab of `/faces/{gid,verts,edges,level,u*}`.
+  3. **Fetch referenced vertex/edge records.** The dense vertex/edge indices this
+     rank's faces reference may fall outside any contiguous local block, so map each
+     dense index → owning reader-rank via the same `[k*N/size,(k+1)*N/size)` block
+     arithmetic (no per-index gather needed). Every rank block-reads its own
+     `/vertices` and `/edges` slice `[R*N/size,(R+1)*N/size)` up front; then
+     `allToAllV`-request the needed dense V and E indices from their block-owners,
+     which reply the full record (`/vertices/{gid,position,u*}`;
+     `/edges/{gid,verts,level,u*}`) for each requested dense row.
+  4. Build `denseV→gid`, `denseE→gid` from the fetched/owned records. Translate the
+     face `verts`/`edges` (dense) and edge `verts` (dense) back to **persistent
+     gids**. Assemble an **intermediate all-owned mesh**: vertices = unique fetched
+     vertex records (dedup by gid; set `Gid`,`Position`,user fields;
+     `Owner`=R placeholder), edges likewise (`Gid`,`Verts`=gids,
+     `Faces`={invalid_gid,invalid_gid},`Level`,user; `Owner`=R), faces = this rank's
+     block (`Gid`,`Verts`/`Edges`=gids,`Level`,user; `Owner`=R). `setOwnedCounts(
+     nHeldV, nHeldE, blockFaces)`. **No CSR/keys needed here** — `migrate()` rebuilds
+     them.
+  5. `std::vector<Rank> dest(blockFaces, R); migrate(mesh, halo, dest);`
+     — self-destination move (Round A loops to self), then `migrate()` recomputes
+     lowest-rank ownership, discovers/fetches the 1-deep ghost layer, and builds the
+     CSR + key tables + the three halo plans. **Postcondition = a valid distributed
+     mesh identical in structure to the Step-5/7 output**, so all Step-5 invariants
+     pass by construction. Final face ownership = the reader's contiguous block
+     partition; V/E ownership = lowest-rank over the covering.
+  - **np1**: one block = all faces; `migrate(dest=all-0)` → zero ghosts, no-op
+     exchange (matches the Step-5 np1 acceptance).
+  - **Why this satisfies "checksum independent of rank count":** the persistent gids
+     read from `/*/gid` are the same set at any reader rank count; `migrate()` never
+     invents or drops gids; so `topologyChecksum(mesh2)` equals the writer's in-memory
+     checksum and equals the on-disk BXOR of `/*/gid` — at every np.
+
+  ### 8.6 — Public API (both header-only, templated on the mesh type)
+  ```cpp
+  namespace Tessera {
+  // Collective on mesh.comm(). Writes <stem>.h5 (parallel) + <stem>.xmf (rank 0).
+  // Needs only the mesh: ghost dense indices are fetched via each ghost's Owner field.
+  template <class MeshT>
+  void writeMesh( const MeshT& mesh, const std::string& stem );
+
+  // Collective. Fills an empty mesh (constructed on the same comm) + its halo by
+  // block-reading <stem>.h5 and re-running migrate() to establish ownership+halo.
+  template <class MeshT>
+  void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
+                 const std::string& stem );
+  }
+  ```
+
+  ### 8.7 — CMake / build fix (from the Step-0 report-back)
+  **Portability split (important — the root `CMakeLists.txt` is shared by every
+  system, so it may hold ONLY system-neutral logic):**
+  - The `CMakeLists.txt` change is **general and correct on any system.** The
+    `HDF5_IS_PARALLEL` guard is a portable *correctness* check, not a Tuolumne
+    workaround: Step 8 uses collective MPI-IO, so every system genuinely requires a
+    parallel HDF5, and failing loudly when only serial HDF5 is present is the right
+    behavior everywhere. Keep its `FATAL_ERROR` message system-neutral (no Cray /
+    `/usr/lib64` wording baked into the shared file).
+  - The **`HDF5_ROOT` discovery is the only Tuolumne-specific piece** and lives in
+    the per-system `run_cmake_toulumne.sh`, never in `CMakeLists.txt`. It is needed
+    only on Tuolumne because the Cray parallel HDF5 is a spack **external**, so
+    `spack env activate` does NOT view-link it onto `CMAKE_PREFIX_PATH` and a bare
+    `find_package` silently resolves the OS serial `/usr/lib64` build
+    (`HDF5_IS_PARALLEL=FALSE`); its `h5cc` probe also fails non-fatally. On a normal
+    system a from-source `hdf5 +mpi` IS view-linked, so `CMAKE_PREFIX_PATH` carries
+    it and the same `CMakeLists.txt` resolves the parallel build with no hint —
+    `docs/local` needs no `HDF5_ROOT` injection. The guard is what makes any
+    misconfigured system (serial-only HDF5) fail loudly rather than silently.
+
+  Edits:
+  - **`CMakeLists.txt`** — replace line 37 (`find_package(HDF5 REQUIRED)`) with a
+    parallel-guarded resolve, and propagate link/include on the INTERFACE target
+    (HDF5 is unconditionally pulled in via the umbrella header, same rationale as
+    the Trilinos block). Message is system-neutral:
+    ```cmake
+    # I/O — parallel HDF5 (Step 8). Step 8 uses collective MPI-IO, so a *parallel*
+    # HDF5 is required on every system. A bare find_package can silently resolve a
+    # serial HDF5 (e.g. an OS /usr/lib64 build) when the parallel one is not on
+    # CMAKE_PREFIX_PATH; the guard below turns that into a loud configure error.
+    set(HDF5_PREFER_PARALLEL ON)
+    find_package(HDF5 REQUIRED COMPONENTS C)
+    if(NOT HDF5_IS_PARALLEL)
+        message(FATAL_ERROR
+            "Found HDF5 at ${HDF5_INCLUDE_DIRS} but it is NOT parallel "
+            "(HDF5_IS_PARALLEL=FALSE). Tessera I/O (Step 8) requires an "
+            "MPI-parallel HDF5. Point CMake at one via -DHDF5_ROOT=<prefix> or "
+            "add its prefix to CMAKE_PREFIX_PATH.")
+    endif()
+    ```
+    then extend the existing `target_link_libraries(Tessera INTERFACE …)` with
+    `${HDF5_C_LIBRARIES}` (or `${HDF5_LIBRARIES}`) and add
+    `target_include_directories(Tessera SYSTEM INTERFACE ${HDF5_INCLUDE_DIRS})`.
+  - **`run_cmake_toulumne.sh`** (Tuolumne-only) — resolve and pass `HDF5_ROOT`
+    before the `cmake` call:
+    ```bash
+    : "${HDF5_ROOT:=$(spack location -i hdf5 2>/dev/null || \
+        echo /opt/cray/pe/hdf5-parallel/1.14.3.7/crayclang/20.0)}"
+    ```
+    and add `-DHDF5_ROOT="${HDF5_ROOT}"` to the `cmake` args.
+  - **`docs/tuolumne/claude.md`** — mirror the `HDF5_ROOT` requirement into the
+    Build-config args section (per the framework "keep docs in sync" invariant).
+    No change to `docs/local` (view-linked HDF5 resolves without a hint).
+
+  ### 8.8 — Test (`tests/test_io.cpp`, regression, SERIAL+HIP, ranks 1–5)
+  Add via `tessera_add_test(NAME io … TIER regression RANKS ${TESSERA_TEST_MPI_RANKS})`
+  for both SERIAL and HIP (gate rows in `tests/CMakeLists.txt`). Body:
+  1. `buildIcosphere(mesh, subdiv=3)`; `facePartitionByAxis` + `distribute`. Use a
+     **non-trivial user field**: `Mesh<Scalar, 3, VertexFields<Scalar>, EdgeFields<>,
+     FaceFields<Scalar>>`; set the vertex user field to a deterministic function of
+     the vertex gid and the face user field to a function of the face gid (so field
+     round-trip is checkable).
+  2. Record pre-write: `topologyChecksum(cv,ce,cf)`; a field checksum = BXOR over
+     owned of the field bits, reduced `MPI_BXOR`.
+  3. **Unique stem per executable+rankcount** to avoid concurrent-run collisions:
+     `stem = basename(argv[0]) + "_np" + to_string(size)` (SERIAL/HIP exes differ,
+     np differs → unique). Write to `$TESSERA_IO_TMPDIR` if set, else cwd.
+  4. `writeMesh(mesh, stem); MPI_Barrier;` construct fresh `Mesh mesh2(comm)` +
+     `MeshHalo halo2`; `readMesh(mesh2, halo2, stem)`.
+  5. Assert (each `MPI_Allreduce(SUM)` of a LOCAL fail count, per the MeshInvariants
+     convention): `checkOwnershipPartition(mesh2,Nv,Ne,Nf)==0`,
+     `owned1RingLocal(mesh2)==0`, `ownedEulerGlobal(mesh2)==2` (uniform coarse
+     icosphere), `topologyChecksum(mesh2)==(cv,ce,cf)`, field checksum unchanged.
+  6. **On-disk rank-count independence**: rank 0 opens `<stem>.h5` (serial fapl),
+     reads the whole `/vertices/gid` dataset, BXOR-reduces it, asserts `== cv`
+     (and similarly `/edges/gid==ce`, `/faces/gid==cf`). Because `cv/ce/cf` are
+     computed identically at every np and the file stores each owned gid once, this
+     equals the in-memory checksum at *every* rank count → the on-disk checksum is
+     rank-count independent (the gate running np1–5 confirms all five agree).
+  7. Corrupt every ghost's gid on `mesh2`, `haloExchange(mesh2,halo2)`, verify each
+     ghost restored to its owner's gid; owned untouched; np1 = no-op.
+  8. Clean up the `<stem>.h5`/`<stem>.xmf` files at end (rank 0, after barrier).
+  Manual Paraview open of one `<stem>.xmf` is the "opens in Paraview" acceptance
+  (report-back; not automatable in the gate).
+
+  ### 8.9 — Deliverables checklist for the Sonnet session
+  - `src/Tessera_IoCommon.hpp` (`h5_type<T>()`, attr read/write helpers, block-bound
+    arithmetic, member-field iteration helper).
+  - `src/Tessera_HDF5Writer.hpp` (`writeMesh`), `src/Tessera_HDF5Reader.hpp`
+    (`readMesh`), `src/Tessera_Xdmf.hpp` (`writeXdmf`, rank 0).
+  - Add all four to `src/Tessera.hpp` (umbrella).
+  - `CMakeLists.txt` + `run_cmake_toulumne.sh` + `docs/tuolumne/claude.md` HDF5 fix.
+  - `tests/test_io.cpp` + the two gate rows in `tests/CMakeLists.txt`.
+  - BSD-3-Clause SPDX header on every new file; `--target format-check` clean.
+  - README: add an I/O section (public `writeMesh`/`readMesh` API, on-disk layout
+    summary, the `HDF5_ROOT` build requirement) per the "README in sync" invariant.
+  - Run the full gate (`flux batch scripts/tuolumne/run_regression_minset.flux` or
+    the dev runner with the `regression` label); report the new regression count
+    (expected 50/50) and unit count (unchanged 28/28).
+- 2026-07-06 — **Step 8 landed (Sonnet). Fifth regression-tier test.** Parallel
+  HDF5 + XDMF writer/reader, implemented against the Opus spec above with no
+  design deviations:
+  - `Tessera_IoCommon.hpp` — `h5_type<T>()` trait (double/float/uint64/int16/
+    int32), `exscanCount()` (the dense-numbering `MPI_Exscan` core: global count
+    via `Allreduce(SUM)`, this rank's offset via `Exscan(SUM)`, rank 0 → 0),
+    `blockRange()`/`blockOwner()` (reader's fresh block-partition arithmetic —
+    `blockOwner` inverts the floor-division block boundaries by direct
+    adjustment rather than assuming a closed form), the `forEachUserField`
+    compile-time iterator (the Step 6a empty-pack guard, reused verbatim: an
+    empty user pack short-circuits via `if constexpr` before `Cabana::slice`
+    would go ill-formed), `FieldInfo<AoSoA,Mabs>` (extent + scalar type per
+    member), and `writeHyperslab`/`readHyperslab` (the collective owned-block
+    hyperslab I/O core, with the zero-owned-rank `H5Sselect_none` guard on both
+    file- and mem-space built in once rather than at every call site).
+  - `Tessera_HDF5Writer.hpp` — `writeMesh()`: builds the dense `denseV`/`denseE`
+    maps (owned entries dense directly via the exscan offset; ghost entries
+    fetched from their `Owner` rank via two `allToAllV` rounds — request gids,
+    owner replies dense indices in received order, matching the existing
+    `buildKindPlan`/`migrate()` per-source-ordering convention), then writes
+    `/vertices`, `/edges`, `/faces` (core fields + `u<j>` per user field) as
+    collective MPI-IO hyperslabs, then the root attributes, then (rank 0, after
+    `MPI_Barrier`) the XDMF sidecar.
+  - `Tessera_HDF5Reader.hpp` — `readMesh()`: takes a **fresh** dense-FACE block
+    partition (`blockRange(Nf,R,size)`, deliberately unrelated to the writer's
+    partition), reads that face block, collects the referenced dense
+    vertex/edge indices, block-reads this rank's own `/vertices`/`/edges`
+    range up front and `allToAllV`-requests the remainder from their block
+    owners (owner replies a `TupleBlob` of its local host tuple — reusing
+    `Tessera_MeshMigrate.hpp`'s `TupleBlob`/`toBlob`/`fromBlob` directly, since
+    `readMesh()` already depends on that header for the final `migrate()`
+    call), translates dense→persistent-gid for `verts`/`edges` fields, and
+    assembles an intermediate **all-owned** mesh (`Owner=R` on every held
+    entity, edges' `Faces` left `{invalid_gid,invalid_gid}`) before handing off
+    to `migrate(mesh, halo, dest=all-self)`. One simplification found during
+    implementation (not in the original spec text but consistent with it): the
+    held edge/vertex set only needs to be the union **referenced by this
+    rank's face block** (not the full local block range) — since every edge's
+    two endpoints are, by the codebase's own face→edge convention
+    (`edge(v[k],v[(k+1)%3])`), always a subset of its incident face's three
+    vertices, no separate vertex-fetch round is needed to resolve edge
+    endpoints; they are always already covered by the face-referenced vertex
+    set.
+  - `Tessera_Xdmf.hpp` — `writeXdmf()`: XDMF 3.0 single `Unstructured` Triangle
+    grid over `/faces/verts` (dense) + `/vertices/position`, `v_gid`/`f_level`
+    attributes, and one `<Attribute>` per user field (`Vector` when
+    `extent==Dim`, else `Scalar`); `Dim∉{2,3}` emits HDF5-only metadata with a
+    one-line XML comment instead of a grid (Milestone 1 is always Dim=3, so
+    untested in the gate). Edges are intentionally not placed in XDMF (matches
+    the spec: not a standard surface cell type, out of scope for the gate).
+  - **CMake fix, with one addition beyond the spec:** the `HDF5_IS_PARALLEL`
+    guard + `HDF5_ROOT`/Tuolumne split landed exactly as specified in
+    `CMakeLists.txt` / `run_cmake_toulumne.sh` / `docs/tuolumne/claude.md`.
+    Discovered while reconfiguring: `FindHDF5.cmake`'s compiler-wrapper probe
+    (used when no HDF5 CMake config package exists — true for Cray's parallel
+    HDF5 module, which ships only `.pc` files) `try_compile`s a `.c` test
+    program, which hard-errors ("Unknown extension .c ... currently these are:
+    CXX") when the project has no C language enabled — this aborts
+    configuration entirely (not merely a fallback warning), independent of and
+    prior to the `HDF5_IS_PARALLEL` guard ever running. Fixed by adding `C` to
+    `project(... LANGUAGES CXX C)` (system-neutral: harmless everywhere,
+    required wherever HDF5 is discovered via the plain module rather than a
+    config package). With that fix, HDF5_ROOT resolution + the parallel guard
+    work as specified: `HDF5_IS_PARALLEL=TRUE`, resolved library
+    `/opt/cray/pe/hdf5-parallel/1.14.3.7/crayclang/20.0/lib/libhdf5.so`.
+  - `tests/test_io.cpp` (**regression**, SERIAL+HIP, np1–5): distributed
+    subdiv-3 icosphere with `VertexFields<Scalar>`/`FaceFields<Scalar>` user
+    fields set to a deterministic function of gid; write → read into a fresh
+    `Mesh`/`MeshHalo` → assert ownership partition, owned-1-ring-local, owned
+    Euler==2, topology checksum unchanged, vertex/face user-field BXOR
+    checksums unchanged, on-disk `/*/gid` BXOR (read serially by rank 0) equals
+    the in-memory checksum, and a corrupt→`haloExchange`→restored-ghost check
+    on the round-tripped mesh; unique stem per executable+rankcount+exec-space
+    (`argv[0] basename + "_np" + size + "_serial"/"_default"`), honoring
+    `TESSERA_IO_TMPDIR` if set, cleaned up (rank 0) at the end of the test.
+    **Regression 50/50** (40 previous + 10 new `io_{SERIAL,HIP}_np{1-5}`),
+    **unit 28/28 unchanged**, `format-check` clean.
+  - **Report-back (per the Step-8 contract):**
+    - *Dataset layout as-built*: exactly the spec §8.1 table — `/vertices`
+      {gid, position, u\*}, `/edges` {gid, verts(dense), level, u\*}, `/faces`
+      {gid, verts(dense), edges(dense), level, u\*}, root attrs
+      (`format_version`, `dim`, `scalar_bytes`, `Nv`/`Ne`/`Nf`,
+      `n_user_{v,e,f}_fields`, `u{v,e,f}_ext_<j>`).
+    - *XDMF schema as-built*: exactly the spec §8.4 template (Triangle topology
+      + XYZ geometry over the dense datasets, `v_gid`/`f_level` attributes,
+      per-user-field attributes), basename-only `.h5` reference for
+      relocatability.
+    - *Dense-numbering exscan*: `MPI_Allreduce(SUM)` for the global count +
+      `MPI_Exscan(SUM)` for the offset (rank 0 forced to 0, since `MPI_Exscan`
+      leaves rank 0's receive buffer undefined), exactly per spec §8.2.
+    - *Collective-IO tuning*: **none needed** — `MPI_INFO_NULL` was sufficient
+      for the Milestone-1 coarse-icosphere gate sizes on Tuolumne's Lustre; no
+      write-hangs or slowness observed at any rank count 1–5.
+  - **Next:** Step 9 (end-to-end example; unit/regression runner scripts;
+    OPENMP smoke-build; CI subset wiring; README/example-arg sync).

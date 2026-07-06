@@ -29,6 +29,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Parallel HDF5 (Step 8). The Cray parallel HDF5 is a spack EXTERNAL, so
+# `spack env activate` does not view-link its prefix onto CMAKE_PREFIX_PATH;
+# a bare find_package(HDF5) would silently resolve the OS serial
+# /usr/lib64 build instead (see tasks/milestone1_mesh.md, Step-0 entry).
+: "${HDF5_ROOT:=$(spack location -i hdf5 2>/dev/null || \
+    echo /opt/cray/pe/hdf5-parallel/1.14.3.7/crayclang/20.0)}"
+
 cmake \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DCMAKE_CXX_COMPILER=CC \
@@ -42,5 +49,6 @@ cmake \
     -DMPIEXEC_EXECUTABLE="$(which flux)" \
     "-DMPIEXEC_NUMPROC_FLAG=run;--ntasks" \
     "-DMPIEXEC_PREFLAGS=--nodes=1;--exclusive;--cores-per-task=1;--env=GLIBC_TUNABLES=glibc.rtld.optional_static_tls=8388608" \
+    -DHDF5_ROOT="${HDF5_ROOT}" \
     "$@" \
     "${SCRIPT_DIR}"

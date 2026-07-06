@@ -239,6 +239,45 @@ written). A **full round-trip reader** reconstructs a mesh from the file; tests 
 write→read→compare of topology and field checksums, and assert the on-disk global
 checksum is independent of rank count.
 
+**API** (`Tessera_HDF5Writer.hpp` / `Tessera_HDF5Reader.hpp`, both header-only,
+templated on the mesh type):
+
+```cpp
+// Collective on mesh.comm(). Writes <stem>.h5 (parallel HDF5) + <stem>.xmf
+// (XDMF sidecar, rank 0 only). Ghost dense indices are fetched from each
+// ghost's Owner field -- no halo plan needed.
+template <class MeshT>
+void writeMesh( const MeshT& mesh, const std::string& stem );
+
+// Collective. Fills an empty mesh (constructed on the same comm) + its halo
+// by block-reading <stem>.h5 and re-running migrate() (a self-destination
+// move) to establish ownership + the 1-deep halo.
+template <class MeshT>
+void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
+              const std::string& stem );
+```
+
+**On-disk layout** (single file `<stem>.h5`, groups `/vertices`, `/edges`,
+`/faces`, each row `i` = one entity's owned-block hyperslab):
+
+| Group | Datasets | Notes |
+|---|---|---|
+| `/vertices` | `gid` (uint64), `position` (Scalar×Dim), `u0..uN` (per user field) | |
+| `/edges` | `gid`, `verts` (uint64×2, **dense** vertex indices), `level` (int16), `u0..uN` | |
+| `/faces` | `gid`, `verts` (uint64×3, dense), `edges` (uint64×3, dense), `level`, `u0..uN` | XDMF triangle connectivity references `/faces/verts` |
+
+Every entity carries both its persistent 64-bit `gid` (the cross-run/checksum
+identity, stored verbatim) and is referenced elsewhere by a **dense** index in
+`[0,N)` per kind (assigned via `MPI_Exscan` over owned counts) -- XDMF/Paraview
+connectivity needs 0-based contiguous indices, so `verts`/`edges` datasets
+store dense references while `gid` carries the persistent one. Partition-
+dependent state (owner rank, ghost layer, CSR, key tables) is **not** written;
+the reader reconstructs it by handing a covering of the file to the tested
+`migrate()`. Root attributes (`format_version`, `dim`, `scalar_bytes`,
+`Nv`/`Ne`/`Nf`, per-user-field extents) let the reader hard-fail on a
+template/schema mismatch instead of silently misreading. Building I/O requires
+a **parallel** (`+mpi`) HDF5 -- see Dependencies below.
+
 ---
 
 ## Usage / API
@@ -268,7 +307,7 @@ Tessera::loadBalance( mesh, halo );           // internal Zoltan2 (optional, Ste
 //   std::vector<Tessera::Rank> dest = external_partition( c );
 //   Tessera::migrate( mesh, halo, dest );
 
-Tessera::writeHDF5( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
+Tessera::writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
 ```
 
 ### Example programs
@@ -303,6 +342,13 @@ mkdir build-tuolumne && cd build-tuolumne
 bash ../run_cmake_toulumne.sh
 make -j $(nproc)
 ```
+
+`run_cmake_toulumne.sh` resolves and passes `-DHDF5_ROOT=<prefix>` automatically
+(via `spack location -i hdf5`, falling back to the known Cray path). This is
+required on Tuolumne because the Cray parallel HDF5 is a spack **external** and
+is not view-linked onto `CMAKE_PREFIX_PATH`; a bare `find_package(HDF5)` would
+otherwise silently resolve the OS serial `/usr/lib64` build. CMake fails loudly
+(`HDF5_IS_PARALLEL` guard) rather than configuring against a non-parallel HDF5.
 
 ### Build (local workstation)
 

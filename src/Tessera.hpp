@@ -19,8 +19,11 @@
 #include "Tessera_CsrAdjacency.hpp"
 #include "Tessera_Distribute.hpp"
 #include "Tessera_Fields.hpp"
+#include "Tessera_HDF5Reader.hpp"
+#include "Tessera_HDF5Writer.hpp"
 #include "Tessera_HaloExchange.hpp"
 #include "Tessera_Icosphere.hpp"
+#include "Tessera_IoCommon.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_MeshBuilder.hpp"
 #include "Tessera_MeshMigrate.hpp"
@@ -30,6 +33,7 @@
 #include "Tessera_RefinePolicy.hpp"
 #include "Tessera_RegisteredBufferPool.hpp"
 #include "Tessera_Types.hpp"
+#include "Tessera_Xdmf.hpp"
 #include "Tessera_Zoltan2Balancer.hpp"
 
 #endif // TESSERA_HPP

@@ -11,7 +11,11 @@
 
 cmake_minimum_required(VERSION 3.21)
 
-project(Tessera VERSION 0.1.0 LANGUAGES CXX)
+# C is enabled alongside CXX because FindHDF5's compiler-wrapper probe (used
+# when no HDF5 CMake config package is installed, e.g. Cray's parallel HDF5
+# module) try_compiles a .c test program; without a C compiler configured that
+# probe hard-errors instead of falling back gracefully (Step 8, any system).
+project(Tessera VERSION 0.1.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,8 +37,19 @@ find_package(MPI    REQUIRED)
 # the header-only interface target, so Trilinos must resolve at configure time
 # same as Kokkos/Cabana/MPI above.
 find_package(Trilinos REQUIRED)
-# I/O
-find_package(HDF5 REQUIRED)
+# I/O — parallel HDF5 (Step 8). Step 8 uses collective MPI-IO, so a *parallel*
+# HDF5 is required on every system. A bare find_package can silently resolve a
+# serial HDF5 (e.g. an OS /usr/lib64 build) when the parallel one is not on
+# CMAKE_PREFIX_PATH; the guard below turns that into a loud configure error.
+set(HDF5_PREFER_PARALLEL ON)
+find_package(HDF5 REQUIRED COMPONENTS C)
+if(NOT HDF5_IS_PARALLEL)
+    message(FATAL_ERROR
+        "Found HDF5 at ${HDF5_INCLUDE_DIRS} but it is NOT parallel "
+        "(HDF5_IS_PARALLEL=FALSE). Tessera I/O (Step 8) requires an "
+        "MPI-parallel HDF5. Point CMake at one via -DHDF5_ROOT=<prefix> or "
+        "add its prefix to CMAKE_PREFIX_PATH.")
+endif()
 
 # ── Library target ────────────────────────────────────────────────────────────
 # Interface (header-only) target until source files are added under src/.
@@ -46,6 +61,7 @@ target_link_libraries(Tessera INTERFACE
     Cabana::Core
     MPI::MPI_CXX
     ${Trilinos_LIBRARIES}
+    ${HDF5_C_LIBRARIES}
 )
 
 target_include_directories(Tessera INTERFACE
@@ -56,6 +72,7 @@ target_include_directories(Tessera INTERFACE
 target_include_directories(Tessera SYSTEM INTERFACE
     ${Trilinos_INCLUDE_DIRS}
     ${Trilinos_TPL_INCLUDE_DIRS}
+    ${HDF5_INCLUDE_DIRS}
 )
 
 if(Tessera_ENABLE_PROFILING)

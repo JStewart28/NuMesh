@@ -30,6 +30,7 @@ invocation. Key flags:
 | `MPIEXEC_EXECUTABLE` | `$(which flux)` | ctest launches tests via flux run |
 | `MPIEXEC_NUMPROC_FLAG` | `run;--ntasks` | Flux run flag for rank count |
 | `MPIEXEC_PREFLAGS` | `--nodes=1;--exclusive;--cores-per-task=1;--env=GLIBC_TUNABLES=glibc.rtld.optional_static_tls=8388608` | Flux resource binding per test + per-task static-TLS surplus |
+| `HDF5_ROOT` | `$(spack location -i hdf5)` (falls back to `/opt/cray/pe/hdf5-parallel/1.14.3.7/crayclang/20.0`) | The Cray parallel HDF5 (Step 8 I/O) is a spack **external**, so `spack env activate` does not view-link its prefix onto `CMAKE_PREFIX_PATH`; a bare `find_package(HDF5)` silently resolves the OS serial `/usr/lib64` build instead (`HDF5_IS_PARALLEL=FALSE`). `run_cmake_toulumne.sh` resolves and passes this automatically. |
 
 The `MPIEXEC_*` overrides make `ctest` the single entry point: each test is
 launched as `flux run --ntasks N --nodes=1 --exclusive --cores-per-task=1
