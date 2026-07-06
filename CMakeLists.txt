@@ -33,6 +33,8 @@ find_package(MPI    REQUIRED)
 # the header-only interface target, so Trilinos must resolve at configure time
 # same as Kokkos/Cabana/MPI above.
 find_package(Trilinos REQUIRED)
+# I/O
+find_package(HDF5 REQUIRED)
 
 # ── Library target ────────────────────────────────────────────────────────────
 # Interface (header-only) target until source files are added under src/.
