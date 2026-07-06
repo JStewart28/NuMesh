@@ -30,5 +30,6 @@
 #include "Tessera_RefinePolicy.hpp"
 #include "Tessera_RegisteredBufferPool.hpp"
 #include "Tessera_Types.hpp"
+#include "Tessera_Zoltan2Balancer.hpp"
 
 #endif // TESSERA_HPP

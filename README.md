@@ -215,12 +215,19 @@ The public contract is **migration**, not partitioning:
   Cabana tuples travel over `allToAllV`; ownership and ghost-face discovery route
   through per-gid vertex/edge coordinators). This is the **general (non-replicated)
   ghost builder** that distributed `refine()` (Step 6b) deferred.
-- `Tessera::loadBalance(mesh, halo)` *(planned — Step 7b)* is a thin convenience
-  wrapper: it runs Zoltan2 geometric **MultiJagged** on face centroids (weight =
-  per-face work / AMR descendant count), deterministically (solve on rank 0,
-  `MPI_Bcast` the assignment — RCB is avoided as it breaks on Tuolumne), then calls
-  the **same** `migrate()`. There is no separate internal-vs-external migration code
-  path.
+- `Tessera::loadBalance(mesh, halo, imbalanceTolerance=0.05)` is a thin convenience
+  wrapper (**Step 7b**): `Tessera::computeLoadBalance(mesh, imbalanceTolerance)`
+  gathers every rank's owned-face centroids/weights/gids to rank 0 (the mesh is
+  **not** replicated, so the geometric input must be assembled before Zoltan2 can
+  see it), runs Zoltan2 geometric **MultiJagged** over a `Teuchos::SerialComm`
+  (solve on rank 0 only — MultiJagged is not guaranteed deterministic across ranks
+  — then `MPI_Scatterv` the per-face part assignment back; RCB is never used, it
+  breaks on Tuolumne), and returns a `dest` in the same order as
+  `ownedFaceCentroids/Gids/Weights`. `loadBalance()` hands that `dest` to the
+  **same** `migrate()`. There is no separate internal-vs-external migration code
+  path. The Zoltan2 adapter (`Zoltan2::BasicVectorAdapter`) is built with its
+  generic multivector constructor (per-dimension arrays), not a fixed 3D x/y/z
+  one, so it works for both `Dim=2` and `Dim=3`.
 
 ### Parallel I/O
 

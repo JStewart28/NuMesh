@@ -259,3 +259,22 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_refine_parallel.cpp
 )
+
+# Internal Zoltan2 loadBalance() (Step 7b): rebalancing a deliberately
+# maximally-imbalanced mesh reduces the max-owned-face imbalance while
+# preserving every migrate() distribution invariant and the rank-count-
+# independent topology checksum.
+tessera_add_test(
+    NAME     loadbalance
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_loadbalance.cpp
+)
+tessera_add_test(
+    NAME     loadbalance
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_loadbalance.cpp
+)

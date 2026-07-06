@@ -28,6 +28,11 @@ set(Tessera_PROFILING_LEVEL 0 CACHE STRING
 find_package(Kokkos REQUIRED)
 find_package(Cabana REQUIRED)
 find_package(MPI    REQUIRED)
+# Trilinos (Zoltan2 + Teuchos) — internal loadBalance() (Step 7b). Required: the
+# only consumer, src/Tessera_Zoltan2Balancer.hpp, is unconditionally compiled into
+# the header-only interface target, so Trilinos must resolve at configure time
+# same as Kokkos/Cabana/MPI above.
+find_package(Trilinos REQUIRED)
 
 # ── Library target ────────────────────────────────────────────────────────────
 # Interface (header-only) target until source files are added under src/.
@@ -38,11 +43,17 @@ target_link_libraries(Tessera INTERFACE
     Kokkos::kokkos
     Cabana::Core
     MPI::MPI_CXX
+    ${Trilinos_LIBRARIES}
 )
 
 target_include_directories(Tessera INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<INSTALL_INTERFACE:include>
+)
+
+target_include_directories(Tessera SYSTEM INTERFACE
+    ${Trilinos_INCLUDE_DIRS}
+    ${Trilinos_TPL_INCLUDE_DIRS}
 )
 
 if(Tessera_ENABLE_PROFILING)

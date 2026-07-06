@@ -338,3 +338,53 @@ migration path).
   - **Next:** Step 7b (Zoltan2 `loadBalance()`: link Trilinos/Zoltan2, gather
     centroids to rank 0 → MultiJagged → `MPI_Bcast` → `migrate()`; internal-path
     balance-improvement test), then Step 0 (HDF5 spack env) right before Step 8.
+- 2026-07-06 — **Step 7b landed (Opus). Fourth regression-tier test.** Internal
+  Zoltan2 `loadBalance()`:
+  - **CMake isolated first (per contract):** added `find_package(Trilinos
+    REQUIRED)` + link/include wiring to the root `CMakeLists.txt` alone, then
+    reconfigured + rebuilt the full existing gate clean before writing any Zoltan2
+    code — confirms the dependency-surface change by itself doesn't perturb the
+    existing build.
+  - `src/Tessera_Zoltan2Balancer.hpp` — `computeLoadBalance(mesh, imbalanceTolerance
+    =0.05)` + `loadBalance(mesh, halo, imbalanceTolerance=0.05)`. **Key deviation
+    from the Canopy reference** (`Canopy_TreePartitioner.hpp`): Canopy's tree is
+    replicated on every rank, so it can build the Zoltan2 adapter directly; Tessera's
+    owned faces are **not** replicated, so `computeLoadBalance` first does an
+    explicit `MPI_Gather` (counts) + `MPI_Gatherv` (centroids scaled by `Dim`,
+    weights) to assemble the global geometric input on rank 0 before Zoltan2 ever
+    runs. Reuses Canopy's core pattern otherwise: geometric **MultiJagged** (never
+    RCB — breaks on Tuolumne), solved over a `Teuchos::SerialComm` on **rank 0
+    only** (MultiJagged is not guaranteed deterministic across ranks), then
+    `MPI_Scatterv`s the resulting per-face part assignment back to each rank in the
+    same per-rank order its centroids/weights were gathered in. Single-rank (`size
+    ==1`) is a fast-path no-op. Because `Mesh::Dim` is a template parameter (2 or
+    3, not fixed at 3 like Canopy's tree), the adapter is built via Zoltan2's
+    **generic multivector `BasicVectorAdapter` constructor** (per-dimension
+    `std::vector<const scalar_t*>` after deinterleaving the row-major `[f*Dim+d]`
+    gathered centroids) rather than Canopy's fixed x/y/z 3D constructor.
+    `loadBalance()` itself is a thin wrapper: `computeLoadBalance()` → `migrate()`
+    (Step 7 core) — no separate internal migration path, matching the design lock.
+  - Test `tests/test_loadbalance.cpp` (**regression**, SERIAL+HIP, np1–5): builds a
+    distributed icosphere, records its topology checksum, deliberately dumps every
+    owned face onto rank 0 (`migrate()` with `dest=0` everywhere) to maximally
+    imbalance it, then calls `loadBalance()` and asserts: max-owned-face count drops
+    strictly below the pre-balance max and lands within `2×ideal` (generous
+    MultiJagged-tolerance + coarse-icosphere geometric slack), every `migrate()`
+    distribution invariant still holds (ownership partition, owned 1-ring local),
+    and the topology checksum is **unchanged** (`loadBalance()` moves entities, it
+    never alters the global mesh). Single rank is a checked no-op. **Regression
+    40/40, unit 28/28** (unchanged unit count — confirms no regression),
+    `format-check` clean after auto-fixing continuation-line wrapping in both new
+    files via the `format` target.
+  - **Report-back (per the contract):** the migrate→ownership→halo ordering is
+    unchanged from Step 7 core (`loadBalance()` adds no new ordering — it only
+    computes `dest` before handing off to the same `migrate()`); Zoltan2
+    adapter/param specifics reused from Canopy verbatim (`algorithm=multijagged`,
+    `imbalance_tolerance`, `debug_level=no_status`) except the adapter constructor,
+    which had to switch to the Dim-generic multivector form; external-API surface
+    Canopy will call is unchanged (`ownedFaceCentroids/Gids/Weights` + `migrate()`)
+    — `loadBalance()` is purely an additional, optional internal convenience.
+  - **Next:** Step 0 (add `hdf5 +mpi` to the Tuolumne spack env, commit the
+    `docs/tuolumne/spack.yaml` snapshot, reconfirm the full gate still builds with
+    HDF5 discoverable by CMake) right before Step 8 (parallel HDF5 + XDMF writer/
+    reader).

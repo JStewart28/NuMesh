@@ -38,7 +38,7 @@ Current task logs:
 
 | Task | File | Status |
 |------|------|--------|
-| Milestone 1 — distributed triangle mesh | [tasks/milestone1_mesh.md](tasks/milestone1_mesh.md) | In progress (Step 7 core done; 7b = Zoltan2 next) |
+| Milestone 1 — distributed triangle mesh | [tasks/milestone1_mesh.md](tasks/milestone1_mesh.md) | In progress (Step 7 + 7b done; Step 0 = HDF5 spack env next) |
 
 ---
 
