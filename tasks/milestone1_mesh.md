@@ -1330,3 +1330,86 @@ migration path).
   > this hand-off — record if that changes), the exact
   > `QualityCriterion`/`EdgeLengthCriterion::mark` signature as built, and
   > the root cause + fix for this crash.
+- 2026-07-07 — **Step 10b landed (Opus). Seventh regression-tier test —
+  Milestone-1 marking suite complete.** Curvature/dihedral criterion appended to
+  `src/Tessera_MarkQuality.hpp`; `tests/test_markquality_curv.cpp` + its
+  SERIAL+HIP gate rows green at np1–5.
+  - `CurvatureCriterion<Scalar>{maxAngle}` (radians) marks **both** faces
+    incident to any edge whose dihedral bend exceeds `maxAngle`, evaluated by
+    `detail::markCurvature`. The dihedral needs both incident faces' normals and
+    the neighbour across a partition boundary is **not** in the vertex-based
+    1-ring halo (Step-6b analysis), so the gather is routed through **edge
+    coordinators** (`detail::edgeCoordRank` + `allToAllV`), reusing the Step-6b
+    Phase-1 idiom — **not** the halo. Implementation:
+    - Device kernel (same host-built face→vertex-local view as 10a) computes the
+      per-owned-face outward unit normal `n = normalize((p1−p0)×(p2−p0))`,
+      reading the device `Position` slice directly; copied to host.
+    - Each owned face advertises `{EdgeKey, Scalar n[3], faceGid, owner}`
+      (`detail::NormalMsg<Scalar>`, trivially copyable) for each of its 3 edges to
+      `edgeCoordRank(key, size)`.
+    - Coordinator groups by `EdgeKey`, uses the **exactly-two-incident** guard
+      (`inc.size()!=2` skipped, matching the closed-surface assumption the whole
+      codebase relies on), and flags an edge sharp iff `clamp(n0·n1,−1,1) <
+      cos(maxAngle)` (the `cos` form avoids `acos` round-off near 0). A sharp
+      edge routes a `GlobalId faceGid` mark-request back to **both** incident
+      face owners.
+    - Owners `set mask[gid2of[faceGid]] = 1`. No new stored state, no `refine()`
+      change; `Dim==2` returns an all-zero mask via `if constexpr` (a planar
+      surface has no dihedral; Milestone 1 is `Dim=3`). `markByQuality(mesh,
+      crit)`'s existing non-arithmetic-SFINAE generic overload dispatches it
+      unchanged — no dispatch edit needed.
+  - `tests/test_markquality_curv.cpp` (**regression**, SERIAL+HIP, np1–5,
+    double+float): synthetic sharp-fold fixture = subdiv-2 icosphere with
+    original vertex gid 0 displaced radially ×3 (a 5-face spike). An independent
+    replicated reference (gid==index, **no MPI**) computes per-face normals /
+    per-edge dihedrals with the *same* formula as the device kernel and derives
+    the threshold `theta` as the **midpoint of the largest gap in the sorted
+    dihedral distribution** (so `theta` sits far from every actual dihedral →
+    the marked set is insensitive to host/device float rounding, and no
+    hard-coded angle can drift stale). That same `theta` drives the distributed
+    `CurvatureCriterion`. Asserts: marked owned-face gid set (BXOR) matches the
+    partition-free reference at every np (rank-count independence), global marked
+    count == reference (exactly the fold faces, a nontrivial proper subset
+    `0<count<320`), and `refine()` post-conditions (`check21Balance`,
+    `checkMidpointAgreement`). Euler==2 is deliberately **not** asserted
+    (adaptive marking leaves bounded hanging nodes, per the Step-6b adaptive
+    case). **Boundary-straddle independence** is exercised by
+    `facePartitionByAxis(axis=z)`: vertex 0's fold ring spans the full z-extent,
+    so the fold straddles partition bands at np≥2 and the fold-edge neighbour is
+    frequently cross-rank and absent from the halo — a halo-based gather would
+    disagree across np, which the cross-np BXOR agreement pins.
+  - **Gate:** `ctest -L regression -R "SERIAL|HIP" --output-on-failure` — **all
+    pass, regression 70/70** (60 prior + 10 new `markquality_curv_{SERIAL,HIP}_
+    np{1-5}`). **Unit 28/28 unchanged.** `--target format-check` clean (the
+    `format` target reflowed a few continuation lines in both new files).
+  - **Report-back (per the Step-10b contract):**
+    - *Regression count:* **70/70**, not the prompt's "expect 60/60". That
+      number is stale: the Step-10 SPEC §10.5/§10.7 ("55/55 for 10a alone" /
+      "60/60 after both") mis-assumed 10a+10b together add only 10 rows, but the
+      established pattern is **+10 per step** (2 backends × 5 ranks). Step 10a
+      alone already reached 60/60 (its completion entry flagged the same
+      arithmetic error); 10b's 10 rows bring it to **70/70**. Flagging
+      explicitly rather than reconciling to the stale figure.
+    - *Coordinator round count/pattern:* **one non-iterative round-trip** = two
+      `allToAllV` calls (advertise normals → coordinator verdict → mark-request
+      reply). This is *simpler* than the Step-6b Phase-1 it reuses: 6b's 2:1
+      mark-propagation iterates to an `MPI_Allreduce`-guarded fixpoint because a
+      mark can induce further marks, whereas the curvature verdict is a **pure
+      geometric function** of the two incident normals, so a single gather
+      suffices — no fixpoint, no Allreduce loop. Same `edgeCoordRank` routing and
+      `allToAllV` substrate, same exactly-2-incident guard.
+    - *Winding/orientation assumption:* the builder and `refine()` maintain a
+      **consistent CCW-seen-from-outside winding** with the edge convention
+      `e[k]=(v[k],v[(k+1)%3])`, so `n = normalize((p1−p0)×(p2−p0))` is the
+      **outward** normal on every face and adjacent faces' normals are comparably
+      oriented ⇒ `n0·n1 = cos(dihedral bend)` (= 1 flat, decreasing as the fold
+      sharpens). Relies on the closed genus-0 surface giving exactly two incident
+      faces per edge (the coordinator skips any edge without exactly two).
+    - *Dihedral threshold used in the test:* **runtime-derived**, not
+      hard-coded — the midpoint of the largest gap in the reference mesh's sorted
+      per-edge dihedral distribution (with vertex 0 displaced ×3 on subdiv-2 this
+      lands cleanly between the shallow flat cluster and the steep fold cluster),
+      passed verbatim to `CurvatureCriterion`.
+  - **Next:** Step 10 (both a+b) complete → Milestone-1 quality-marking suite
+    done. Remaining deferred items: Step 9 (end-to-end example + runner scripts +
+    OPENMP smoke-build + CI subset wiring).

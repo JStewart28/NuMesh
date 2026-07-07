@@ -316,3 +316,23 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_markquality_edge.cpp
 )
+
+# Curvature/dihedral quality-based refinement marking (Step 10b): CurvatureCriterion
+# marks both faces incident to any sharp-fold edge. The dihedral gather is routed
+# through edge coordinators (allToAllV), NOT the 1-ring halo, so the marked set is
+# rank-count- AND boundary-straddle-independent -- pinned by matching a partition-
+# free geometric reference at ranks 1-5. refine() post-conditions still hold.
+tessera_add_test(
+    NAME     markquality_curv
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_markquality_curv.cpp
+)
+tessera_add_test(
+    NAME     markquality_curv
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_markquality_curv.cpp
+)

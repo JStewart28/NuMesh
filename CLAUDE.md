@@ -38,7 +38,7 @@ Current task logs:
 
 | Task | File | Status |
 |------|------|--------|
-| Milestone 1 — distributed triangle mesh | [tasks/milestone1_mesh.md](tasks/milestone1_mesh.md) | In progress (Steps 0–8, 10a done; regression gate 60/60, unit 28/28 — Step 10b next; Step 9 still deferred) |
+| Milestone 1 — distributed triangle mesh | [tasks/milestone1_mesh.md](tasks/milestone1_mesh.md) | In progress (Steps 0–8, 10a, 10b done; regression gate 70/70, unit 28/28 — Step 9 still deferred) |
 
 ---
 

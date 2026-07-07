@@ -223,6 +223,28 @@ directly; a `class = std::enable_if_t<!std::is_arithmetic<Criterion>::value>` SF
 guard on the generic `markByQuality(mesh, crit)` overload keeps a bare scalar
 threshold from being an ambiguous call against both overloads.
 
+`CurvatureCriterion<Scalar>{maxAngle}` (radians) marks **both** faces incident to
+any edge whose dihedral bend exceeds `maxAngle` (an absolute bend threshold). The
+dihedral needs both incident faces' unit normals, and the neighbour across a
+partition boundary is **not** guaranteed present in the vertex-based 1-ring halo
+(at a 3-way corner the edge's two vertices can both be ghosts owned by a lower
+rank, so the neighbour is incident to no owned vertex). So unlike the edge-length
+criterion it **communicates**, routing the gather through **edge coordinators**
+(`edgeCoordRank(EdgeKey) = hash % nranks` + `allToAllV`) — the same idiom the
+distributed refinement uses, **not** the halo. Each rank device-computes its owned
+faces' outward unit normals (`n = normalize((p1−p0) × (p2−p0))`, relying on the
+consistent CCW-seen-from-outside winding with the `e[k]=(v[k],v[k+1])` convention,
+so `n0·n1 = cos(dihedral bend)`), advertises `(EdgeKey, normal, faceGid, owner)` to
+each edge's coordinator; the coordinator receives exactly the two incident faces of
+every edge on the closed surface, flags the edge sharp iff `n0·n1 < cos(maxAngle)`,
+and routes a mark-request back to both incident face owners. Because the verdict is
+computed at a single deterministic coordinator per edge from both true incident
+normals — never from partition-local halo state — the marked set is rank-count
+**and** boundary-straddle independent. `Dim==2` (a planar surface has no dihedral)
+returns an all-zero mask. One coordinator round-trip (advertise → mark-request),
+plus the local device normal kernel; no new stored state and no change to
+`refine()`.
+
 A face flagged by more than one criterion is refined once; combining criteria (e.g.
 edge-length OR curvature) is a caller-side element-wise OR of their masks — no
 combinator is shipped.
