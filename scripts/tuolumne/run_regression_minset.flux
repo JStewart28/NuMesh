@@ -26,6 +26,7 @@
 #FLUX: --job-name=tessera-regression-gate
 #FLUX: --nodes=1
 #FLUX: --exclusive
+#FLUX: --queue=pdebug
 #FLUX: --output=tessera-regression-gate.{{id}}.out
 
 set -euo pipefail
