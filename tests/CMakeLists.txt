@@ -296,3 +296,23 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_io.cpp
 )
+
+# Edge-length quality-based refinement marking (Step 10a): markByQuality's
+# marked owned-face gid set matches an independent, partition-free reference
+# (rank-count independence), monotone edge-length progress after refine(),
+# refine() post-conditions (2:1 balance, midpoint agreement), and the
+# empty-mask/full-mask degenerate cases.
+tessera_add_test(
+    NAME     markquality_edge
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_markquality_edge.cpp
+)
+tessera_add_test(
+    NAME     markquality_edge
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_markquality_edge.cpp
+)

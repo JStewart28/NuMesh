@@ -24,6 +24,7 @@
 #include "Tessera_HaloExchange.hpp"
 #include "Tessera_Icosphere.hpp"
 #include "Tessera_IoCommon.hpp"
+#include "Tessera_MarkQuality.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_MeshBuilder.hpp"
 #include "Tessera_MeshMigrate.hpp"

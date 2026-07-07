@@ -197,6 +197,50 @@ parallel 2:1 balance to resolve. The interpolation policy exposes two hooks —
 interpolateVertexField(a, b)` (absolute member index `M`, called per component) —
 overridden per field with `if constexpr` on `M`.
 
+### Quality-based refinement marking
+
+`Tessera::markByQuality(mesh, criterion)` inspects mesh geometry and returns the
+owned-face `std::vector<char>` mask `refine()` already consumes, so AMR can be
+driven from mesh quality instead of a hand-authored mask:
+`markByQuality(mesh, crit) -> refine(mesh, halo, mask, policy)`. A criterion is
+duck-typed like `RefinePolicy` — any struct exposing
+`template<class MeshT> std::vector<char> mark(const MeshT& mesh) const` — and owns
+its own evaluation, including any communication it needs; both metrics recompute
+on demand from the existing `Position`/`Verts` fields (no new stored fields, no
+halo/migrate/refine propagation).
+
+`EdgeLengthCriterion<Scalar>{maxLen}` marks an owned face if **any** of its 3 edges
+exceeds the absolute target length `maxLen` (the vortex-sheet/interface-tracking
+convention: insert points once a segment exceeds ε). It is pure per-owned-face
+geometry with **no MPI** — every owned face's 3 vertices are local (owned or ghost,
+the 1-ring closure invariant) and a shared vertex's `Position` is bit-identical
+across ranks, so the marked set is rank-count independent for free. Evaluated with
+a device Kokkos kernel: a host-built face→vertex-local-index view feeds a
+`parallel_for` that reads the device `Position` slice directly (the only
+host→device transfer is the small `3·nOwnedF` index array). A scalar convenience
+overload `markByQuality(mesh, maxEdgeLength)` builds an `EdgeLengthCriterion`
+directly; a `class = std::enable_if_t<!std::is_arithmetic<Criterion>::value>` SFINAE
+guard on the generic `markByQuality(mesh, crit)` overload keeps a bare scalar
+threshold from being an ambiguous call against both overloads.
+
+A face flagged by more than one criterion is refined once; combining criteria (e.g.
+edge-length OR curvature) is a caller-side element-wise OR of their masks — no
+combinator is shipped.
+
+**Gotcha for anyone computing mesh geometry right after `refine()`:** `refine()`
+clears the halo and leaves only owned-first entities (the 1-deep halo is rebuilt in
+Step 7's `migrate()`), so an owned edge's endpoint can be a vertex this rank neither
+owns nor holds any copy of — in particular a new midpoint's owner and an edge
+incident to it can differ (midpoint owner = min incident *refining-face* owner;
+edge owner = min incident *child-face* owner), and `refine()` only ever ships a
+midpoint's **gid** to its co-sharers, never its position. A purely local (or
+before/after-snapshotted) vertex map is therefore not sufficient in general; code
+that needs positions immediately post-refine must gather any missing ones from
+their true owner via a gid coordinator (`gid % size`), the same idiom
+`MeshInvariants.hpp`'s `check21Balance`/`checkMidpointAgreement` use for cross-rank
+edge decisions, applied to position data instead of level/gid (see
+`tests/test_markquality_edge.cpp`'s `maxOwnedEdgeLength()` for a worked example).
+
 ### Load balancing — optional, external-first
 
 Load balancing is **optional**; building, haloing, and refining never require it.

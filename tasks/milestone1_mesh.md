@@ -72,6 +72,8 @@ migration path).
 | 7 | Migration API + optional Zoltan2 LB. Public `migrate(dest)` (faces + their V/E + whole field pack move) → recompute ownership → rebuild halo → sync (order explicit). Accessors `ownedFaceCentroids/Gids/Weights`. `loadBalance()` = Zoltan2 MultiJagged (SerialComm, solve-on-0+Bcast, never RCB) → `migrate()`. | Start: 4a + 5. End: `src/balance/Zoltan2Balancer.hpp` + `Mesh::migrate/loadBalance`. | Regression ranks 1–5: external path — hand-computed `dest` (and synthetic Canopy-style assignment) lands entities on requested ranks, invariants preserved; internal path — balance improves; rank-count-independent topology checksum. | Opus | The migrate→ownership→halo ordering that avoids phantom sends; Zoltan2 adapter/param specifics reused from Canopy; external-API surface Canopy will call. |
 | 8 | Parallel HDF5 + XDMF writer + round-trip reader. Dense global numbering via `MPI_Exscan` over owned-only counts; XDMF references dense indices; write connectivity + per-V/E/F fields; reader reconstructs a mesh re-passing Step-5 invariants. (Needs Step 0 done.) | Start: 5 + Step 0. End: `src/io/{HDF5Writer,HDF5Reader}.hpp`. | Regression ranks 1–5: write→read→compare topology + field checksums; on-disk global checksum **independent of rank count**; opens in Paraview. | Sonnet (layout Opus-spec'd) | HDF5 dataset layout + XDMF schema used; the dense-numbering exscan; any collective-IO tuning needed on Tuolumne. |
 | 9 | End-to-end example (icosphere→refine→rebalance→halo→write); separate unit vs regression runner scripts under `scripts/<system>/`; OPENMP smoke-build (non-gate); CI subset wiring; README/example-arg sync. | Start: 5–8. End: `examples/` + scripts + CI green. | E2E example runs at ranks 1–5; CI subset (`regression`/SERIAL ranks 1–2) green. | Sonnet | Example CLI args (mirror to README); runner script names; CI subset confirmation. |
+| 10a | Geometric quality-based refinement marking — **edge-length**. `QualityCriterion` concept (a struct with `std::vector<char> mark(const MeshT&) const`, mirroring `RefinePolicy`); ship `EdgeLengthCriterion<Scalar>{maxLen}` (mark an owned face if **any** of its 3 edges exceeds `maxLen`). Free fn `markByQuality(mesh, crit)` + scalar convenience overload `markByQuality(mesh, Scalar maxLen)` returning `std::vector<char>` sized `numOwnedFaces()`, consumed by `refine()` unchanged. On-demand from existing `Position`/`Verts` — **no new stored fields**; device Kokkos `parallel_for` over owned faces (host-built face→vertex-local index view; reads device `Position` slice) → device char marks → host vector. **No comm** (pure per-face geometric function; marked set is partition-independent for free). | Start: `refine()` (Step 6b). End: `src/Tessera_MarkQuality.hpp` (edge-length); added to umbrella. | Regression 1–5 SERIAL+HIP: marked **set** is rank-count-independent; `markByQuality → refine` drops max owned edge length below threshold (monotone progress); refine invariants (2:1, midpoint agreement, owned Euler) still hold. | Sonnet (this spec) | Device-kernel triviality confirmed (or downgraded to future-opt with reason); the exact `QualityCriterion` method signature as built; edge-length test thresholds per subdiv level. |
+| 10b | Geometric quality-based refinement marking — **curvature (dihedral)**. `CurvatureCriterion<Scalar>{maxAngle}` (radians): mark **both** faces incident to any edge whose dihedral bend exceeds `maxAngle`. Needs both incident faces' normals; the neighbour across a boundary edge is **not** guaranteed in the vertex-based 1-ring halo (Step 6b), so gather via **edge coordinators** — reuse `detail::edgeCoordRank` + `allToAllV`: device-compute per-owned-face unit normals, advertise `(EdgeKey, normal, faceGid, owner)` to the coordinator, coordinator receives exactly 2/edge on the closed surface, computes the dihedral, routes marks back to face owners. Extends `markByQuality` dispatch (criterion owns its own evaluation incl. comm). | Start: 10a + the refine() coordinator pattern (6b). End: `CurvatureCriterion` in `src/Tessera_MarkQuality.hpp`. | Regression 1–5 SERIAL+HIP: marked set rank-count-independent (identical faces marked regardless of partition, via the coordinator gather, **not** the halo); a synthetic sharp-fold fixture marks exactly the fold faces; `markByQuality → refine` invariants hold. | Opus (cross-rank determinism) | Coordinator round count/pattern reused from 6b; the normal-orientation/winding assumption relied on; dihedral threshold used in the test. |
 
 ## Progress log
 
@@ -843,3 +845,488 @@ migration path).
       write-hangs or slowness observed at any rank count 1–5.
   - **Next:** Step 9 (end-to-end example; unit/regression runner scripts;
     OPENMP smoke-build; CI subset wiring; README/example-arg sync).
+- 2026-07-06 — **Step 10 SPEC (Opus scoping pass; design only, no code).** A
+  geometric mesh-quality refinement criterion — a built-in that inspects face
+  geometry and produces the `std::vector<char>` owned-face mask that `refine()`
+  already consumes, so a caller can drive AMR from mesh quality instead of
+  hand-authoring the mask. Two criteria, split by distributed complexity into
+  **10a (edge-length, Sonnet)** and **10b (curvature, Opus)** per the user's
+  design confirmation (both metrics requested). Detailed enough for the assigned
+  session to implement with no further design decisions. **Report-back for the
+  "Model" column is deferred to each implementation session.**
+
+  ### 10.0 — Guiding decisions (rationale)
+  - **Marking is a free algorithm over the mesh, like `refine`/`distribute`** —
+    not a `Mesh` member (keeps `Mesh` lean; consistent with every other
+    algorithm). It returns the exact object `refine()` expects: a
+    `std::vector<char>` sized `numOwnedFaces()`, indexed by owned-face local
+    index, so `markByQuality(mesh, crit)` → `refine(mesh, halo, mask, policy)` is
+    a drop-in pipeline.
+  - **Pluggable `QualityCriterion`, mirroring `RefinePolicy`.** A criterion is a
+    small struct exposing one method — `std::vector<char> mark(const MeshT& mesh)
+    const` — that owns its own evaluation *including any communication*. This is
+    why the concept is a whole-mesh `mark()` and **not** a per-face
+    `bool operator()(face)`: the edge-length criterion is embarrassingly local,
+    but the curvature criterion needs a cross-rank gather, and a uniform
+    `mark(mesh)` interface hides that difference from the caller.
+    `markByQuality(mesh, crit)` is a one-line dispatcher: `return
+    crit.mark(mesh);`. A later curvature-aware/physics criterion drops in with no
+    API churn — exactly the extensibility argument used for `RefinePolicy`.
+  - **On-demand, no new stored fields.** Both metrics are recomputed from the
+    existing `VertexField::Position` + `FaceField::Verts`. A stored per-face
+    quality field would have to halo/migrate/refine-propagate (a new invariant and
+    cost) for a metric that is cheap and only queried at mark time. Recompute is
+    stateless and always consistent.
+  - **Flat header convention** (matches the realized `src/Tessera_*.hpp` layout):
+    one new header `src/Tessera_MarkQuality.hpp`, header-only, added to the
+    umbrella `src/Tessera.hpp`. Both criteria live in it (10b appends to the file
+    10a creates).
+
+  ### 10.1 — Public API (`src/Tessera_MarkQuality.hpp`)
+  ```cpp
+  namespace Tessera {
+
+  // Concept (duck-typed, like RefinePolicy): a criterion is any struct with
+  //   template<class MeshT> std::vector<char> mark(const MeshT& mesh) const;
+  // returning a mask sized mesh.numOwnedFaces(), 1 = refine this owned face.
+
+  // --- 10a: local, no communication -------------------------------------------
+  template <class Scalar>
+  struct EdgeLengthCriterion {
+      Scalar maxLen;                       // absolute target edge length
+      template <class MeshT> std::vector<char> mark( const MeshT& mesh ) const;
+  };
+
+  // --- 10b: cross-rank gather via edge coordinators ---------------------------
+  template <class Scalar>
+  struct CurvatureCriterion {
+      Scalar maxAngle;                     // radians; mark if dihedral bend >
+      template <class MeshT> std::vector<char> mark( const MeshT& mesh ) const;
+  };
+
+  // Uniform entry point + scalar convenience overload (builds EdgeLengthCriterion).
+  template <class MeshT, class Criterion>
+  std::vector<char> markByQuality( const MeshT& mesh, const Criterion& crit )
+  { return crit.mark( mesh ); }
+
+  template <class MeshT>
+  std::vector<char> markByQuality( const MeshT& mesh,
+                                   typename MeshT::scalar_type maxEdgeLength )
+  { return EdgeLengthCriterion<typename MeshT::scalar_type>{ maxEdgeLength }
+             .mark( mesh ); }
+  }
+  ```
+  - **Threshold semantics = absolute.** `maxLen` is an absolute arc-length target
+    (the vortex-sheet / interface-tracking convention: insert points when a
+    segment exceeds ε). `maxAngle` is an absolute dihedral bend in radians. A
+    relative-to-initial variant is a future criterion, not this step.
+  - Marks are `1`/`0` `char`. A face flagged by *either* criterion is refined; if
+    a caller wants the union of two criteria they OR the two masks
+    element-wise (documented; no combinator shipped this step).
+
+  ### 10.2 — Step 10a: `EdgeLengthCriterion::mark` (Sonnet)
+  Pure per-owned-face geometry; **no MPI**. Every owned face's 3 vertices are
+  local (owned or ghost — the 1-ring closure invariant), and a shared vertex's
+  `Position` is bit-identical across ranks (same gid ⇒ same position, established
+  by the builder + halo sync), so the marked **set is rank-count independent with
+  no communication**.
+
+  Device-kernel path (the "trivial device kernel" the user asked for — do this
+  unless it proves non-trivial, in which case fall back to a host loop and record
+  a Future Optimization in README with the reason):
+  1. Host copy of **vertex gids only** (`nv` uint64, not positions):
+     `gid2lv[gid] = localIndex`. (`refine()` builds the identical map — reuse the
+     pattern.)
+  2. Build a host `Kokkos::View<int*[3]>` `faceVertLocal("fvl", nOwnedF)` from a
+     host copy of `FaceField::Verts` (owned block only), translating each face's 3
+     vertex gids → local indices via `gid2lv`; `deep_copy` to device. This is the
+     only host→device transfer of new data; it is small (`3·nOwnedF` ints).
+  3. `Kokkos::parallel_for` over `[0,nOwnedF)` in `MeshT::execution_space`:
+     read the device `VertexField::Position` slice at the 3 local indices, compute
+     the 3 edge lengths (`sqrt(Σ_d (p[i][d]-p[j][d])²)` over `d∈[0,Dim)`), write
+     `mark(f) = (anyEdge > maxLen) ? 1 : 0` into a
+     `Kokkos::View<char*>` on device. Positions are **already device-resident**
+     (`mesh.vertices()`), so the kernel avoids copying `nv·Dim` scalars to host —
+     the actual win over a pure-host loop.
+  4. `deep_copy` the device char view → `std::vector<char>` (via a host mirror);
+     return it.
+  - **Empty-mesh / `nOwnedF==0` guard:** return an empty vector; do not launch a
+    zero-length kernel path that trips Cabana/Kokkos on some backends — early-out.
+  - **`Scalar` templating:** works for `double` and `float` unchanged (lengths in
+    `Scalar`); `Dim` from `MeshT::dim` (2 or 3). No sphere assumption — plain
+    Euclidean edge length in the embedding dimension.
+
+  ### 10.3 — Step 10b: `CurvatureCriterion::mark` (Opus)
+  Dihedral bend across an edge needs **both** incident faces' normals. For an
+  owned face and one of its edges, the neighbour face may be owned by another rank
+  and — per the Step-6b analysis — is **not guaranteed present in the vertex-based
+  1-ring halo** (at a 3-way corner the edge's vertices can both be ghosts owned by
+  a lower rank, so the neighbour is incident to no owned vertex). Therefore the
+  gather is routed through **edge coordinators**, exactly the Step-6b Phase-1
+  pattern (`detail::edgeCoordRank(EdgeKey, size)` + `allToAllV`), **not** the halo.
+  1. **Per-owned-face unit normal** (device kernel, same face→vertex-local view as
+     10a): `n = normalize( (p1-p0) × (p2-p0) )` using the face's `Verts` winding
+     (the builder/refine maintain consistent CCW winding via the
+     `edge(v[k],v[(k+1)%3])` convention, so adjacent normals are comparably
+     oriented and `n0·n1` measures the true bend). **`Dim==3` only** — the cross
+     product is 3D; for `Dim==2` a surface has no dihedral, so `mark()` returns
+     all-zero with a one-line note (Milestone 1 is `Dim=3`). `deep_copy` normals
+     to host.
+  2. **Advertise to coordinators** (host, `allToAllV`): for each owned face `f`
+     and each of its 3 edges `keyOf(v[k], v[(k+1)%3])`, send
+     `{ EdgeKey key, Scalar n[3], GlobalId faceGid, Rank owner }` to
+     `edgeCoordRank(key, size)`. (Reuse the `PropMsg`-shaped advertisement idiom;
+     define a local `NormalMsg` struct — trivially copyable, `T` for `allToAllV`.)
+  3. **Coordinator verdict:** group received messages by `EdgeKey`; each edge has
+     exactly **2** incident faces on the closed surface (assert/skip otherwise,
+     matching the Step-6b `inc.size()!=2` guard). Compute
+     `cosang = clamp(n0·n1, -1, 1)`; the edge is "sharp" iff
+     `acos(cosang) > maxAngle` (equivalently `cosang < cos(maxAngle)` — prefer the
+     `cos` form to avoid `acos` round-off near 0). For a sharp edge, route a
+     mark-request `{ GlobalId faceGid }` back to **both** incident face owners
+     (both faces adjacent to a sharp fold get resolved).
+  4. **Apply marks** (host): `allToAllV` the mark-requests back; for each received
+     `faceGid`, set `mask[gid2of[faceGid]] = 1` (owned-face-gid → owned index map,
+     built as in `refine()`). Return the mask.
+  - **Rank-count independence** holds because the verdict is computed at a single
+    deterministic coordinator per edge from both true incident normals — never
+    from partition-local halo state — so the same faces are marked at every np.
+    This is the property the gate test pins.
+  - **No new persistent state, no `refine()` change.** The criterion is
+    self-contained; it only reads the mesh and returns a mask.
+
+  ### 10.4 — Tests (both regression, SERIAL+HIP, ranks 1–5)
+  Add gate rows via `tessera_add_test(... TIER regression RANKS
+  ${TESSERA_TEST_MPI_RANKS})` for SERIAL and HIP in `tests/CMakeLists.txt`
+  (expected new count **+20**: `markquality_edge_*` np1–5 and
+  `markquality_curv_*` np1–5, each ×{SERIAL,HIP}).
+
+  - **`tests/test_markquality_edge.cpp` (10a):** `buildIcosphere(subdiv=2)` +
+    `facePartitionByAxis` + `distribute`. Compute a threshold `t` strictly between
+    the coarse max edge length and the once-refined max (e.g.
+    `t = 0.6 × maxOwnedEdgeLen` so a nontrivial proper subset is marked). Assert:
+    (a) **rank-count independence** — collect the marked owned-face **gids** into a
+    global set (BXOR checksum over marked `FaceField::Gid`, `MPI_BXOR`) and assert
+    it is identical at np1–5 (the gate running all five confirms agreement);
+    (b) **monotone progress** — `markByQuality(mesh,t)` → `refine(mesh,halo,mask)`
+    → the new global max owned edge length is `< t` for every face that was marked
+    (i.e. all previously-over-length edges are gone); (c) refine post-conditions
+    (`check21Balance`, `checkMidpointAgreement`, `ownedEulerGlobal==2`) hold — reuse
+    `MeshInvariants.hpp`. Also assert the all-pass degenerate cases: `t` above the
+    global max ⇒ empty mask (no-op refine); `t` below the global min ⇒ full mask ⇒
+    reproduces one uniform subdivision level (same counts as the Step-6b uniform
+    case). `double` and `float` builds.
+  - **`tests/test_markquality_curv.cpp` (10b):** a **synthetic sharp-fold
+    fixture** — take an icosphere and displace one vertex outward (or build a small
+    two-plane "roof" soup via `buildFromTriangleSoup`) so a known ring of edges has
+    a large dihedral and the rest are near-flat; distribute. Assert:
+    (a) `markByQuality(mesh, CurvatureCriterion{θ})` with θ between the flat and
+    fold angles marks **exactly** the faces incident to the fold edges — checked as
+    a rank-count-independent marked-gid set (BXOR at np1–5, same as 10a); (b) the
+    marked set is identical whether or not the fold straddles a partition boundary
+    (drive it by choosing `facePartitionByAxis` axis so the fold crosses a boundary
+    at np≥2 — this is the property that fails if a halo-based gather were used
+    instead of the coordinator); (c) `refine` invariants hold post-mark.
+
+  ### 10.5 — Deliverables checklist
+  - `src/Tessera_MarkQuality.hpp` (10a: `EdgeLengthCriterion`, `markByQuality`
+    + scalar overload; 10b appends `CurvatureCriterion`). Add to `src/Tessera.hpp`.
+  - `tests/test_markquality_edge.cpp` (10a) + `tests/test_markquality_curv.cpp`
+    (10b) + their gate rows in `tests/CMakeLists.txt`.
+  - BSD-3-Clause SPDX header on every new file; `--target format-check` clean.
+  - **README:** add a "Quality-based refinement marking" subsection to the public
+    API (the `markByQuality` free fn + both criteria + the absolute-threshold
+    semantics), per the "README in sync" invariant.
+  - Run the gate (`flux batch scripts/tuolumne/run_regression_minset.flux` or the
+    dev runner with the `regression` label); report the new regression count
+    (expected **60/60** after both 10a+10b: 50 + 10, or **55/55** after 10a alone)
+    and unit count (unchanged **28/28**).
+
+  ### 10.6 — Model assignment
+  - **10a → Sonnet.** Local, no distributed determinism, a device kernel + a mask
+    return + a straightforward test; mechanical against this spec.
+  - **10b → Opus.** Cross-rank correctness: the edge-coordinator gather and its
+    rank-count-independence guarantee are exactly the distributed-determinism class
+    the contract reserves for Opus (same machinery as Step 6b Phase 1).
+  - *(Env caveat, per prior entries: `sonnet` delegation 403s for this
+    subscription, so both may run on Opus; the column is advisory.)*
+
+  ### 10.7 — Implementation prompts (hand to the assigned session verbatim)
+
+  **10a (Sonnet):**
+  > Implement Milestone-1 Step 10a (edge-length quality-based refinement marking)
+  > in Tessera. Read `tasks/milestone1_mesh.md` in full first — the "Step 10 SPEC"
+  > progress-log entry (§10.0–10.2, 10.4–10.5) is your complete spec; implement it
+  > with no new design decisions. Create `src/Tessera_MarkQuality.hpp` with the
+  > `QualityCriterion` concept, `EdgeLengthCriterion<Scalar>`, and the
+  > `markByQuality(mesh, crit)` + scalar-overload free functions per §10.1;
+  > evaluate via the device Kokkos kernel described in §10.2 (host-built
+  > face→vertex-local index view, read the device `Position` slice, return
+  > `std::vector<char>` sized `numOwnedFaces()`), with the `nOwnedF==0` early-out.
+  > Add the header to `src/Tessera.hpp`. Write `tests/test_markquality_edge.cpp`
+  > and its SERIAL+HIP regression gate rows exactly per §10.4 (rank-count-
+  > independent marked-gid BXOR, monotone edge-length progress after `refine`,
+  > refine invariants via `MeshInvariants.hpp`, empty/full degenerate cases;
+  > `double` and `float`). BSD-3-Clause SPDX header on both new files; keep
+  > `--target format-check` clean; add the README subsection (§10.5). Build
+  > (`run_cmake_toulumne.sh` + make) and run the gate via the dev runner with the
+  > `regression` label; report the new regression count (expect 55/55 for 10a
+  > alone), unit count (unchanged 28/28), whether the device kernel proved trivial
+  > (or was downgraded to a host loop + README Future-Optimization with the
+  > reason), and the exact `QualityCriterion` method signature as built. Append a
+  > Step-10a progress-log entry.
+
+  **10b (Opus):**
+  > Implement Milestone-1 Step 10b (curvature/dihedral quality-based refinement
+  > marking) in Tessera, on top of a landed Step 10a. Read `tasks/milestone1_mesh.md`
+  > in full first — the "Step 10 SPEC" entry (§10.0–10.1, 10.3–10.5) is your spec.
+  > Append `CurvatureCriterion<Scalar>` to `src/Tessera_MarkQuality.hpp` per §10.3:
+  > device-compute per-owned-face unit normals (Dim==3; Dim==2 returns all-zero),
+  > advertise `(EdgeKey, normal, faceGid, owner)` to `detail::edgeCoordRank` via
+  > `allToAllV`, coordinator computes the dihedral over the exactly-two incident
+  > faces (`cosang < cos(maxAngle)`, closed-surface `inc.size()==2` guard), routes
+  > mark-requests back to both incident face owners, apply into the owned-face
+  > mask. Reuse the Step-6b Phase-1 coordinator idiom (`Tessera_RefineParallel.hpp`)
+  > — this must NOT use the 1-ring halo (Step 6b documents why it is incomplete
+  > across boundaries). Write `tests/test_markquality_curv.cpp` and its SERIAL+HIP
+  > regression rows per §10.4 (synthetic sharp-fold fixture; marked set is exactly
+  > the fold faces and is rank-count-independent AND boundary-straddle-independent;
+  > refine invariants hold). BSD-3-Clause SPDX + `format-check` clean; extend the
+  > README subsection. Build and run the gate; report the new regression count
+  > (expect 60/60), unit count (28/28), the coordinator round count/pattern, the
+  > winding/orientation assumption relied on, and the dihedral threshold used.
+  > Append a Step-10b progress-log entry.
+- 2026-07-07 — **Step 10a landed (Sonnet). Sixth regression-tier test — crash from
+  the prior BLOCKED entry diagnosed and fixed.** `src/Tessera_MarkQuality.hpp`
+  and `tests/test_markquality_edge.cpp` (already written per the Step-10 SPEC)
+  are now green at np1–5, SERIAL+HIP.
+  - **Root cause (confirmed by reading `Tessera_RefineParallel.hpp`, not
+    guessed):** `refine()`'s Phase 3 rebuilds the local vertex AoSoA as
+    `nNewV = nOwnedV + myMid.size()` (pre-refine-owned vertices + new owned
+    midpoints only) — any vertex that was only a *ghost* pre-refine (e.g. a
+    shared corner owned by a lower rank) is dropped entirely, not merely
+    marked non-owned. The test's `maxOwnedEdgeLength()` built a `gid2lv` map
+    from post-refine `mesh.vertices()` and `.at()`'d every owned edge's two
+    endpoints — exactly the vertices `refine()` can drop — reproducing only
+    at np≥2 (np1 has no ghosts to begin with, so nothing is ever dropped).
+    This confirmed the blocked entry's hypothesis in substance, but a
+    **before/after position snapshot was not sufficient** on its own: a new
+    midpoint's owner (min incident *refining-face* owner, Phase 2) and an
+    edge incident to it (min incident *child-face* owner, Phase 3) can be
+    *different* ranks, and `refine()` ships a midpoint's **gid** to its
+    co-sharers but never its **position**
+    (`Tessera_RefineParallel.hpp`'s Phase-2 `KeyGid` message carries no
+    position field) — so a rank can legitimately own an edge whose midpoint
+    endpoint it was never told the coordinates of, and no local or
+    previously-held data can supply it. Verified empirically: a
+    debug-instrumented run showed the exact missing gid (`162` on a subdiv-2
+    np2 SERIAL run) was a midpoint gid (subdiv-2 has `V0=162` original
+    vertices, so `162` is the first newly-created gid) owned by the *other*
+    rank. **This is real, but confined to a test-only computation** (no
+    stored invariant in `Tessera_MarkQuality.hpp`/`refine()`/`distribute()`
+    is violated — `refine()`'s "owned-only, halo cleared until Step 7"
+    contract is exactly as documented), so it stayed in scope for this
+    session rather than escalating to Opus.
+  - Also confirmed, and explicitly ruled out as a fix, that a **self-migrate**
+    (`migrate(mesh, halo, dest=self)`, the pattern the Step-8 reader uses to
+    rebuild ghosts) does **not** work here: `Tessera_MeshMigrate.hpp`'s own
+    documented precondition is "a valid 1-deep halo (every owned face's 3
+    vertices and 3 edges are locally present)" — exactly the invariant
+    `refine()` just broke — so `migrate()`'s Round A hits the identical
+    `.at()` crash internally when called directly on fresh `refine()` output.
+    No other call site in the codebase chains `migrate()` directly after
+    `refine()`, so this combination was untested and is not (yet) a supported
+    pattern.
+  - **Fix:** rewrote `maxOwnedEdgeLength()` in `tests/test_markquality_edge.cpp`
+    to gather any locally-unknown edge-endpoint position from its true owner
+    via a **gid coordinator** (`Tessera::detail::gidCoordRank`, `gid % size`) —
+    the same idiom `MeshInvariants.hpp`'s `check21Balance`/
+    `checkMidpointAgreement` already use for cross-rank edge decisions
+    (Step 6b), applied here to raw position data instead of level/gid: every
+    rank advertises its own owned vertices' positions to their coordinators;
+    every rank then requests any edge-endpoint gid it doesn't hold locally;
+    the coordinator replies with the position. Purely test-local (three
+    `allToAllV` rounds using the existing `Tessera::allToAllV` primitive); no
+    change to `src/Tessera_MarkQuality.hpp`, `refine()`, or `migrate()`.
+  - Removed the temporary debug `fprintf(stderr, ...)` checkpoints
+    (`"pre-mark"`, `"post-mark"`, `"post-checksum"`, `"post-refine"`,
+    `"post-invariants"`, `"post-maxedge"`) added during the blocked session's
+    diagnosis. `--target format-check` clean (the `format` target also
+    reformatted one pre-existing long line in `Tessera_MarkQuality.hpp` that
+    predated this session, plus this file's new code).
+  - Added the README "Quality-based refinement marking" subsection (public
+    `markByQuality`/`EdgeLengthCriterion` API, absolute-threshold semantics,
+    the ambiguous-overload SFINAE note, and the post-refine position-gather
+    gotcha above for any future code needing geometry immediately after
+    `refine()`), placed after "### Adaptive refinement" and before
+    "### Load balancing" per the hand-off.
+  - **Full gate run:** `flux batch scripts/tuolumne/run_regression_minset.flux`
+    → **regression 60/60** (50 prior + 10 new
+    `markquality_edge_{SERIAL,HIP}_np{1-5}`) — confirms the blocked entry's
+    flagged discrepancy: the correct count is **60/60**, not the Step-10
+    SPEC's §10.5/§10.7 "55/55 for 10a alone" text (that arithmetic doesn't
+    match the established +10-per-step pattern from Steps 5/7/7b/8, each
+    registering 2 backends × 5 ranks). `flux batch
+    scripts/tuolumne/run_unit_tests.flux unit` → **unit 28/28**, unchanged.
+  - **Report-back (per the contract):**
+    - Device kernel: **not downgraded** — `detail::markEdgeLength` in
+      `src/Tessera_MarkQuality.hpp` is unchanged from the blocked hand-off,
+      still a genuine device `Kokkos::parallel_for` over owned faces reading
+      the device `Position` slice directly, with only the small
+      `3·nOwnedF`-int face→vertex-local view transferred host→device. It
+      proved trivial as specced; no Future Optimization needed.
+    - `QualityCriterion`/`EdgeLengthCriterion::mark` signature as built:
+      ```cpp
+      template <class Scalar>
+      struct EdgeLengthCriterion {
+          Scalar maxLen;
+          template <class MeshT> std::vector<char> mark( const MeshT& mesh ) const;
+      };
+      // dispatcher (SFINAE-guarded against a bare arithmetic Criterion):
+      template <class MeshT, class Criterion,
+                class = std::enable_if_t<!std::is_arithmetic<Criterion>::value>>
+      std::vector<char> markByQuality( const MeshT& mesh, const Criterion& crit );
+      // scalar convenience overload:
+      template <class MeshT>
+      std::vector<char> markByQuality( const MeshT& mesh,
+                                       typename MeshT::scalar_type maxEdgeLength );
+      ```
+    - Root cause + fix: see above — a test-only gap in computing global
+      max owned edge length immediately post-`refine()` (a rank can own an
+      edge whose midpoint endpoint's position was never communicated to it,
+      since `refine()` ships midpoint gids to co-sharers but not positions),
+      fixed with an in-test gid-coordinator position gather; no changes to
+      `Tessera_MarkQuality.hpp`, `Tessera_Refine*.hpp`, or
+      `Tessera_MeshMigrate.hpp`.
+  - **Next:** Step 10b (curvature/dihedral criterion) — Opus, per the
+    Step-10 SPEC §10.7 prompt above (unchanged).
+- 2026-07-06 — **Step 10a in progress (Sonnet), BLOCKED on a distributed-run
+  crash — handing off mid-task.** `src/Tessera_MarkQuality.hpp` (concept +
+  `EdgeLengthCriterion<Scalar>` + `markByQuality` free fn/scalar overload, per
+  §10.1/§10.2) is written and added to the umbrella `src/Tessera.hpp`; the
+  device kernel path (host-built face->vertex-local index view, device
+  `Position` slice, `nOwnedF==0` early-out) builds clean and **passes at
+  np1** for both `double`/`float` and Serial/HIP. One real design gap found
+  and fixed versus the literal §10.1 pseudocode: `markByQuality(mesh, crit)`
+  and the scalar overload `markByQuality(mesh, Scalar)` are ambiguous for a
+  bare scalar argument (template deduction accepts `Criterion=Scalar` for the
+  generic overload too) — fixed with
+  `class = std::enable_if_t<!std::is_arithmetic<Criterion>::value>` on the
+  generic overload.
+  - `tests/test_markquality_edge.cpp` + its SERIAL+HIP regression gate rows
+    are wired into `tests/CMakeLists.txt` (`markquality_edge_{SERIAL,HIP}_np{1-5}`).
+    Test design: builds an independent, un-partitioned reference mesh via
+    `buildIcosphere` alone (gid==index at that stage) to compute `minEdge`/
+    `maxEdge` and a partition-free expected-mark array + reference BXOR
+    checksum with **no MPI at all**; separately builds+distributes the same
+    icosphere, calls `markByQuality`, and compares the owned marked set (by
+    gid) against that reference, plus `refine()` + `MeshInvariants` checks
+    and the empty/full-mask degenerate cases.
+  - **BLOCKED:** at `np==1` all 4 (Scalar x backend) variants pass. At
+    `np>=2` (both SERIAL and HIP) the test aborts with
+    `terminate called after throwing an instance of 'std::out_of_range'
+    what(): unordered_map::at`. Debug instrumentation (temporary `fprintf
+    (stderr, ...)` checkpoints, still in the file — clean up once fixed)
+    narrowed it: at np2, both ranks print `post-mark ok` (so
+    `markByQuality`/`detail::markEdgeLength` itself completes without
+    throwing on either rank), so the throw is **downstream** of marking —
+    most likely in the test's own `maxOwnedEdgeLength()` helper
+    (`tests/test_markquality_edge.cpp`, computes global max edge length
+    **after `refine()`** by building a `gid2lv` map from `mesh.vertices()`
+    (owned+ghost) and doing `.at()` on every owned edge's two endpoint
+    vertex gids). Leading hypothesis (unverified — next session should
+    confirm before changing code): Step 6b's `refine()` **clears the halo**
+    and leaves the mesh holding essentially only owned-closure entities
+    ("Leaves owned-only entities; clears the halo... the 1-deep halo is
+    rebuilt in Step 7", per the Step-6b log entry above) — so
+    `mesh.vertices()` post-refine may no longer contain every vertex an
+    owned edge references, and a naive gid2lv-over-`mesh.vertices()` lookup
+    (the pattern used by `refine()`/`refineLocal()` internals themselves,
+    but *before* clearing) is not safe to reuse verbatim on a
+    freshly-refined mesh. `check21Balance`/`checkMidpointAgreement` (used
+    unmodified from `MeshInvariants.hpp`) do NOT hit this because they route
+    through edge coordinators (`allToAllV`) instead of a local gid2lv
+    lookup — that is probably the pattern `maxOwnedEdgeLength` needs to
+    follow instead, or it needs to restrict itself to data provably local
+    post-refine (e.g. derive edge length from OWNED FACE vertices via the
+    same per-face kernel `markEdgeLength` uses, not via `EdgeField::Verts`
+    + a full-mesh vertex map). **Confirm the actual root cause before
+    picking a fix** — this is a hypothesis, not a confirmed diagnosis.
+  - **Next (hand-off prompt below):** diagnose + fix the np>=2 crash, get
+    `markquality_edge_{SERIAL,HIP}_np{1-5}` green, remove the temporary debug
+    `fprintf` instrumentation, add the README subsection (§10.5, not yet
+    written), run the full gate, and append a proper Step-10a completion
+    entry (report the actual new regression count — note the §10.5/§10.7
+    text's "55/55 for 10a alone" appears arithmetically inconsistent with
+    the established "+10 per step" pattern from Steps 5/7/7b/8 registering
+    2 backends x 5 ranks each; 10a's 10 new rows should bring regression
+    from 50 to **60**, not 55 — flag this discrepancy explicitly in the
+    report-back rather than silently reconciling to either number).
+
+  > **Hand-off prompt (verbatim) — recommended Sonnet, escalate to Opus only
+  > if warranted:**
+  >
+  > Diagnose and fix a distributed-run crash in Tessera's in-progress Step
+  > 10a (edge-length quality-based refinement marking). Read
+  > `tasks/milestone1_mesh.md` in full first, especially the "Step 10 SPEC"
+  > entry (§10.0-10.2, 10.4-10.5) and the "Step 10a in progress... BLOCKED"
+  > entry immediately above this prompt, which has the full symptom,
+  > repro steps, and a leading (unconfirmed) hypothesis.
+  >
+  > Summary of state: `src/Tessera_MarkQuality.hpp` and
+  > `tests/test_markquality_edge.cpp` exist and are wired into
+  > `tests/CMakeLists.txt` as regression rows
+  > (`markquality_edge_{SERIAL,HIP}_np{1-5}`) but are **not yet green** — do
+  > not report Step 10a complete until they are. The build directory
+  > `build-tuolumne` is already configured (spack env
+  > `~/spack_envs/tuolumne_trilinos/` active, `run_cmake_toulumne.sh` already
+  > run) and builds clean. Repro: `export TESSERA_REPO=$(pwd); flux batch
+  > scripts/tuolumne/run_unit_tests.flux regression -R markquality_edge`
+  > (or a smaller flux job running `tessera_test_markquality_edge_SERIAL`
+  > directly at `--ntasks 2`, as the blocked entry's debug job did) — np1
+  > passes, np>=2 aborts with `unordered_map::at` / `std::out_of_range`
+  > immediately after both ranks print the temporary debug line
+  > `post-mark ok`, i.e. after `markByQuality()` itself succeeds.
+  >
+  > Confirm the actual throw site (add/adjust the temporary `fprintf(stderr,
+  > ...)` checkpoints already in the test, or a debugger/core dump, or
+  > targeted try/catch around candidate `.at()` calls) before changing any
+  > code — do not guess-fix. The blocked entry's hypothesis is that
+  > `maxOwnedEdgeLength()` (a test-only helper in
+  > `tests/test_markquality_edge.cpp`) is unsafe to call on a
+  > freshly-`refine()`-d mesh because Step 6b's `refine()` clears the halo
+  > (ghosts are only rebuilt in Step 7's `migrate()`), so a `gid2lv` map
+  > built from `mesh.vertices()` may not cover every vertex an **owned
+  > edge** references post-refine. If confirmed, fix by making
+  > `maxOwnedEdgeLength()` derive lengths only from data guaranteed local
+  > post-refine (e.g. per-owned-face vertex lookups, the same closure
+  > `detail::markEdgeLength` relies on, rather than `EdgeField::Verts` +
+  > a full-mesh vertex map) — or by using an edge-coordinator gather like
+  > `MeshInvariants.hpp`'s `check21Balance`/`checkMidpointAgreement` already
+  > do for exactly this reason. If the actual root cause is instead
+  > something in `Tessera_MarkQuality.hpp` itself, or a genuine
+  > halo/ownership invariant bug in `refine()`/`distribute()` rather than a
+  > test-only issue, **stop and escalate to Opus** — that would mean this is
+  > a distributed-correctness design question, not a mechanical fix, and is
+  > out of scope for a Sonnet session per this repo's Sonnet/Opus contract
+  > (see the Step-contract table near the top of `tasks/milestone1_mesh.md`).
+  >
+  > Once green at np1-5 for both SERIAL and HIP: remove the temporary debug
+  > `fprintf(stderr, ...)` lines from `tests/test_markquality_edge.cpp`
+  > (search for `"pre-mark"`, `"post-mark"`, `"post-checksum"`,
+  > `"post-refine"`, `"post-invariants"`, `"post-maxedge"`), confirm
+  > `--target format-check` is clean, add the still-missing README
+  > "Quality-based refinement marking" subsection per §10.5 (a home for it:
+  > right after the existing "### Adaptive refinement" section and before
+  > "### Load balancing", matching the doc's existing section order), run
+  > the full regression gate (`flux batch
+  > scripts/tuolumne/run_regression_minset.flux`, or the dev runner with the
+  > `regression` label), and append a **new** Step-10a completion entry to
+  > `tasks/milestone1_mesh.md` (do not edit this blocked entry — append
+  > below it) reporting: the actual new regression count (expect 60/60,
+  > per the discrepancy noted above — call it out either way), the unit
+  > count (expect unchanged 28/28), whether the device kernel proved
+  > trivial or was downgraded to a host loop (it was NOT downgraded as of
+  > this hand-off — record if that changes), the exact
+  > `QualityCriterion`/`EdgeLengthCriterion::mark` signature as built, and
+  > the root cause + fix for this crash.
