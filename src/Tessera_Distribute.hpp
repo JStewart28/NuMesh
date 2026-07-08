@@ -15,6 +15,7 @@
 #include "Tessera_AllToAllV.hpp"
 #include "Tessera_HaloExchange.hpp"
 #include "Tessera_Mesh.hpp"
+#include "Tessera_Profiling.hpp"
 #include "Tessera_Types.hpp"
 
 #include <Cabana_Core.hpp>
@@ -100,6 +101,7 @@ buildKindPlan( MPI_Comm comm, int self_rank, int comm_size,
 template <class MeshT>
 std::vector<Rank> facePartitionByAxis( const MeshT& mesh, int axis = 2 )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_PARTITION );
     using Scalar = typename MeshT::scalar_type;
     const int Nv = static_cast<int>( mesh.numVertices() );
     const int Nf = static_cast<int>( mesh.numFaces() );
@@ -168,6 +170,7 @@ template <class MeshT>
 void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                  const std::vector<Rank>& faceOwner )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_DISTRIBUTE );
     using memory_space = typename MeshT::memory_space;
     constexpr int Dim = MeshT::dim;
     const int R = mesh.rank();
@@ -332,6 +335,8 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
 
     // ---- rebuild local CSR 1-ring (local indices) --------------------------
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_DISTRIBUTE_CSR );
         std::vector<int> off( nlv + 1, 0 );
         for ( int li = 0; li < nlf; ++li )
         {
@@ -353,6 +358,8 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         detail::fillCsr( mesh.vertexFaces(), off, nbr, "vertex_faces" );
     }
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_DISTRIBUTE_CSR );
         std::vector<int> off( nlv + 1, 0 );
         for ( int li = 0; li < nle; ++li )
         {
@@ -386,12 +393,16 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         }
         return g;
     };
-    halo.vplan = detail::buildKindPlan<memory_space>(
-        comm, R, comm_size, ghosts_of( vorder, nov, vOwner ), v2l );
-    halo.eplan = detail::buildKindPlan<memory_space>(
-        comm, R, comm_size, ghosts_of( eorder, noe, eOwner ), e2l );
-    halo.fplan = detail::buildKindPlan<memory_space>(
-        comm, R, comm_size, ghosts_of( forder, nof, faceOwner ), f2l );
+    {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_DISTRIBUTE_HALOPLAN );
+        halo.vplan = detail::buildKindPlan<memory_space>(
+            comm, R, comm_size, ghosts_of( vorder, nov, vOwner ), v2l );
+        halo.eplan = detail::buildKindPlan<memory_space>(
+            comm, R, comm_size, ghosts_of( eorder, noe, eOwner ), e2l );
+        halo.fplan = detail::buildKindPlan<memory_space>(
+            comm, R, comm_size, ghosts_of( forder, nof, faceOwner ), f2l );
+    }
 }
 
 // ============================================================================
@@ -400,6 +411,7 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
 template <class MeshT, class MemorySpace>
 void haloExchange( MeshT& mesh, MeshHalo<MemorySpace>& halo )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_HALO_EXCHANGE );
     haloExchange( mesh.comm(), mesh.vertices(), halo.vplan );
     haloExchange( mesh.comm(), mesh.edges(), halo.eplan );
     haloExchange( mesh.comm(), mesh.faces(), halo.fplan );

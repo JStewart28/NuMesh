@@ -25,8 +25,25 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(Tessera_ENABLE_TESTING   "Build and register the Tessera test suite"  OFF)
 option(Tessera_ENABLE_EXAMPLES  "Build the Tessera example programs"          OFF)
 option(Tessera_ENABLE_PROFILING "Enable Tessera internal profiling"           OFF)
-set(Tessera_PROFILING_LEVEL 0 CACHE STRING
-    "Tessera profiling verbosity level (0–3)")
+set(Tessera_PROFILING_LEVEL "" CACHE STRING
+    "Profiling detail level: 0=off, 1=basic phases, 2=detailed sub-phases, 3=verbose")
+set_property(CACHE Tessera_PROFILING_LEVEL PROPERTY STRINGS "" 0 1 2 3)
+
+# Resolve the effective profiling level. If Tessera_ENABLE_PROFILING is ON and
+# no explicit level was given, default to level 1 (basic phases).
+# Tessera_ENABLE_PROFILING=OFF is an authoritative kill switch: it forces the
+# level to 0 regardless of any Tessera_PROFILING_LEVEL the user supplied.
+if(NOT Tessera_ENABLE_PROFILING AND NOT Tessera_PROFILING_LEVEL STREQUAL "")
+  set(_tessera_profiling_level 0)
+elseif(Tessera_PROFILING_LEVEL STREQUAL "")
+  if(Tessera_ENABLE_PROFILING)
+    set(_tessera_profiling_level 1)
+  else()
+    set(_tessera_profiling_level 0)
+  endif()
+else()
+  set(_tessera_profiling_level ${Tessera_PROFILING_LEVEL})
+endif()
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 find_package(Kokkos REQUIRED)
@@ -75,10 +92,12 @@ target_include_directories(Tessera SYSTEM INTERFACE
     ${HDF5_INCLUDE_DIRS}
 )
 
-if(Tessera_ENABLE_PROFILING)
+if(_tessera_profiling_level GREATER 0)
+    set(Tessera_ENABLE_PROFILING ON CACHE BOOL
+        "Enable Tessera internal profiling" FORCE)
     target_compile_definitions(Tessera INTERFACE
         TESSERA_ENABLE_PROFILING
-        TESSERA_PROFILING_LEVEL=${Tessera_PROFILING_LEVEL}
+        TESSERA_PROFILING_LEVEL=${_tessera_profiling_level}
     )
 endif()
 

@@ -45,7 +45,7 @@ cmake \
     -DTessera_ENABLE_TESTING=ON \
     -DTessera_ENABLE_EXAMPLES=ON \
     -DTessera_ENABLE_PROFILING=ON \
-    -DTessera_PROFILING_LEVEL=2 \
+    -DTessera_PROFILING_LEVEL=0 \
     -DMPIEXEC_EXECUTABLE="$(which flux)" \
     "-DMPIEXEC_NUMPROC_FLAG=run;--ntasks" \
     "-DMPIEXEC_PREFLAGS=--nodes=1;--exclusive;--cores-per-task=1;--env=GLIBC_TUNABLES=glibc.rtld.optional_static_tls=8388608" \

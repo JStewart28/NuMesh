@@ -14,6 +14,7 @@
 
 #include "Tessera_Icosphere.hpp"
 #include "Tessera_Mesh.hpp"
+#include "Tessera_Profiling.hpp"
 #include "Tessera_Types.hpp"
 
 #include <Cabana_Core.hpp>
@@ -236,6 +237,7 @@ void buildFromTriangleSoup( MeshT& mesh, const TriangleSoup<Scalar>& soup )
 template <class MeshT>
 void buildIcosphere( MeshT& mesh, int subdivisions )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_BUILD_ICOSPHERE );
     static_assert( MeshT::dim == 3, "buildIcosphere requires Dim == 3" );
     auto soup = generateIcosphere<typename MeshT::scalar_type>( subdivisions );
     buildFromTriangleSoup( mesh, soup );

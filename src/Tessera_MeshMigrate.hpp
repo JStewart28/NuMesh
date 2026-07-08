@@ -18,6 +18,7 @@
 #include "Tessera_Fields.hpp"
 #include "Tessera_HaloExchange.hpp"
 #include "Tessera_Mesh.hpp"
+#include "Tessera_Profiling.hpp"
 #include "Tessera_Types.hpp"
 
 #include <Cabana_Core.hpp>
@@ -154,6 +155,7 @@ template <class MeshT>
 void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
               const std::vector<Rank>& dest )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_MIGRATE );
     using memory_space = typename MeshT::memory_space;
     constexpr int Dim = MeshT::dim;
     using VMT = typename MeshT::vertex_member_types;
@@ -206,6 +208,8 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     // materialize every reference -- distribute()+haloExchange(), readMesh() --
     // need nothing and skip the gather entirely.
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_MIGRATE_GATHER );
         std::set<GlobalId> needV, needE;
         for ( int f = 0; f < nof; ++f )
             for ( int k = 0; k < 3; ++k )
@@ -221,8 +225,8 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         MPI_Allreduce( &localNeed, &globalNeed, 1, MPI_LONG_LONG, MPI_SUM,
                        comm );
 
-        auto gather = [&]( auto& held, const std::set<GlobalId>& need,
-                           auto ownerOf )
+        auto gather =
+            [&]( auto& held, const std::set<GlobalId>& need, auto ownerOf )
         {
             using Held = typename std::decay<decltype( held )>::type;
             using Tup = typename Held::mapped_type;
@@ -272,42 +276,48 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     // ======================================================================
     // Round A — move owned faces + their vertices/edges to destinations.
     // ======================================================================
-    std::vector<std::vector<detail::TupleBlob<FTuple>>> sendF( size );
-    std::vector<std::vector<detail::TupleBlob<VTuple>>> sendV( size );
-    std::vector<std::vector<detail::TupleBlob<ETuple>>> sendE( size );
-    for ( int f = 0; f < nof; ++f )
-    {
-        const Rank d = dest[f];
-        sendF[d].push_back( detail::toBlob( hf.getTuple( f ) ) );
-        for ( int k = 0; k < 3; ++k )
-        {
-            sendV[d].push_back( detail::toBlob( heldV.at( f_verts( f, k ) ) ) );
-            sendE[d].push_back( detail::toBlob( heldE.at( f_edges( f, k ) ) ) );
-        }
-    }
-    auto gotF = allToAllV( comm, sendF );
-    auto gotV = allToAllV( comm, sendV );
-    auto gotE = allToAllV( comm, sendE );
-
     // Owned faces (unique) and candidate vertices/edges (deduped by gid).
     std::map<GlobalId, FTuple> faceById;     // this rank's new owned faces
     std::map<GlobalId, VTuple> vById;        // vertices referenced locally
     std::map<GlobalId, ETuple> eById;        // edges referenced locally
     std::map<GlobalId, Rank> vOwner, eOwner; // resolved owners (filled below)
-    for ( const auto& b : gotF.data )
     {
-        FTuple t = detail::fromBlob( b );
-        faceById[Cabana::get<FaceField::Gid>( t )] = t;
-    }
-    for ( const auto& b : gotV.data )
-    {
-        VTuple t = detail::fromBlob( b );
-        vById.emplace( Cabana::get<VertexField::Gid>( t ), t );
-    }
-    for ( const auto& b : gotE.data )
-    {
-        ETuple t = detail::fromBlob( b );
-        eById.emplace( Cabana::get<EdgeField::Gid>( t ), t );
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_MIGRATE_MOVE );
+        std::vector<std::vector<detail::TupleBlob<FTuple>>> sendF( size );
+        std::vector<std::vector<detail::TupleBlob<VTuple>>> sendV( size );
+        std::vector<std::vector<detail::TupleBlob<ETuple>>> sendE( size );
+        for ( int f = 0; f < nof; ++f )
+        {
+            const Rank d = dest[f];
+            sendF[d].push_back( detail::toBlob( hf.getTuple( f ) ) );
+            for ( int k = 0; k < 3; ++k )
+            {
+                sendV[d].push_back(
+                    detail::toBlob( heldV.at( f_verts( f, k ) ) ) );
+                sendE[d].push_back(
+                    detail::toBlob( heldE.at( f_edges( f, k ) ) ) );
+            }
+        }
+        auto gotF = allToAllV( comm, sendF );
+        auto gotV = allToAllV( comm, sendV );
+        auto gotE = allToAllV( comm, sendE );
+
+        for ( const auto& b : gotF.data )
+        {
+            FTuple t = detail::fromBlob( b );
+            faceById[Cabana::get<FaceField::Gid>( t )] = t;
+        }
+        for ( const auto& b : gotV.data )
+        {
+            VTuple t = detail::fromBlob( b );
+            vById.emplace( Cabana::get<VertexField::Gid>( t ), t );
+        }
+        for ( const auto& b : gotE.data )
+        {
+            ETuple t = detail::fromBlob( b );
+            eById.emplace( Cabana::get<EdgeField::Gid>( t ), t );
+        }
     }
 
     // ======================================================================
@@ -516,6 +526,8 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
 
     // Vertex AoSoA (tuple carries position + user fields; owner set explicitly).
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_MIGRATE_ASSEMBLE );
         Cabana::AoSoA<VMT, Kokkos::HostSpace> lv( "lv", nlv );
         auto own = Cabana::slice<VertexField::Owner>( lv );
         for ( int li = 0; li < nlv; ++li )
@@ -527,6 +539,8 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         Cabana::deep_copy( mesh.vertices(), lv );
     }
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_MIGRATE_ASSEMBLE );
         Cabana::AoSoA<EMT, Kokkos::HostSpace> le( "le", nle );
         auto own = Cabana::slice<EdgeField::Owner>( le );
         for ( int li = 0; li < nle; ++li )
@@ -538,6 +552,8 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         Cabana::deep_copy( mesh.edges(), le );
     }
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_MIGRATE_ASSEMBLE );
         Cabana::AoSoA<FMT, Kokkos::HostSpace> lf( "lf", nlf );
         auto own = Cabana::slice<FaceField::Owner>( lf );
         for ( int li = 0; li < nlf; ++li )
@@ -772,7 +788,8 @@ std::vector<typename MeshT::scalar_type> ownedFaceCentroids( const MeshT& mesh )
         {
             const auto& p = posByGid.at( fv( f, k ) );
             for ( int d = 0; d < Dim; ++d )
-                c[static_cast<std::size_t>( f ) * Dim + d] += p[d] / Scalar( 3 );
+                c[static_cast<std::size_t>( f ) * Dim + d] +=
+                    p[d] / Scalar( 3 );
         }
     return c;
 }

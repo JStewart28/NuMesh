@@ -96,8 +96,8 @@ Options parseOptions( int argc, char* argv[] )
 // index: "<out>_<tag>_np<size>_frame<i>" -> writeMesh() appends .h5/.xmf.
 std::string frameStem( const Options& opt, const char* tag, int size, int i )
 {
-    return opt.outStem + "_" + tag + "_np" + std::to_string( size ) +
-           "_frame" + std::to_string( i );
+    return opt.outStem + "_" + tag + "_np" + std::to_string( size ) + "_frame" +
+           std::to_string( i );
 }
 
 // ----------------------------------------------------------------------------
@@ -151,6 +151,14 @@ void run( int rank, int size, const char* tag, const Options& opt )
     std::mt19937 rng( opt.seed + static_cast<unsigned>( rank ) );
     std::uniform_real_distribution<double> unif( 0.0, 1.0 );
     int totalRefineIters = 0;
+
+    // Profiling demo: Tessera exposes only the reset/print mechanism; the
+    // adaptive loop below stands in for a downstream simulation's timestep loop
+    // and drives the cadence. Each iteration is one reporting "window" -- print
+    // its per-region aggregate then reset -- while the lifetime registry keeps
+    // the whole-run total for the summary after the loop. Every call is a no-op
+    // unless the library was built with -DTessera_PROFILING_LEVEL>=1.
+    TESSERA_RESET_TIMERS();
     for ( int it = 1; it <= opt.iterations; ++it )
     {
         // 5a. Mark: refine()'s mask is a pure caller decision -- here a
@@ -194,13 +202,22 @@ void run( int rank, int size, const char* tag, const Options& opt )
         writeMesh( mesh, frameStem( opt, tag, size, it ) );
 
         if ( rank == 0 )
-            std::printf(
-                "  [%s] frame %d: ownedF=%zu ownedE=%zu ownedV=%zu "
-                "(refine rounds=%d, cumulative=%d) -> %s\n",
-                tag, it, mesh.numOwnedFaces(), mesh.numOwnedEdges(),
-                mesh.numOwnedVertices(), rr.iterations, totalRefineIters,
-                frameStem( opt, tag, size, it ).c_str() );
+            std::printf( "  [%s] frame %d: ownedF=%zu ownedE=%zu ownedV=%zu "
+                         "(refine rounds=%d, cumulative=%d) -> %s\n",
+                         tag, it, mesh.numOwnedFaces(), mesh.numOwnedEdges(),
+                         mesh.numOwnedVertices(), rr.iterations,
+                         totalRefineIters,
+                         frameStem( opt, tag, size, it ).c_str() );
+
+        // End of this "timestep": report the window aggregate, then reset so
+        // the next iteration measures only its own work.
+        TESSERA_PRINT_TIMERS( MPI_COMM_WORLD );
+        TESSERA_RESET_TIMERS();
     }
+
+    // Whole-run summary: per-region totals accumulated across every iteration
+    // of this run() (the lifetime registry is never cleared by the resets).
+    TESSERA_PRINT_TIMERS_TOTAL( MPI_COMM_WORLD );
 }
 
 int main( int argc, char* argv[] )

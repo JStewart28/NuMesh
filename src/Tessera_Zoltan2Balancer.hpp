@@ -13,6 +13,7 @@
 #define TESSERA_ZOLTAN2_BALANCER_HPP
 
 #include "Tessera_MeshMigrate.hpp"
+#include "Tessera_Profiling.hpp"
 #include "Tessera_Types.hpp"
 
 #include <Zoltan2_BasicVectorAdapter.hpp>
@@ -111,6 +112,7 @@ std::vector<Rank> computeLoadBalance( MeshT& mesh,
     std::vector<int> gParts( total, 0 );
     if ( rank == 0 )
     {
+        TESSERA_SCOPED_TIMER_DETAILED( ::Tessera::Profiling::TIMER_LB_SOLVE );
         using adapter_t =
             Zoltan2::BasicVectorAdapter<Tpetra::Map<int, int64_t>>;
         using gno_t = typename adapter_t::gno_t;
@@ -176,6 +178,7 @@ template <class MeshT>
 void loadBalance( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                   double imbalanceTolerance = 0.05 )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_LOAD_BALANCE );
     const std::vector<Rank> dest =
         computeLoadBalance( mesh, imbalanceTolerance );
     migrate( mesh, halo, dest );

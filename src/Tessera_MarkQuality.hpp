@@ -15,6 +15,7 @@
 #include "Tessera_AllToAllV.hpp"
 #include "Tessera_Fields.hpp"
 #include "Tessera_Mesh.hpp"
+#include "Tessera_Profiling.hpp"
 #include "Tessera_RefineParallel.hpp" // detail::edgeCoordRank (shared coordinator)
 #include "Tessera_Types.hpp"
 
@@ -69,6 +70,7 @@ template <class MeshT>
 std::vector<char> markEdgeLength( const MeshT& mesh,
                                   typename MeshT::scalar_type maxLen )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_MARK_EDGE_LEN );
     using Scalar = typename MeshT::scalar_type;
     using memory_space = typename MeshT::memory_space;
     using execution_space = typename MeshT::execution_space;
@@ -115,29 +117,34 @@ std::vector<char> markEdgeLength( const MeshT& mesh,
         nOwnedF );
 
     const Scalar maxLenSq = maxLen * maxLen;
-    Kokkos::parallel_for(
-        "tessera_mark_edge_length",
-        Kokkos::RangePolicy<execution_space>( 0, nOwnedF ),
-        KOKKOS_LAMBDA( const int f ) {
-            const int vl[3] = { faceVertLocal( f, 0 ), faceVertLocal( f, 1 ),
-                                faceVertLocal( f, 2 ) };
-            char m = 0;
-            for ( int k = 0; k < 3; ++k )
-            {
-                const int a = vl[k];
-                const int b = vl[( k + 1 ) % 3];
-                Scalar lenSq = Scalar( 0 );
-                for ( int d = 0; d < Dim; ++d )
+    {
+        TESSERA_SCOPED_TIMER_VERBOSE(
+            ::Tessera::Profiling::TIMER_MARK_EDGE_KERNEL );
+        Kokkos::parallel_for(
+            "tessera_mark_edge_length",
+            Kokkos::RangePolicy<execution_space>( 0, nOwnedF ),
+            KOKKOS_LAMBDA( const int f ) {
+                const int vl[3] = { faceVertLocal( f, 0 ),
+                                    faceVertLocal( f, 1 ),
+                                    faceVertLocal( f, 2 ) };
+                char m = 0;
+                for ( int k = 0; k < 3; ++k )
                 {
-                    const Scalar diff = pos( a, d ) - pos( b, d );
-                    lenSq += diff * diff;
+                    const int a = vl[k];
+                    const int b = vl[( k + 1 ) % 3];
+                    Scalar lenSq = Scalar( 0 );
+                    for ( int d = 0; d < Dim; ++d )
+                    {
+                        const Scalar diff = pos( a, d ) - pos( b, d );
+                        lenSq += diff * diff;
+                    }
+                    if ( lenSq > maxLenSq )
+                        m = 1;
                 }
-                if ( lenSq > maxLenSq )
-                    m = 1;
-            }
-            markDev( f ) = m;
-        } );
-    Kokkos::fence();
+                markDev( f ) = m;
+            } );
+        Kokkos::fence();
+    }
 
     auto h_mark =
         Kokkos::create_mirror_view_and_copy( Kokkos::HostSpace(), markDev );
@@ -181,6 +188,7 @@ template <class MeshT>
 std::vector<char> markCurvature( const MeshT& mesh,
                                  typename MeshT::scalar_type maxAngle )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_MARK_CURVATURE );
     using Scalar = typename MeshT::scalar_type;
     using memory_space = typename MeshT::memory_space;
     using execution_space = typename MeshT::execution_space;
@@ -239,30 +247,35 @@ std::vector<char> markCurvature( const MeshT& mesh,
             Kokkos::view_alloc( Kokkos::WithoutInitializing,
                                 "mark_curv_normal" ),
             nOwnedF );
-        Kokkos::parallel_for(
-            "tessera_mark_curvature_normals",
-            Kokkos::RangePolicy<execution_space>( 0, nOwnedF ),
-            KOKKOS_LAMBDA( const int f ) {
-                const int a = faceVertLocal( f, 0 );
-                const int b = faceVertLocal( f, 1 );
-                const int c = faceVertLocal( f, 2 );
-                Scalar e1[3], e2[3];
-                for ( int d = 0; d < 3; ++d )
-                {
-                    e1[d] = pos( b, d ) - pos( a, d );
-                    e2[d] = pos( c, d ) - pos( a, d );
-                }
-                Scalar nx = e1[1] * e2[2] - e1[2] * e2[1];
-                Scalar ny = e1[2] * e2[0] - e1[0] * e2[2];
-                Scalar nz = e1[0] * e2[1] - e1[1] * e2[0];
-                const Scalar len = Kokkos::sqrt( nx * nx + ny * ny + nz * nz );
-                const Scalar inv =
-                    len > Scalar( 0 ) ? Scalar( 1 ) / len : Scalar( 0 );
-                normalDev( f, 0 ) = nx * inv;
-                normalDev( f, 1 ) = ny * inv;
-                normalDev( f, 2 ) = nz * inv;
-            } );
-        Kokkos::fence();
+        {
+            TESSERA_SCOPED_TIMER_VERBOSE(
+                ::Tessera::Profiling::TIMER_MARK_CURV_KERNEL );
+            Kokkos::parallel_for(
+                "tessera_mark_curvature_normals",
+                Kokkos::RangePolicy<execution_space>( 0, nOwnedF ),
+                KOKKOS_LAMBDA( const int f ) {
+                    const int a = faceVertLocal( f, 0 );
+                    const int b = faceVertLocal( f, 1 );
+                    const int c = faceVertLocal( f, 2 );
+                    Scalar e1[3], e2[3];
+                    for ( int d = 0; d < 3; ++d )
+                    {
+                        e1[d] = pos( b, d ) - pos( a, d );
+                        e2[d] = pos( c, d ) - pos( a, d );
+                    }
+                    Scalar nx = e1[1] * e2[2] - e1[2] * e2[1];
+                    Scalar ny = e1[2] * e2[0] - e1[0] * e2[2];
+                    Scalar nz = e1[0] * e2[1] - e1[1] * e2[0];
+                    const Scalar len =
+                        Kokkos::sqrt( nx * nx + ny * ny + nz * nz );
+                    const Scalar inv =
+                        len > Scalar( 0 ) ? Scalar( 1 ) / len : Scalar( 0 );
+                    normalDev( f, 0 ) = nx * inv;
+                    normalDev( f, 1 ) = ny * inv;
+                    normalDev( f, 2 ) = nz * inv;
+                } );
+            Kokkos::fence();
+        }
         auto h_norm = Kokkos::create_mirror_view_and_copy( Kokkos::HostSpace(),
                                                            normalDev );
 
@@ -379,6 +392,7 @@ template <class MeshT, class Criterion,
           class = std::enable_if_t<!std::is_arithmetic<Criterion>::value>>
 std::vector<char> markByQuality( const MeshT& mesh, const Criterion& crit )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_MARK_QUALITY );
     return crit.mark( mesh );
 }
 

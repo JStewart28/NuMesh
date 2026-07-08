@@ -29,6 +29,7 @@
 #include "Tessera_MeshBuilder.hpp"
 #include "Tessera_MeshMigrate.hpp"
 #include "Tessera_Migrate.hpp"
+#include "Tessera_Profiling.hpp"
 #include "Tessera_Refine.hpp"
 #include "Tessera_RefineParallel.hpp"
 #include "Tessera_RefinePolicy.hpp"

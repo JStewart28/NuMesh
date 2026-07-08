@@ -27,5 +27,7 @@ cmake \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DTessera_ENABLE_TESTING=ON \
     -DTessera_ENABLE_EXAMPLES=ON \
+    -DTessera_ENABLE_PROFILING=ON \
+    -DTessera_PROFILING_LEVEL=0 \
     "$@" \
     "${SCRIPT_DIR}"

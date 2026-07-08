@@ -16,6 +16,7 @@
 #include "Tessera_Distribute.hpp"
 #include "Tessera_Fields.hpp"
 #include "Tessera_Mesh.hpp"
+#include "Tessera_Profiling.hpp"
 #include "Tessera_Refine.hpp"
 #include "Tessera_RefinePolicy.hpp"
 #include "Tessera_Types.hpp"
@@ -150,6 +151,7 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                      const std::vector<char>& mask,
                      const Policy& policy = Policy{} )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_REFINE );
     using memory_space = typename MeshT::memory_space;
     using Scalar = typename MeshT::scalar_type;
     constexpr int Dim = MeshT::dim;
@@ -205,53 +207,66 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
 
     const int kCap = 256;
     int iter = 0;
-    while ( true )
     {
-        std::vector<std::vector<detail::PropMsg>> toCoord( size );
-        for ( int f = 0; f < nOwnedF; ++f )
-            for ( int k = 0; k < 3; ++k )
-            {
-                const EdgeKey key = keyOf( fV[f][k], fV[f][( k + 1 ) % 3] );
-                toCoord[detail::edgeCoordRank( key, size )].push_back(
-                    { key, fG[f], static_cast<Rank>( R ), fL[f],
-                      static_cast<unsigned char>( mark[f] ) } );
-            }
-        auto got = allToAllV( comm, toCoord );
-
-        std::map<EdgeKey, std::vector<detail::PropMsg>> byEdge;
-        for ( const auto& m : got.data )
-            byEdge[m.key].push_back( m );
-
-        std::vector<std::vector<GlobalId>> markReq( size );
-        for ( auto& kv : byEdge )
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_REFINE_BALANCE );
+        while ( true )
         {
-            auto& inc = kv.second;
-            if ( inc.size() != 2 )
-                continue; // closed surface: exactly two incident faces
-            const int fa = inc[0].level + inc[0].mark;
-            const int fb = inc[1].level + inc[1].mark;
-            if ( fa - fb >= 2 )
-                markReq[inc[1].owner].push_back( inc[1].faceGid );
-            else if ( fb - fa >= 2 )
-                markReq[inc[0].owner].push_back( inc[0].faceGid );
-        }
-        auto reqs = allToAllV( comm, markReq );
-
-        int changed = 0;
-        for ( const GlobalId g : reqs.data )
-        {
-            auto it = gid2of.find( g );
-            if ( it != gid2of.end() && !mark[it->second] )
+            std::map<EdgeKey, std::vector<detail::PropMsg>> byEdge;
             {
-                mark[it->second] = 1;
-                ++changed;
+                TESSERA_SCOPED_TIMER_VERBOSE(
+                    ::Tessera::Profiling::TIMER_REFINE_ADVERTISE );
+                std::vector<std::vector<detail::PropMsg>> toCoord( size );
+                for ( int f = 0; f < nOwnedF; ++f )
+                    for ( int k = 0; k < 3; ++k )
+                    {
+                        const EdgeKey key =
+                            keyOf( fV[f][k], fV[f][( k + 1 ) % 3] );
+                        toCoord[detail::edgeCoordRank( key, size )].push_back(
+                            { key, fG[f], static_cast<Rank>( R ), fL[f],
+                              static_cast<unsigned char>( mark[f] ) } );
+                    }
+                auto got = allToAllV( comm, toCoord );
+                for ( const auto& m : got.data )
+                    byEdge[m.key].push_back( m );
             }
+
+            int changed = 0;
+            {
+                TESSERA_SCOPED_TIMER_VERBOSE(
+                    ::Tessera::Profiling::TIMER_REFINE_MARKREQ );
+                std::vector<std::vector<GlobalId>> markReq( size );
+                for ( auto& kv : byEdge )
+                {
+                    auto& inc = kv.second;
+                    if ( inc.size() != 2 )
+                        continue; // closed surface: exactly two incident faces
+                    const int fa = inc[0].level + inc[0].mark;
+                    const int fb = inc[1].level + inc[1].mark;
+                    if ( fa - fb >= 2 )
+                        markReq[inc[1].owner].push_back( inc[1].faceGid );
+                    else if ( fb - fa >= 2 )
+                        markReq[inc[0].owner].push_back( inc[0].faceGid );
+                }
+                auto reqs = allToAllV( comm, markReq );
+
+                for ( const GlobalId g : reqs.data )
+                {
+                    auto it = gid2of.find( g );
+                    if ( it != gid2of.end() && !mark[it->second] )
+                    {
+                        mark[it->second] = 1;
+                        ++changed;
+                    }
+                }
+            }
+            int globalChanged = 0;
+            MPI_Allreduce( &changed, &globalChanged, 1, MPI_INT, MPI_SUM,
+                           comm );
+            ++iter;
+            if ( globalChanged == 0 || iter >= kCap )
+                break;
         }
-        int globalChanged = 0;
-        MPI_Allreduce( &changed, &globalChanged, 1, MPI_INT, MPI_SUM, comm );
-        ++iter;
-        if ( globalChanged == 0 || iter >= kCap )
-            break;
     }
     result.iterations = iter;
 
@@ -415,8 +430,7 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         MPI_Exscan( &myChild, &childBase, 1, MPI_LONG_LONG, MPI_SUM, comm );
         if ( R == 0 )
             childBase = 0;
-        GlobalId childGid =
-            static_cast<GlobalId>( globalMaxF + 1 + childBase );
+        GlobalId childGid = static_cast<GlobalId>( globalMaxF + 1 + childBase );
 
         std::vector<std::array<GlobalId, 3>> nFV;
         std::vector<GlobalId> nFG;
@@ -555,6 +569,8 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
 
         // 3f. materialize the edge AoSoA (owned-first).
         {
+            TESSERA_SCOPED_TIMER_DETAILED(
+                ::Tessera::Profiling::TIMER_REFINE_REBUILD );
             Cabana::AoSoA<typename MeshT::edge_member_types, Kokkos::HostSpace>
                 le( "le", nLocalE );
             auto gid = Cabana::slice<EdgeField::Gid>( le );
@@ -583,6 +599,8 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
 
         // 3g. materialize the face AoSoA (edges now have gids).
         {
+            TESSERA_SCOPED_TIMER_DETAILED(
+                ::Tessera::Profiling::TIMER_REFINE_REBUILD );
             Cabana::AoSoA<typename MeshT::face_member_types, Kokkos::HostSpace>
                 lf( "lf", nNewF );
             auto gid = Cabana::slice<FaceField::Gid>( lf );
@@ -612,6 +630,8 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
 
         // 3h. rebuild key side tables.
         {
+            TESSERA_SCOPED_TIMER_DETAILED(
+                ::Tessera::Profiling::TIMER_REFINE_REBUILD );
             mesh.edgeKeys() = Kokkos::View<EdgeKey*, memory_space>(
                 Kokkos::view_alloc( Kokkos::WithoutInitializing, "edge_keys" ),
                 nLocalE );

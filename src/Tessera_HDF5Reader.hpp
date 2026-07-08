@@ -17,6 +17,7 @@
 #include "Tessera_IoCommon.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_MeshMigrate.hpp"
+#include "Tessera_Profiling.hpp"
 #include "Tessera_Types.hpp"
 
 #include <Cabana_Core.hpp>
@@ -54,6 +55,7 @@ template <class MeshT>
 void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                const std::string& stem )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_READ_MESH );
     using Scalar = typename MeshT::scalar_type;
     constexpr int Dim = MeshT::dim;
     using VMT = typename MeshT::vertex_member_types;
@@ -159,16 +161,22 @@ void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         fEdgesDense( static_cast<std::size_t>( blockFaces ) * 3 );
     HostF hf( "hf_io", static_cast<std::size_t>( blockFaces ) );
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_READ_BLOCKS );
         std::vector<std::uint64_t> gidBuf( blockFaces );
         std::vector<Level> levelBuf( blockFaces );
-        detail::readHyperslab( gFaces, "gid", 1, fs, blockFaces,
-                               gidBuf.data() );
-        detail::readHyperslab( gFaces, "verts", 3, fs, blockFaces,
-                               fVertsDense.data() );
-        detail::readHyperslab( gFaces, "edges", 3, fs, blockFaces,
-                               fEdgesDense.data() );
-        detail::readHyperslab( gFaces, "level", 1, fs, blockFaces,
-                               levelBuf.data() );
+        {
+            TESSERA_SCOPED_TIMER_VERBOSE(
+                ::Tessera::Profiling::TIMER_READ_HYPERSLAB );
+            detail::readHyperslab( gFaces, "gid", 1, fs, blockFaces,
+                                   gidBuf.data() );
+            detail::readHyperslab( gFaces, "verts", 3, fs, blockFaces,
+                                   fVertsDense.data() );
+            detail::readHyperslab( gFaces, "edges", 3, fs, blockFaces,
+                                   fEdgesDense.data() );
+            detail::readHyperslab( gFaces, "level", 1, fs, blockFaces,
+                                   levelBuf.data() );
+        }
         auto gid = Cabana::slice<FaceField::Gid>( hf );
         auto own = Cabana::slice<FaceField::Owner>( hf );
         auto lev = Cabana::slice<FaceField::Level>( hf );
@@ -214,6 +222,8 @@ void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     const long long vBlockN = vbe - vbs;
     HostV blockV( "blockV_io", static_cast<std::size_t>( vBlockN ) );
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_READ_BLOCKS );
         std::vector<std::uint64_t> gidBuf( vBlockN );
         std::vector<Scalar> posBuf( static_cast<std::size_t>( vBlockN ) * Dim );
         detail::readHyperslab( gVerts, "gid", 1, vbs, vBlockN, gidBuf.data() );
@@ -261,6 +271,8 @@ void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     const long long eBlockN = ebe - ebs;
     HostE blockE( "blockE_io", static_cast<std::size_t>( eBlockN ) );
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_READ_BLOCKS );
         std::vector<std::uint64_t> gidBuf( eBlockN ), vertsBuf( eBlockN * 2 );
         std::vector<Level> levelBuf( eBlockN );
         detail::readHyperslab( gEdges, "gid", 1, ebs, eBlockN, gidBuf.data() );

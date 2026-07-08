@@ -16,6 +16,7 @@
 #include "Tessera_Fields.hpp"
 #include "Tessera_IoCommon.hpp"
 #include "Tessera_Mesh.hpp"
+#include "Tessera_Profiling.hpp"
 #include "Tessera_Types.hpp"
 #include "Tessera_Xdmf.hpp"
 
@@ -49,6 +50,7 @@ namespace Tessera
 template <class MeshT>
 void writeMesh( const MeshT& mesh, const std::string& stem )
 {
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_WRITE_MESH );
     using Scalar = typename MeshT::scalar_type;
     constexpr int Dim = MeshT::dim;
     using VMT = typename MeshT::vertex_member_types;
@@ -94,12 +96,16 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
 
     // ---- dense numbering: owned entries are dense directly (8.2 step 2) ---
     std::map<GlobalId, std::uint64_t> denseV, denseE;
-    for ( long long i = 0; i < nOwnedV; ++i )
-        denseV[v_gid( static_cast<int>( i ) )] =
-            static_cast<std::uint64_t>( gcV.off + i );
-    for ( long long i = 0; i < nOwnedE; ++i )
-        denseE[e_gid( static_cast<int>( i ) )] =
-            static_cast<std::uint64_t>( gcE.off + i );
+    {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_WRITE_DENSE_NUMBER );
+        for ( long long i = 0; i < nOwnedV; ++i )
+            denseV[v_gid( static_cast<int>( i ) )] =
+                static_cast<std::uint64_t>( gcV.off + i );
+        for ( long long i = 0; i < nOwnedE; ++i )
+            denseE[e_gid( static_cast<int>( i ) )] =
+                static_cast<std::uint64_t>( gcE.off + i );
+    }
 
     // ---- ghost dense-index fetch (8.2 step 3) ------------------------------
     auto fetchGhostDense = [&]( int n_total, int n_owned, auto gidSlice,
@@ -130,8 +136,14 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
                 dense[req[s][k]] = p[k];
         }
     };
-    fetchGhostDense( nv, static_cast<int>( nOwnedV ), v_gid, v_owner, denseV );
-    fetchGhostDense( ne, static_cast<int>( nOwnedE ), e_gid, e_owner, denseE );
+    {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_WRITE_GHOST_FETCH );
+        fetchGhostDense( nv, static_cast<int>( nOwnedV ), v_gid, v_owner,
+                         denseV );
+        fetchGhostDense( ne, static_cast<int>( nOwnedE ), e_gid, e_owner,
+                         denseE );
+    }
 
     // ---- open file (collective, MPI-IO) ------------------------------------
     hid_t fapl = H5Pcreate( H5P_FILE_ACCESS );
@@ -152,6 +164,8 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
 
     // ---- /vertices ----------------------------------------------------------
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_WRITE_DATASETS );
         std::vector<std::uint64_t> gidBuf( nOwnedV );
         std::vector<Scalar> posBuf( static_cast<std::size_t>( nOwnedV ) * Dim );
         for ( long long i = 0; i < nOwnedV; ++i )
@@ -161,10 +175,14 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
             for ( int d = 0; d < Dim; ++d )
                 posBuf[i * Dim + d] = v_pos( li, d );
         }
-        detail::writeHyperslab( gVerts, "gid", gcV.N, 1, gcV.off, nOwnedV,
-                                gidBuf.data() );
-        detail::writeHyperslab( gVerts, "position", gcV.N, Dim, gcV.off,
-                                nOwnedV, posBuf.data() );
+        {
+            TESSERA_SCOPED_TIMER_VERBOSE(
+                ::Tessera::Profiling::TIMER_WRITE_HYPERSLAB );
+            detail::writeHyperslab( gVerts, "gid", gcV.N, 1, gcV.off, nOwnedV,
+                                    gidBuf.data() );
+            detail::writeHyperslab( gVerts, "position", gcV.N, Dim, gcV.off,
+                                    nOwnedV, posBuf.data() );
+        }
 
         detail::forEachUserField<VertexField::UserBegin, HostV>(
             [&]( auto MabsIc )
@@ -196,6 +214,8 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
 
     // ---- /edges ---------------------------------------------------------
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_WRITE_DATASETS );
         std::vector<std::uint64_t> gidBuf( nOwnedE ), vertsBuf( nOwnedE * 2 );
         std::vector<Level> levelBuf( nOwnedE );
         for ( long long i = 0; i < nOwnedE; ++i )
@@ -206,12 +226,16 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
             vertsBuf[i * 2 + 1] = denseV.at( e_verts( li, 1 ) );
             levelBuf[i] = e_level( li );
         }
-        detail::writeHyperslab( gEdges, "gid", gcE.N, 1, gcE.off, nOwnedE,
-                                gidBuf.data() );
-        detail::writeHyperslab( gEdges, "verts", gcE.N, 2, gcE.off, nOwnedE,
-                                vertsBuf.data() );
-        detail::writeHyperslab( gEdges, "level", gcE.N, 1, gcE.off, nOwnedE,
-                                levelBuf.data() );
+        {
+            TESSERA_SCOPED_TIMER_VERBOSE(
+                ::Tessera::Profiling::TIMER_WRITE_HYPERSLAB );
+            detail::writeHyperslab( gEdges, "gid", gcE.N, 1, gcE.off, nOwnedE,
+                                    gidBuf.data() );
+            detail::writeHyperslab( gEdges, "verts", gcE.N, 2, gcE.off, nOwnedE,
+                                    vertsBuf.data() );
+            detail::writeHyperslab( gEdges, "level", gcE.N, 1, gcE.off, nOwnedE,
+                                    levelBuf.data() );
+        }
 
         detail::forEachUserField<EdgeField::UserBegin, HostE>(
             [&]( auto MabsIc )
@@ -242,6 +266,8 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
 
     // ---- /faces ---------------------------------------------------------
     {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_WRITE_DATASETS );
         std::vector<std::uint64_t> gidBuf( nOwnedF ), vertsBuf( nOwnedF * 3 ),
             edgesBuf( nOwnedF * 3 );
         std::vector<Level> levelBuf( nOwnedF );
@@ -256,14 +282,18 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
             }
             levelBuf[i] = f_level( li );
         }
-        detail::writeHyperslab( gFaces, "gid", gcF.N, 1, gcF.off, nOwnedF,
-                                gidBuf.data() );
-        detail::writeHyperslab( gFaces, "verts", gcF.N, 3, gcF.off, nOwnedF,
-                                vertsBuf.data() );
-        detail::writeHyperslab( gFaces, "edges", gcF.N, 3, gcF.off, nOwnedF,
-                                edgesBuf.data() );
-        detail::writeHyperslab( gFaces, "level", gcF.N, 1, gcF.off, nOwnedF,
-                                levelBuf.data() );
+        {
+            TESSERA_SCOPED_TIMER_VERBOSE(
+                ::Tessera::Profiling::TIMER_WRITE_HYPERSLAB );
+            detail::writeHyperslab( gFaces, "gid", gcF.N, 1, gcF.off, nOwnedF,
+                                    gidBuf.data() );
+            detail::writeHyperslab( gFaces, "verts", gcF.N, 3, gcF.off, nOwnedF,
+                                    vertsBuf.data() );
+            detail::writeHyperslab( gFaces, "edges", gcF.N, 3, gcF.off, nOwnedF,
+                                    edgesBuf.data() );
+            detail::writeHyperslab( gFaces, "level", gcF.N, 1, gcF.off, nOwnedF,
+                                    levelBuf.data() );
+        }
 
         detail::forEachUserField<FaceField::UserBegin, HostF>(
             [&]( auto MabsIc )
