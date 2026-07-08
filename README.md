@@ -391,7 +391,68 @@ writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
 | Example | Directory | Arguments | Description |
 |---|---|---|---|
 | `hello_tessera` | `examples/01_hello_tessera/` | *(none)* | Prints the active Kokkos backend and MPI rank count. Build verification only. |
-| `mesh_pipeline` | `examples/02_mesh_pipeline/` | `--subdiv N` `--axis N` `--balance` `--iters N` `--frac F` `--seed N` `--out STEM` | End-to-end demo: build an icosphere, partition + distribute it, then run `N` iterations of random-percent refinement, writing a new `.h5`/`.xmf` frame after each iteration so the mesh evolution can be stepped through in Paraview. Runs the pipeline once per available Kokkos execution space (Serial, plus the platform default and OpenMP where distinct). |
+| `mesh_pipeline` | `examples/02_mesh_pipeline/` | `--subdiv N` `--axis N` `--balance` `--iters N` `--frac F` `--seed N` `--out STEM` | End-to-end demo: build an icosphere, partition + distribute it, then run `N` iterations of random-percent refinement, writing a new `.h5`/`.xmf` frame after each iteration so the mesh evolution can be stepped through in Paraview. Runs the pipeline once per available Kokkos execution space (Serial, plus the platform default and OpenMP where distinct). Also demonstrates the profiling API (see below): each iteration is one reporting window. |
+
+### Profiling
+
+Tessera carries an optional, level-gated wall-time profiler
+(`Tessera_Profiling.hpp`, header-only). Every instrumented region is an RAII scoped
+timer that (1) pushes a `Kokkos::Profiling` region — so external Kokkos-aware tools
+(Kokkos Tools, `rocprof`, Nsight) see the named region for free — and (2)
+accumulates `MPI_Wtime` wall time into a process-local registry. It is **compiled
+out entirely** at level 0; the default build enables nothing.
+
+**Enable it (CMake):**
+
+| Option | Default | Meaning |
+|---|---|---|
+| `Tessera_ENABLE_PROFILING` | `OFF` | Master switch. `OFF` is an authoritative kill switch — it forces the effective level to 0 regardless of `Tessera_PROFILING_LEVEL`. |
+| `Tessera_PROFILING_LEVEL` | *(empty)* | `0`/`1`/`2`/`3`. Empty resolves to `1` when profiling is enabled, else `0`. |
+
+When the effective level is `> 0`, `TESSERA_ENABLE_PROFILING` and
+`TESSERA_PROFILING_LEVEL=<n>` are added as compile definitions on the `Tessera`
+interface target (inherited by every consumer). The `run_cmake*.sh` scripts default
+to level 0; override on the command line, e.g.
+`bash ../run_cmake_toulumne.sh -DTessera_PROFILING_LEVEL=2`.
+
+**Verbosity levels** — higher levels are strictly additive (a level-*n* build emits
+every region at levels ≤ *n*):
+
+| Level | Adds | Example regions |
+|---|---|---|
+| 1 | Top-level phases | `build_icosphere`, `partition`, `distribute`, `halo_exchange`, `refine`, `migrate`, `load_balance`, `write_mesh`, `read_mesh`, `mark_*` |
+| 2 | Major sub-phases | `refine_2to1_balance`, `refine_local_rebuild`, `migrate_round_*`, `distribute_csr_rebuild`, `write_datasets`, `lb_zoltan2_solve` |
+| 3 | Comm rounds / device kernels | `refine_advertise_alltoallv`, `mark_edge_length_kernel`, `write_hyperslabs`, `read_hyperslabs` |
+
+**Reporting is caller-driven — Tessera has no timestep loop.** The library owns the
+mechanism; the downstream application decides the cadence. Two registries back every
+region: a resettable **window** and a monotonic **lifetime**. The caller-facing
+macros (all no-ops at level 0):
+
+```cpp
+TESSERA_RESET_TIMERS();               // clear the window registry
+TESSERA_PRINT_TIMERS( comm );         // collective: rank 0 prints the window
+                                      //   min/max/mean/imbalance per region
+TESSERA_PRINT_TIMERS_TOTAL( comm );   // collective: rank 0 prints the lifetime total
+```
+
+A simulation prints and resets every `ts` steps for a per-window breakdown, and
+prints the lifetime total once at shutdown:
+
+```cpp
+for ( int step = 0; step < nsteps; ++step ) {
+    // ... Tessera refine / migrate / haloExchange / writeMesh ...
+    if ( step % ts == 0 ) {
+        TESSERA_PRINT_TIMERS( comm );   // aggregated over this window
+        TESSERA_RESET_TIMERS();         // start the next window
+    }
+}
+TESSERA_PRINT_TIMERS_TOTAL( comm );     // whole-run aggregate
+```
+
+`examples/02_mesh_pipeline/` wires exactly this pattern, treating each adaptive
+refinement iteration as one window. All three print/reset macros are collective on
+the passed communicator, so every rank must call them.
 
 ---
 
