@@ -394,9 +394,18 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         Cabana::deep_copy( mesh.vertices(), lv );
 
         // 3b. new owned faces: kept (retain gid) + 4 children (new gids).
-        long long localOwnedF = nOwnedF;
-        long long globalF = 0;
-        MPI_Allreduce( &localOwnedF, &globalF, 1, MPI_LONG_LONG, MPI_SUM,
+        //
+        // Child gids are appended above the current global MAX face gid, not
+        // above the face COUNT: a refined parent's gid is retired (it is replaced
+        // by 4 children), so after any round the live gids are sparse and the max
+        // exceeds the count. Basing new gids on the count would collide with the
+        // previous round's high-numbered children on a later refine (surfacing as
+        // duplicate face gids once migrate() brings two ranks' faces together).
+        long long localMaxF = -1;
+        for ( int f = 0; f < nOwnedF; ++f )
+            localMaxF = std::max( localMaxF, static_cast<long long>( fG[f] ) );
+        long long globalMaxF = -1;
+        MPI_Allreduce( &localMaxF, &globalMaxF, 1, MPI_LONG_LONG, MPI_MAX,
                        comm );
         int nRefining = 0;
         for ( int f = 0; f < nOwnedF; ++f )
@@ -406,7 +415,8 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         MPI_Exscan( &myChild, &childBase, 1, MPI_LONG_LONG, MPI_SUM, comm );
         if ( R == 0 )
             childBase = 0;
-        GlobalId childGid = static_cast<GlobalId>( globalF + childBase );
+        GlobalId childGid =
+            static_cast<GlobalId>( globalMaxF + 1 + childBase );
 
         std::vector<std::array<GlobalId, 3>> nFV;
         std::vector<GlobalId> nFG;

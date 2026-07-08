@@ -348,32 +348,42 @@ a **parallel** (`+mpi`) HDF5 -- see Dependencies below.
 
 ## Usage / API
 
-> *(Planned — the API is being implemented against this specification; signatures may
-> shift as steps land. See `tasks/milestone1_mesh.md` for status.)*
+The full pipeline below is implemented and gate-tested end to end (see
+`examples/02_mesh_pipeline/` for a complete, runnable version with CLI args).
 
 ```cpp
-#include <Tessera_Mesh.hpp>
+#include <Tessera.hpp>
 
-using MeshT = Tessera::Mesh<double, /*Dim=*/3, VFields, EFields, FFields,
-                            MemSpace, ExecSpace>;
+using namespace Tessera;
+using MeshT = Mesh<double, /*Dim=*/3, VertexFields<>, EdgeFields<>, FaceFields<>,
+                   MemSpace, ExecSpace>;
 
 MeshT mesh( MPI_COMM_WORLD );
-mesh.buildIcosphere( /*subdivisions=*/3 );   // initial coarse closed surface
-mesh.haloExchange();                          // fill the 1-deep ghost layer
+buildIcosphere( mesh, /*subdivisions=*/3 );        // initial coarse closed surface,
+                                                     // replicated on every rank
 
-auto vort = mesh.slice<Tessera::Field::Vorticity>();   // typed Cabana slice
+auto faceOwner = facePartitionByAxis( mesh, /*axis=*/2 );  // deterministic geometric
+                                                             // partition of the faces
+MeshHalo<MemSpace> halo;
+distribute( mesh, halo, faceOwner );                // cut to owned + 1-deep ghost layer,
+                                                     // build the halo exchange plans
+haloExchange( mesh, halo );                         // fill the ghost layer
+
+auto vort = mesh.vertexSlice<Tessera::VertexField::Vorticity>();   // typed Cabana slice
 // ... fill/evolve owned vertices ...
-mesh.haloExchange();                          // refresh ghosts (whole field pack)
+haloExchange( mesh, halo );                         // refresh ghosts (whole field pack)
 
-Tessera::refine( mesh, halo, face_refine_mask ); // conforming 2:1 split refinement
+refine( mesh, halo, face_refine_mask );             // conforming 2:1 split refinement;
+                                                     // clears `halo` as a side effect
 
-Tessera::loadBalance( mesh, halo );           // internal Zoltan2 (optional, Step 7b)
+loadBalance( mesh, halo );           // internal Zoltan2 rebalance + halo rebuild (optional)
 // or, external (e.g. Canopy-driven):
-//   auto c = Tessera::ownedFaceCentroids( mesh );
-//   std::vector<Tessera::Rank> dest = external_partition( c );
-//   Tessera::migrate( mesh, halo, dest );
+//   auto c = ownedFaceCentroids( mesh );
+//   std::vector<Rank> dest = external_partition( c );
+//   migrate( mesh, halo, dest );   // also rebuilds the halo
+haloExchange( mesh, halo );                         // required again after refine/migrate
 
-Tessera::writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
+writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
 ```
 
 ### Example programs
@@ -381,8 +391,7 @@ Tessera::writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xm
 | Example | Directory | Arguments | Description |
 |---|---|---|---|
 | `hello_tessera` | `examples/01_hello_tessera/` | *(none)* | Prints the active Kokkos backend and MPI rank count. Build verification only. |
-
-*(End-to-end mesh example added in Step 9.)*
+| `mesh_pipeline` | `examples/02_mesh_pipeline/` | `--subdiv N` `--axis N` `--balance` `--iters N` `--frac F` `--seed N` `--out STEM` | End-to-end demo: build an icosphere, partition + distribute it, then run `N` iterations of random-percent refinement, writing a new `.h5`/`.xmf` frame after each iteration so the mesh evolution can be stepped through in Paraview. Runs the pipeline once per available Kokkos execution space (Serial, plus the platform default and OpenMP where distinct). |
 
 ---
 

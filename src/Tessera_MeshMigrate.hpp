@@ -31,6 +31,7 @@
 #include <cstring>
 #include <map>
 #include <set>
+#include <type_traits>
 #include <vector>
 
 namespace Tessera
@@ -60,6 +61,12 @@ namespace Tessera
 // expresses directly.
 //
 // Rounds:
+//   G  Gather referenced-but-non-held tuples. A freshly-refined mesh can hold an
+//      owned face whose vertex/edge is owned elsewhere and held nowhere locally
+//      (refine() ships a midpoint's gid, not its position, and drops the ghost
+//      layer). Each rank advertises its OWNED vertex/edge tuples to a gid
+//      coordinator (gid % size) and pulls any missing reference back, so round A
+//      sees a self-contained 1-ring. A no-op when every reference is already held.
 //   A  Move each owned face + its 3 vertices + 3 edges to dest (three allToAllV).
 //      The receiver's owned faces are the faces it received; its candidate
 //      vertices/edges are their (deduped) endpoints.
@@ -76,12 +83,15 @@ namespace Tessera
 //      halo-consistent (ghost values are the owners' values); a subsequent
 //      haloExchange() re-syncs the field pack over the new plans.
 //
-// Preconditions: `mesh` is distributed and owned-first with a valid 1-deep halo
-// (so every owned face's 3 vertices and 3 edges are locally present), entities
-// carry global gids, and dest.size() == numOwnedFaces() with every entry in
-// [0, commSize()). Edge/face connectivity fields store global gids and are carried
-// verbatim (an edge's incident-face gids may reference a face now on another rank;
-// that metadata is not used by the 1-ring invariants and is left as-is).
+// Preconditions: `mesh` is distributed and owned-first, entities carry global
+// gids, and dest.size() == numOwnedFaces() with every entry in [0, commSize()).
+// A valid 1-deep halo is NOT required: round G recovers any vertex/edge an owned
+// face references but does not hold locally (the post-refine case), so both a
+// halo-consistent mesh (distribute()+haloExchange, readMesh) and a freshly-refined
+// owned-only mesh are accepted. Edge/face connectivity fields store global gids and
+// are carried verbatim (an edge's incident-face gids may reference a face now on
+// another rank; that metadata is not used by the 1-ring invariants and is left
+// as-is).
 
 namespace detail
 {
@@ -173,11 +183,91 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     auto f_verts = Cabana::slice<FaceField::Verts>( hf );
     auto f_edges = Cabana::slice<FaceField::Edges>( hf );
 
-    std::map<GlobalId, int> gid2lv, gid2le;
+    // gid -> currently-held tuple (owned + any ghost). After refine() a rank can
+    // own a face whose vertex/edge is owned by another rank and held nowhere
+    // locally -- refine() ships a new midpoint's gid to its co-sharers, never its
+    // position (Tessera_RefineParallel.hpp Phase-2), and drops the pre-refine
+    // ghost layer. migrate() is the deferred post-refine ghost builder (README
+    // "Load balancing"), so it must recover those referenced tuples before round A
+    // can move a face with its full vertex/edge pack.
+    std::map<GlobalId, VTuple> heldV;
+    std::map<GlobalId, ETuple> heldE;
     for ( int i = 0; i < nv; ++i )
-        gid2lv[v_gid( i )] = i;
+        heldV[v_gid( i )] = hv.getTuple( i );
     for ( int i = 0; i < ne; ++i )
-        gid2le[e_gid( i )] = i;
+        heldE[e_gid( i )] = he.getTuple( i );
+
+    // Gather referenced-but-non-held vertex/edge tuples from their true owner via
+    // a gid coordinator (gid % size): every rank advertises its OWNED tuples to
+    // the coordinator, then any rank missing a gid its owned faces reference
+    // requests it and the coordinator replies the full tuple. Same coordinator
+    // idiom the cross-rank refine()/invariant checks use (MeshInvariants.hpp,
+    // test_markquality_edge.cpp's maxOwnedEdgeLength). Callers that already
+    // materialize every reference -- distribute()+haloExchange(), readMesh() --
+    // need nothing and skip the gather entirely.
+    {
+        std::set<GlobalId> needV, needE;
+        for ( int f = 0; f < nof; ++f )
+            for ( int k = 0; k < 3; ++k )
+            {
+                if ( heldV.find( f_verts( f, k ) ) == heldV.end() )
+                    needV.insert( f_verts( f, k ) );
+                if ( heldE.find( f_edges( f, k ) ) == heldE.end() )
+                    needE.insert( f_edges( f, k ) );
+            }
+        long long localNeed =
+            static_cast<long long>( needV.size() + needE.size() );
+        long long globalNeed = 0;
+        MPI_Allreduce( &localNeed, &globalNeed, 1, MPI_LONG_LONG, MPI_SUM,
+                       comm );
+
+        auto gather = [&]( auto& held, const std::set<GlobalId>& need,
+                           auto ownerOf )
+        {
+            using Held = typename std::decay<decltype( held )>::type;
+            using Tup = typename Held::mapped_type;
+            struct Rec
+            {
+                GlobalId gid;
+                detail::TupleBlob<Tup> blob;
+            };
+            // Advertise every locally-OWNED tuple to its coordinator.
+            std::vector<std::vector<Rec>> adv( size );
+            for ( const auto& kv : held )
+                if ( ownerOf( kv.second ) == static_cast<Rank>( R ) )
+                    adv[detail::gidCoordRank( kv.first, size )].push_back(
+                        { kv.first, detail::toBlob( kv.second ) } );
+            auto advGot = allToAllV( comm, adv );
+            std::map<GlobalId, detail::TupleBlob<Tup>> coord;
+            for ( const auto& r : advGot.data )
+                coord[r.gid] = r.blob;
+
+            // Request each needed gid from its coordinator; it replies the tuple.
+            std::vector<std::vector<GlobalId>> req( size );
+            for ( GlobalId g : need )
+                req[detail::gidCoordRank( g, size )].push_back( g );
+            auto reqGot = allToAllV( comm, req );
+            std::vector<std::vector<Rec>> rep( size );
+            for ( int s = 0; s < size; ++s )
+            {
+                const GlobalId* p = reqGot.from( s );
+                const int c = reqGot.count( s );
+                for ( int i = 0; i < c; ++i )
+                    rep[s].push_back( { p[i], coord.at( p[i] ) } );
+            }
+            auto repGot = allToAllV( comm, rep );
+            for ( const auto& r : repGot.data )
+                held[r.gid] = detail::fromBlob( r.blob );
+        };
+
+        if ( globalNeed > 0 )
+        {
+            gather( heldV, needV, []( const VTuple& t )
+                    { return Cabana::get<VertexField::Owner>( t ); } );
+            gather( heldE, needE, []( const ETuple& t )
+                    { return Cabana::get<EdgeField::Owner>( t ); } );
+        }
+    }
 
     // ======================================================================
     // Round A — move owned faces + their vertices/edges to destinations.
@@ -191,10 +281,8 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         sendF[d].push_back( detail::toBlob( hf.getTuple( f ) ) );
         for ( int k = 0; k < 3; ++k )
         {
-            sendV[d].push_back(
-                detail::toBlob( hv.getTuple( gid2lv.at( f_verts( f, k ) ) ) ) );
-            sendE[d].push_back(
-                detail::toBlob( he.getTuple( gid2le.at( f_edges( f, k ) ) ) ) );
+            sendV[d].push_back( detail::toBlob( heldV.at( f_verts( f, k ) ) ) );
+            sendE[d].push_back( detail::toBlob( heldE.at( f_edges( f, k ) ) ) );
         }
     }
     auto gotF = allToAllV( comm, sendF );
@@ -576,13 +664,23 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
 // accessors to compute a destination array from its FMM tree.
 
 //! Centroid of each owned face, row-major [f*Dim + d] (host).
+//!
+//! An owned face can reference a vertex this rank does not hold locally after
+//! refine() (see migrate()'s round G / the README post-refine gotcha), so any
+//! missing endpoint position is gathered from its true owner via a gid
+//! coordinator (gid % size) -- the same idiom migrate()/maxOwnedEdgeLength use.
+//! A no-op when every reference is already held (the loadBalance() call on a
+//! halo-consistent mesh, Canopy's accessors).
 template <class MeshT>
 std::vector<typename MeshT::scalar_type> ownedFaceCentroids( const MeshT& mesh )
 {
     using Scalar = typename MeshT::scalar_type;
     constexpr int Dim = MeshT::dim;
     const int nv = static_cast<int>( mesh.numVertices() );
+    const int nov = static_cast<int>( mesh.numOwnedVertices() );
     const int nof = static_cast<int>( mesh.numOwnedFaces() );
+    MPI_Comm comm = mesh.comm();
+    const int size = mesh.commSize();
 
     Cabana::AoSoA<typename MeshT::vertex_member_types, Kokkos::HostSpace> hv(
         "hv", nv );
@@ -593,18 +691,88 @@ std::vector<typename MeshT::scalar_type> ownedFaceCentroids( const MeshT& mesh )
     auto vg = Cabana::slice<VertexField::Gid>( hv );
     auto vp = Cabana::slice<VertexField::Position>( hv );
     auto fv = Cabana::slice<FaceField::Verts>( hf );
-    std::map<GlobalId, int> gid2lv;
+
+    // gid -> position for every locally-held vertex.
+    std::map<GlobalId, std::array<Scalar, Dim>> posByGid;
     for ( int i = 0; i < nv; ++i )
-        gid2lv[vg( i )] = i;
+    {
+        std::array<Scalar, Dim> p;
+        for ( int d = 0; d < Dim; ++d )
+            p[d] = vp( i, d );
+        posByGid[vg( i )] = p;
+    }
+
+    // Positions of owned-face endpoints not held locally, gathered from their
+    // owner via a gid coordinator (advertise owned positions -> request misses).
+    std::set<GlobalId> need;
+    for ( int f = 0; f < nof; ++f )
+        for ( int k = 0; k < 3; ++k )
+            if ( posByGid.find( fv( f, k ) ) == posByGid.end() )
+                need.insert( fv( f, k ) );
+    long long localNeed = static_cast<long long>( need.size() );
+    long long globalNeed = 0;
+    MPI_Allreduce( &localNeed, &globalNeed, 1, MPI_LONG_LONG, MPI_SUM, comm );
+    if ( globalNeed > 0 )
+    {
+        struct PosMsg
+        {
+            GlobalId gid;
+            Scalar pos[Dim];
+        };
+        std::vector<std::vector<PosMsg>> adv( size );
+        for ( int i = 0; i < nov; ++i ) // owned-first: [0, nov) are owned
+        {
+            PosMsg m;
+            m.gid = vg( i );
+            for ( int d = 0; d < Dim; ++d )
+                m.pos[d] = vp( i, d );
+            adv[detail::gidCoordRank( m.gid, size )].push_back( m );
+        }
+        auto advGot = allToAllV( comm, adv );
+        std::map<GlobalId, std::array<Scalar, Dim>> coord;
+        for ( const auto& m : advGot.data )
+        {
+            std::array<Scalar, Dim> p;
+            for ( int d = 0; d < Dim; ++d )
+                p[d] = m.pos[d];
+            coord[m.gid] = p;
+        }
+        std::vector<std::vector<GlobalId>> req( size );
+        for ( GlobalId g : need )
+            req[detail::gidCoordRank( g, size )].push_back( g );
+        auto reqGot = allToAllV( comm, req );
+        std::vector<std::vector<PosMsg>> rep( size );
+        for ( int s = 0; s < size; ++s )
+        {
+            const GlobalId* p = reqGot.from( s );
+            const int c = reqGot.count( s );
+            for ( int i = 0; i < c; ++i )
+            {
+                PosMsg m;
+                m.gid = p[i];
+                const auto& pp = coord.at( p[i] );
+                for ( int d = 0; d < Dim; ++d )
+                    m.pos[d] = pp[d];
+                rep[s].push_back( m );
+            }
+        }
+        auto repGot = allToAllV( comm, rep );
+        for ( const auto& m : repGot.data )
+        {
+            std::array<Scalar, Dim> p;
+            for ( int d = 0; d < Dim; ++d )
+                p[d] = m.pos[d];
+            posByGid[m.gid] = p;
+        }
+    }
 
     std::vector<Scalar> c( static_cast<std::size_t>( nof ) * Dim, Scalar( 0 ) );
     for ( int f = 0; f < nof; ++f )
         for ( int k = 0; k < 3; ++k )
         {
-            const int lv = gid2lv.at( fv( f, k ) );
+            const auto& p = posByGid.at( fv( f, k ) );
             for ( int d = 0; d < Dim; ++d )
-                c[static_cast<std::size_t>( f ) * Dim + d] +=
-                    vp( lv, d ) / Scalar( 3 );
+                c[static_cast<std::size_t>( f ) * Dim + d] += p[d] / Scalar( 3 );
         }
     return c;
 }

@@ -1413,3 +1413,92 @@ migration path).
   - **Next:** Step 10 (both a+b) complete → Milestone-1 quality-marking suite
     done. Remaining deferred items: Step 9 (end-to-end example + runner scripts +
     OPENMP smoke-build + CI subset wiring).
+
+- 2026-07-07 — **Step 9 landed (Sonnet).** New example
+  `examples/02_mesh_pipeline/mesh_pipeline.cpp` chains the full pipeline:
+  `buildIcosphere` → `facePartitionByAxis`+`distribute` → baseline `writeMesh`
+  frame 0 → `--iters` iterations of (uniform-random `--frac` of owned faces
+  marked → `refine` → `loadBalance` or self-destination `migrate` halo rebuild
+  → `haloExchange` → `writeMesh` frame N), run once per available Kokkos
+  execution space (`Serial` always; `DefaultExecutionSpace` if distinct — HIP
+  on Tuolumne, satisfying the gate backend; `OpenMP` if `KOKKOS_ENABLE_OPENMP`
+  and distinct from both, satisfying the non-gate OPENMP smoke-build). CLI
+  args: `--subdiv`, `--axis`, `--balance`, `--iters`, `--frac`, `--seed`,
+  `--out` (mirrored into README's Example programs table). Every pipeline step
+  in the source carries a comment explaining what's called, why, and what the
+  arguments mean, for a first-time downstream reader.
+  - Wired into `examples/CMakeLists.txt` (`add_subdirectory(02_mesh_pipeline)`).
+  - New runner scripts under `scripts/tuolumne/`:
+    - `run_unit_minset.flux` — release-quality unit runner (mirrors
+      `run_regression_minset.flux`'s structure, hardcoded `label=unit`; the
+      two release runner names are now `run_regression_minset.flux` (existing)
+      and `run_unit_minset.flux` (new)).
+    - `run_mesh_pipeline_example.flux` — DEV example runner (not a ctest gate
+      entry — mirrors `run_unit_tests.flux`'s dev-tool style), submits on the
+      **pdebug** queue, runs `mesh_pipeline` at **4 MPI ranks**; since
+      `Kokkos::DefaultExecutionSpace` is HIP on Tuolumne, this exercises the
+      HIP backend's `writeMesh` I/O path in addition to the always-run Serial
+      pass. Requires `export TESSERA_REPO=$(pwd)` before submit (same
+      constraint as `run_unit_tests.flux`).
+  - CI subset: no change needed — `.github/workflows/ci.yml` already builds
+    `examples/` (`-DTessera_ENABLE_EXAMPLES=ON`) and runs
+    `regression`/`SERIAL` at ranks 1–2; the new example adds no ctest entries,
+    so it's smoke-compiled by CI but not executed there (matches the Step-9
+    contract; no new CI dependency needed since the example only uses APIs
+    already linked via `Tessera::Tessera`).
+  - README updated: "Usage / API" pseudocode block replaced with the real
+    free-function pipeline (`buildIcosphere`, `facePartitionByAxis`,
+    `distribute`, `haloExchange`, `refine`, `loadBalance`/`migrate`,
+    `writeMesh`) and the stale "Planned" disclaimer removed; "Example
+    programs" table gained a `mesh_pipeline` row, placeholder line removed.
+  - **Per user instruction this session**, the build/format-check/manual-run/
+    gate-run verification steps (CLAUDE.md §"Build & verify") were **skipped
+    for this entry** since no library source was touched — only new
+    example/script/doc files were added, so the existing gate (**regression
+    70/70, unit 28/28** as of Step 10b) is unaffected. The user will build,
+    run `mesh_pipeline` manually, and verify the output `.h5`/`.xmf` frame
+    sequence in Paraview themselves; the `run_mesh_pipeline_example.flux`
+    script above is the submission path for that verification.
+  - **Next:** Milestone 1 step contract (Steps 0–10b) is now fully landed.
+    Start a new milestone/task file for the next phase of work.
+
+- 2026-07-08 — **Step 9 example crash diagnosed + fixed (Opus).** The first
+  manual run of `mesh_pipeline` (default args, no `--balance`) aborted at
+  iteration 1 with `std::out_of_range` / `map::at` on 3 of 4 ranks
+  (`tessera-mesh-pipeline-example.f3Js8vX8yyBm.out`). Two distinct latent
+  **library** bugs, both in the `refine()`→halo-rebuild composition that no gate
+  test exercised (the refine tests only check owned-entity invariants; the
+  migrate/loadbalance tests only run post-`distribute()` meshes):
+  - **Bug 1 — `migrate()` could not rebuild the halo of a freshly-refined
+    mesh.** `refine()` leaves each rank owning faces whose vertices/edges may be
+    owned elsewhere and held nowhere locally (a new midpoint's *position* is
+    never shipped to co-sharers, only its gid — see README post-refine gotcha),
+    but `migrate()` round A assumed every owned face's 3 verts/3 edges were
+    locally present (`gid2lv.at`/`gid2le.at`). `readMesh()`→`migrate()` only
+    worked because `readMesh` pre-fetches all referenced records first. Fix: a
+    new **round G** in `migrate()` gathers referenced-but-non-held vertex/edge
+    tuples from their true owner via a gid coordinator (`gid % size`) before
+    round A — the same idiom `maxOwnedEdgeLength()`/the invariant checks use;
+    a no-op (guarded by an `MPI_Allreduce` need-count) for the halo-consistent
+    callers (`distribute()`+`haloExchange`, `readMesh`). `ownedFaceCentroids()`
+    (driven by `loadBalance()`) had the identical missing-vertex flaw and got
+    the same position-gather. `migrate()`'s precondition doc updated: a valid
+    1-deep halo is no longer required.
+  - **Bug 2 — `refine()` produced colliding face gids across rounds.** Child
+    faces were numbered from the global owned-face **count**, but a refined
+    parent's gid is retired (replaced by 4 children), so after a round the live
+    gids are sparse and the max exceeds the count; the next round's children
+    then collided with the previous round's high-numbered children. Invisible in
+    the self-destination `migrate()` path (colliding gids never meet on one
+    rank) but fatal once `--balance`'s real Zoltan2 redistribution brought two
+    ranks' same-gid faces together (`faceById` dedup dropped one, stranding its
+    verts). Fix: base child-face gids on the global **max** existing face gid
+    `+ 1` (via `MPI_Allreduce(MAX)`), not the count. Vertices are unaffected
+    (never retired → contiguous); edges are unaffected (fully renumbered from 0
+    each round).
+  - **Verified:** `mesh_pipeline` now completes rc=0 at 4 ranks across Serial +
+    HIP (DefaultExecutionSpace) + OpenMP for both default args (frames 0–3) and
+    `--balance --iters 3`. Library source changed, so the full gate was rerun:
+    **regression 70/70, unit 28/28** green. Fix is `src/Tessera_MeshMigrate.hpp`
+    + `src/Tessera_RefineParallel.hpp`; the example source itself was not
+    modified.
