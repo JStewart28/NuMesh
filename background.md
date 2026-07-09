@@ -23,7 +23,7 @@ Mental model: everything except one N-body sum is a local, halo-able stencil; th
 
 3. What Tessera Needs
 
-  1. Unstructured AoSoA mesh built witj Cabana AoSoAs. Mesh cells are triangles with vertices, edges, and faces.
+  1. Unstructured AoSoA mesh built with Cabana AoSoAs. Mesh cells are triangles with vertices, edges, and faces.
   2. One-deep haloing + mesh refinement. All local operators above are 1-ring, so one-deep halos suffice for the first milestone.
   3. I/O that works with MPI. Perhaps the VTK or Silo library, or write HDF5 manually. This is a design decision. Must be able to write mesh connectivity information for visualization in paraview and any data associated with vertices, edges, or faces.
 
