@@ -11,3 +11,7 @@
 
 add_executable(mesh_pipeline mesh_pipeline.cpp)
 target_link_libraries(mesh_pipeline PRIVATE Tessera::Tessera)
+
+if(Tessera_INSTALL_EXAMPLES)
+    install(TARGETS mesh_pipeline DESTINATION ${CMAKE_INSTALL_DATADIR}/Tessera/examples)
+endif()

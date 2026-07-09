@@ -101,6 +101,37 @@ if(_tessera_profiling_level GREATER 0)
     )
 endif()
 
+# ── Install ───────────────────────────────────────────────────────────────────
+option(Tessera_INSTALL_TEST_EXECUTABLES "Install built test executables to share/Tessera/tests" OFF)
+option(Tessera_INSTALL_EXAMPLES "Install built example executables to share/Tessera/examples" OFF)
+
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+install(TARGETS Tessera EXPORT TesseraTargets)
+install(DIRECTORY src/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.hpp")
+
+set(Tessera_CMAKE_CONFIG_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/Tessera)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/TesseraConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TesseraConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/TesseraConfig.cmake
+    INSTALL_DESTINATION ${Tessera_CMAKE_CONFIG_DIR}
+)
+install(EXPORT TesseraTargets FILE TesseraTargets.cmake NAMESPACE Tessera::
+        DESTINATION ${Tessera_CMAKE_CONFIG_DIR})
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/TesseraConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/TesseraConfigVersion.cmake
+    DESTINATION ${Tessera_CMAKE_CONFIG_DIR}
+)
+
 # ── cmake module path ─────────────────────────────────────────────────────────
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 

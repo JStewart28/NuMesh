@@ -77,6 +77,10 @@ macro(tessera_add_test)
     add_executable(${_exe} ${TAT_SOURCES})
     target_link_libraries(${_exe} PRIVATE Tessera::Tessera)
 
+    if(Tessera_INSTALL_TEST_EXECUTABLES)
+        install(TARGETS ${_exe} DESTINATION ${CMAKE_INSTALL_DATADIR}/Tessera/tests)
+    endif()
+
     foreach(_np IN LISTS TAT_RANKS)
         set(_test_name ${TAT_NAME}_${TAT_BACKEND}_np${_np})
         add_test(

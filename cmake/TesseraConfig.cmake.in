@@ -9,9 +9,13 @@
 # SPDX-License-Identifier: BSD-3-Clause                                    #
 ############################################################################
 
-add_executable(hello_tessera hello_tessera.cpp)
-target_link_libraries(hello_tessera PRIVATE Tessera::Tessera)
+@PACKAGE_INIT@
 
-if(Tessera_INSTALL_EXAMPLES)
-    install(TARGETS hello_tessera DESTINATION ${CMAKE_INSTALL_DATADIR}/Tessera/examples)
-endif()
+include(CMakeFindDependencyMacro)
+find_dependency(Kokkos)
+find_dependency(Cabana)
+find_dependency(MPI)
+find_dependency(Trilinos)
+find_dependency(HDF5 COMPONENTS C)
+
+include("${CMAKE_CURRENT_LIST_DIR}/TesseraTargets.cmake")
