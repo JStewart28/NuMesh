@@ -144,6 +144,14 @@ class Mesh
     std::size_t generation() const { return _generation; }
     void bumpGeneration() { ++_generation; }
 
+    //! Pointer to the live generation counter. For stamping externally-built
+    //! generation-guarded handles (Tessera_GenerationGuard.hpp) whose backing
+    //! storage is derived from this mesh but not handed out by it directly --
+    //! e.g. the k-ring stencil CSR from buildVertexStencil(). The pointer stays
+    //! valid for the mesh's lifetime; the counter it addresses is bumped by the
+    //! same reallocation sites that invalidate slices.
+    const std::size_t* generationPtr() const { return &_generation; }
+
     // -- resize (used by builder / distribution / refinement) -----------------
     void resizeVertices( std::size_t n )
     {

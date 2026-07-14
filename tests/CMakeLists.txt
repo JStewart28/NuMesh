@@ -220,6 +220,90 @@ tessera_add_test(
     SOURCES  test_staleslice_guard.cpp
 )
 
+# Raw geometric primitives (Milestone-1 operators): faceArea, faceNormalRaw,
+# edgeVector, cotangentAtCorner on an analytic two-triangle mesh with exact
+# hand-computed answers, checked host-side after device evaluation. Single rank.
+tessera_add_test(
+    NAME     geometry
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_geometry.cpp
+)
+tessera_add_test(
+    NAME     geometry
+    BACKEND  HIP
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_geometry.cpp
+)
+
+# k-ring vertex stencil topology (buildVertexStencil): k=1 row equals the
+# edge-derived 1-ring; k=2 row is the exact distance-<=2 set and a superset of
+# k=1; self excluded. Single rank (topology derivation, gid == local).
+tessera_add_test(
+    NAME     stencil_topology
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_stencil_topology.cpp
+)
+tessera_add_test(
+    NAME     stencil_topology
+    BACKEND  HIP
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_stencil_topology.cpp
+)
+
+# Weighted-stencil apply (applyStencil): analytic field f(p)=p_x, uniform
+# weights, reference computed from (haloed) positions independent of the
+# in-field halo path -- so a failure is unambiguously an apply/halo bug. Over
+# 1-5 ranks to exercise partition boundaries.
+tessera_add_test(
+    NAME     apply_stencil
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_apply_stencil.cpp
+)
+tessera_add_test(
+    NAME     apply_stencil
+    BACKEND  HIP
+    TIER     unit
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_apply_stencil.cpp
+)
+
+# Face -> vertex reduction (reduceVertexFromFaces): a one-third-area op whose
+# global owned-vertex sum equals the total surface area (global owned-face
+# faceArea sum) -- a partition-independent identity. Over 1-5 ranks.
+tessera_add_test(
+    NAME     reduce_faces
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_reduce_faces.cpp
+)
+tessera_add_test(
+    NAME     reduce_faces
+    BACKEND  HIP
+    TIER     unit
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_reduce_faces.cpp
+)
+
+# Global scalar reduction (globalMin): min placed at different ranks confirms a
+# real collective; single-rank identity. Host-side MPI wrapper, SERIAL-only
+# (no device kernels), over 1-5 ranks.
+tessera_add_test(
+    NAME     global_reduce
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_global_reduce.cpp
+)
+
 # ── Regression tier (ship gate: label regression x {SERIAL,HIP} x ranks 1-5) ────
 
 # Distributed mesh + deterministic ownership + 1-deep halo (Step 5). First

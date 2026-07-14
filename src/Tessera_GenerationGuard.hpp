@@ -54,7 +54,7 @@ class GenerationHandle
 
     KOKKOS_INLINE_FUNCTION
     GenerationHandle( Underlying u, std::size_t gen,
-                       const std::size_t* mesh_generation )
+                      const std::size_t* mesh_generation )
         : _u( std::move( u ) )
         , _gen( gen )
         , _mesh_generation( mesh_generation )
@@ -67,8 +67,8 @@ class GenerationHandle
         , _gen( other._gen )
         , _mesh_generation( other._mesh_generation )
     {
-#if defined( TESSERA_ENABLE_DEBUG_CHECKS ) &&                                 \
-    !defined( __CUDA_ARCH__ ) && !defined( __HIP_DEVICE_COMPILE__ )
+#if defined( TESSERA_ENABLE_DEBUG_CHECKS ) && !defined( __CUDA_ARCH__ ) &&     \
+    !defined( __HIP_DEVICE_COMPILE__ )
         validate();
 #endif
     }
@@ -79,8 +79,8 @@ class GenerationHandle
         _u = other._u;
         _gen = other._gen;
         _mesh_generation = other._mesh_generation;
-#if defined( TESSERA_ENABLE_DEBUG_CHECKS ) &&                                 \
-    !defined( __CUDA_ARCH__ ) && !defined( __HIP_DEVICE_COMPILE__ )
+#if defined( TESSERA_ENABLE_DEBUG_CHECKS ) && !defined( __CUDA_ARCH__ ) &&     \
+    !defined( __HIP_DEVICE_COMPILE__ )
         validate();
 #endif
         return *this;

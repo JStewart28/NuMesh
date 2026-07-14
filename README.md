@@ -481,6 +481,81 @@ TESSERA_PRINT_TIMERS_TOTAL( comm );     // whole-run aggregate
 refinement iteration as one window. All three print/reset macros are collective on
 the passed communicator, so every rank must call them.
 
+### Geometry & stencil operators
+
+A narrow, physics-free surface for building local surface operators (surface
+gradient, Laplace–Beltrami, curvature, vertex normals/areas) on top of the mesh.
+**Tessera owns the traversal, the assembly, and the raw geometry; the caller owns
+the weights and every convention** — the weight scheme (cotangent vs RBF-FD vs
+uniform), the normal orientation, the area definition (barycentric/Voronoi/⅓),
+the curvature sign. Tessera never sees a physics parameter. This split is what
+lets one interface hold both operator families; when the discretization is
+settled it is one weight-builder in the caller, and *zero* changes in Tessera.
+
+Headers: `Tessera_Geometry.hpp`, `Tessera_Stencil.hpp`, `Tessera_FieldReduce.hpp`,
+`Tessera_Reduction.hpp` (all folded into `<Tessera.hpp>`).
+
+**Raw geometric primitives** — pure geometry, no convention. Because a `Mesh` is
+not capturable into a device kernel and its connectivity stores vertex *global
+ids*, the primitives read a lightweight, device-capturable accessor built once
+from the mesh:
+
+```cpp
+auto geom = buildMeshGeometry( mesh );   // captures the position slice + per-face /
+                                         // per-edge LOCAL vertex indices
+// inside a KOKKOS_LAMBDA, per face f / edge e / corner c (0,1,2):
+Scalar A   = faceArea( geom, f );              // ½‖(p1−p0)×(p2−p0)‖
+Scalar n[3]; faceNormalRaw( geom, f, n );      // unnormalized (p1−p0)×(p2−p0); the
+                                               //   outward sign is the caller's choice
+Scalar v[3]; edgeVector( geom, e, v );         // p[v1]−p[v0]
+Scalar cot = cotangentAtCorner( geom, f, c );  // (u·v)/‖u×v‖ (triangle geometry only)
+```
+
+**k-ring stencil topology** — a CSR of the k-ring vertex neighbours (`k=1` and
+`k=2` both supported), built by edge BFS over the existing connectivity:
+
+```cpp
+auto stencil = buildVertexStencil( mesh, /*k=*/2 );   // VertexStencil<MemSpace>
+```
+
+**Weighted-stencil apply** — halo-correct, GPU-resident. Applies a caller-built
+weight View aligned to the stencil CSR: `out(i) = Σ_j w(i,j)·in(j)` over owned
+vertices. **The caller builds `w`** (that is the convention) and must
+`haloExchange` `in` first so ghost neighbour values are current:
+
+```cpp
+Kokkos::View<Scalar*, MemSpace> w( "w", stencil.csr.get().numEntries() );
+buildMyWeights( mesh, geom, stencil, w );   // caller's cotangent / RBF-FD / … fill
+haloExchange( mesh, halo );                  // refresh ghost `in` before apply
+applyStencil( mesh, stencil, w, in_slice, out_slice );   // owned vertices only
+```
+
+**Face→vertex reduce** — Tessera iterates a vertex's incident faces; the caller's
+device functor `op(v, f, geom, faceSlice, vertSlice)` defines the accumulation
+(no atomics — one thread per owned vertex). This is the primitive behind vertex
+normals and vertex areas, whose conventions stay in the caller:
+
+```cpp
+reduceVertexFromFaces( mesh, geom, faceSlice, vertSlice, MyAreaOrNormalOp{} );
+```
+
+**Global scalar reduction** — a single-sourced `MPI_Allreduce(MPI_MIN)` over
+`mesh.comm()`, e.g. for an adaptive-timestep min-reduce:
+
+```cpp
+Scalar dt = globalMin( mesh, local_dt_estimate );
+```
+
+**Validity.** `MeshGeometry` and `VertexStencil` are generation-guarded like mesh
+slices (see *Slice/handle validity*): both are stamped with the mesh generation at
+build time and abort on use after a topology op. **Rebuild them with
+`buildMeshGeometry`/`buildVertexStencil` after any `distribute`/`migrate`/`refine`/
+`loadBalance`**; they survive `haloExchange` (topology-preserving). Note also that a
+solver's *operator consistency* at irregular (non-valence-6) vertices is a property
+of the weights, not the apply — document and convergence-test that on the caller's
+weight-builder; `applyStencil` is exact arithmetic and is correctness-tested against
+an analytic field.
+
 ---
 
 ## Dependencies and Build Notes

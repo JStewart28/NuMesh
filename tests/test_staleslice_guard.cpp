@@ -76,15 +76,17 @@ int main( int argc, char* argv[] )
         mesh.resizeVertices( 8 ); // same size, but still a count-changing op
         if ( mesh.generation() == gen_before )
         {
-            std::fprintf( stderr,
-                          "FAIL: resizeVertices() did not bump generation()\n" );
+            std::fprintf(
+                stderr, "FAIL: resizeVertices() did not bump generation()\n" );
             ++fails;
         }
 
-        const bool clean_exit = runInChild( [&]() {
-            auto copy = stale; // copy ctor validates -> should abort
-            (void)copy;
-        } );
+        const bool clean_exit = runInChild(
+            [&]()
+            {
+                auto copy = stale; // copy ctor validates -> should abort
+                (void)copy;
+            } );
         if ( clean_exit )
         {
             std::fprintf(

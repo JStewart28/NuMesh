@@ -1,10 +1,19 @@
 # Rising-Bubble Architecture: Tessera / Canopy / solver split
 
-**Status:** design document (no code this session). Deliverable for the Milestone‑1
+**Status:** design document + implementation record. Deliverable for the Milestone‑1
 closed‑surface Z‑model rising bubble.
-**Date:** 2026‑07‑13.
+**Date:** 2026‑07‑13 (design); **2026‑07‑14 (Tessera geometry/assembly APIs implemented — see
+§"Implementation status").**
 **Authoritative sources:** `background.md` (physics + milestone scope, collaborator‑owned),
 plus reconnaissance of four codebases (citations throughout).
+
+> **Update 2026‑07‑14 — the five new Tessera entry points are now implemented, tested, and on
+> `main`.** The "narrowest interface" (§Q1) shipped: `buildMeshGeometry`/`MeshGeometry` +
+> raw geometric primitives (`Tessera_Geometry.hpp`), `buildVertexStencil`/`applyStencil`
+> (`Tessera_Stencil.hpp`), `reduceVertexFromFaces` (`Tessera_FieldReduce.hpp`), and `globalMin`
+> (`Tessera_Reduction.hpp`), each with a unit test (SERIAL+HIP where applicable). One signature
+> difference from the sketch below is load‑bearing and documented in §"Implementation status":
+> the primitives take a device‑capturable `MeshGeometry` accessor, **not** the `Mesh` itself.
 
 **Decisions taken as input (from Jason, this session):**
 1. **Discretization:** design so *both* the RBF‑FD family (zmodel‑kokkos / zmodel‑unstructured)
@@ -120,10 +129,15 @@ placeholders in `src/`.
 - **Connectivity (all real):** face→3 verts / 3 edges, edge→2 verts / ≤2 faces, vertex→edges and
   vertex→faces CSR (`Tessera_MeshBuilder.hpp:113-116,158-163,191-229`; `Tessera_CsrAdjacency.hpp:41-79`).
   No vertex→vertex or face→face list (1‑ring reached via vertexEdges/vertexFaces).
-- **Differential geometry:** **none exposed.** The only geometric computation anywhere is a
+- **Differential geometry:** **none exposed at design time.** The only geometric computation was a
   transient face normal used for curvature‑based refinement marking (`Tessera_MarkQuality.hpp:266-275`)
-  — produced, consumed, discarded. **No area, no vertex normal accessor, no curvature, no
-  Laplace–Beltrami, no gradient/divergence operator.**
+  — produced, consumed, discarded. No area, no vertex normal accessor, no curvature, no
+  Laplace–Beltrami, no gradient/divergence operator. **[UPDATE 2026‑07‑14]** The raw‑geometry and
+  generic‑assembly layer of the design (§Q1) now exists: `faceArea`/`faceNormalRaw`/`edgeVector`/
+  `cotangentAtCorner` (`Tessera_Geometry.hpp`), `buildVertexStencil`/`applyStencil`
+  (`Tessera_Stencil.hpp`), `reduceVertexFromFaces` (`Tessera_FieldReduce.hpp`), `globalMin`
+  (`Tessera_Reduction.hpp`). These remain **pure geometry + generic assembly** — still no
+  convention, no vertex‑normal/area definition, no curvature, no weight scheme in Tessera.
 - **Halo exchange:** real, one‑deep, generic over any AoSoA/field pack
   (`Tessera_HaloExchange.hpp:134-136`, whole‑tuple `MPI_Type_contiguous` `:172-175`). Does **not**
   resize. Documented invalidation contract at `:50-52`.
@@ -280,7 +294,7 @@ operator into a **Tessera‑owned traversal/assembly mechanism** and a **caller�
 | 1‑ring / k‑ring neighbor access | `Mesh.hpp:935-968` (BFS) | generic | **Tessera** | pure topology; needed by every operator and both weight families | `auto vertexEdges()/vertexFaces()` (exist, `Tessera_Mesh.hpp:156-159`); add `ringNeighbors(v,k)` |
 | Face area, face normal (raw geometry) | `Mesh.h:241-264`; normal impl varies | generic *magnitude*, convention‑dependent *sign/orientation* | **Tessera** (unsigned), caller (orientation) | `½‖(p1−p0)×(p2−p0)‖` is identical for all physics; the outward‑sign choice is a convention | `KOKKOS_FN Scalar faceArea(f); KOKKOS_FN Vec3 faceNormalRaw(f)` |
 | Vertex normal | `ZModel.hpp:64-73` (cross‑prod) **vs** `Mesh.py:403-410` (area‑avg) | **convention‑dependent** | **caller**, via a Tessera reduction primitive | the two references already disagree; Tessera must not pick | caller functor + `reduceVertexFromFaces(field, op)` |
-| Vertex area (barycentric / Voronoi / ⅓‑triangle) | absent in kokkos; `Mesh.py:444` | **convention‑dependent** | **caller**, via a Tessera face→vertex scatter | γ = ω·area needs *an* area; which one is the oracle's call | `scatterFaceToVertex(faceQty, weights)` |
+| Vertex area (barycentric / Voronoi / ⅓‑triangle) | absent in kokkos; `Mesh.py:444` | **convention‑dependent** | **caller**, via a Tessera face→vertex reduce | γ = ω·area needs *an* area; which one is the oracle's call | `reduceVertexFromFaces(...)` *(as shipped — the scatter and vertex‑normal reduce are one primitive with a caller op)* |
 | Surface gradient of a **generic scalar/vector field** | `SurfRBF.hpp:428-448` | generic *operator application*; convention‑dependent *stencil weights* | **split**: Tessera owns apply + stencil gather; **caller owns weights** | this is the crux — see below | `applyStencilOperator(op, inField, outField)` where `op` is caller‑built |
 | Laplace–Beltrami | `SurfRBF.hpp:516-534` (RBF) **vs** cotangent (forthcoming) | **convention‑dependent weights**, generic assembly | **split** (same as above) | RBF‑div‑grad and cotangent are *different weight fills* over the *same* 1/2‑ring gather | as above; `op` carries the weights |
 | Mean curvature | `ZModel.hpp:165-168` | **convention‑dependent** (sign, weighting) + problem‑adjacent | **caller** | `½tr(g⁻¹II)` vs cotangent‑Laplacian‑of‑position vs area‑gradient are all "mean curvature"; sign must match oracle | caller functor over Tessera gradients/normals |
@@ -309,27 +323,35 @@ observation is what lets one interface hold both:
   convention. Cotangent weights, RBF‑FD weights, uniform weights are three implementations of that one
   functor. Tessera never sees ε, never picks a sign, never chooses barycentric vs Voronoi.
 
-Concretely, the proposed Tessera entry points (the *only* new operator surface Tessera needs):
+Concretely, the Tessera entry points (the *only* new operator surface Tessera needs). **These
+shipped 2026‑07‑14; the block below is the AS‑IMPLEMENTED signature** (the design sketch took
+`const MeshT&`; the reality is the `MeshGeometry` accessor — see §"Implementation status" for why):
 
 ```cpp
 // 1. Stencil topology: k-ring neighbor CSR for vertices (k=1 or 2 covers both families).
-template <class MeshT> StencilCsr<...> buildVertexStencil(const MeshT& mesh, int k);
+//    Returns a generation-guarded CSR wrapper (VertexStencil).                [Tessera_Stencil.hpp]
+template <class MeshT> VertexStencil<mem> buildVertexStencil(MeshT& mesh, int k);
 
-// 2. Raw geometric primitives a weight-builder consumes (pure geometry, no convention):
-KOKKOS_FN Scalar faceArea(const MeshT&, LocalIndex f);
-KOKKOS_FN void   edgeVector(const MeshT&, LocalIndex e, Scalar out[3]);
-KOKKOS_FN void   faceNormalRaw(const MeshT&, LocalIndex f, Scalar out[3]); // unnormalized
-KOKKOS_FN Scalar cotangentAtCorner(const MeshT&, LocalIndex f, int corner); // triangle geometry only
+// 2. Raw geometric primitives a weight-builder consumes (pure geometry, no convention). They read a
+//    lightweight device-capturable accessor built once from the mesh, NOT the mesh itself, because a
+//    Mesh is not device-capturable and its connectivity stores vertex gids.    [Tessera_Geometry.hpp]
+template <class MeshT> MeshGeometry<MeshT> buildMeshGeometry(MeshT& mesh);
+KOKKOS_FN Scalar faceArea(const MeshGeometry<MeshT>&, LocalIndex f);
+KOKKOS_FN void   edgeVector(const MeshGeometry<MeshT>&, LocalIndex e, Scalar out[3]);
+KOKKOS_FN void   faceNormalRaw(const MeshGeometry<MeshT>&, LocalIndex f, Scalar out[3]); // unnormalized
+KOKKOS_FN Scalar cotangentAtCorner(const MeshGeometry<MeshT>&, LocalIndex f, int corner); // triangle only
 
-// 3. Weighted-stencil apply over a generic field (the halo-correct, GPU-resident workhorse):
+// 3. Weighted-stencil apply over a generic field (the halo-correct, GPU-resident workhorse).
+//    out(i)=Σ_j w(j)*in(nbr(j)) over OWNED vertices; caller haloExchanges `in` first. [Tessera_Stencil.hpp]
 template <class MeshT, class WeightsView, class InSlice, class OutSlice>
-void applyStencil(const MeshT&, const StencilCsr<...>&, WeightsView w, InSlice in, OutSlice out);
+void applyStencil(MeshT&, const VertexStencil<mem>&, WeightsView w, InSlice in, OutSlice out);
 
-// 4. Face->vertex scatter and vertex<-face reduce, for areas and vertex normals (caller gives op):
+// 4. Vertex<-face reduce, for areas and vertex normals (caller gives the accumulation op).
+//    op(v, f, geom, faceSlice, vertSlice) runs per incident face.           [Tessera_FieldReduce.hpp]
 template <class MeshT, class FaceSlice, class VertSlice, class ReduceOp>
-void reduceVertexFromFaces(const MeshT&, FaceSlice, VertSlice, ReduceOp);
+void reduceVertexFromFaces(MeshT&, const MeshGeometry<MeshT>&, FaceSlice, VertSlice, ReduceOp);
 
-// 5. Global reduction for adaptive dt:
+// 5. Global reduction for adaptive dt.                                       [Tessera_Reduction.hpp]
 template <class MeshT, class Scalar> Scalar globalMin(const MeshT&, Scalar local);
 ```
 
@@ -367,6 +389,39 @@ arithmetic regardless — but it *does* dictate documentation and testing: the w
 lib) must document the inconsistency, and Tessera's `applyStencil` test must use an analytic field so a
 failure is unambiguously an apply/halo bug, never expected operator inconsistency. Put the convergence
 test on the weights (solver lib), the correctness test on the apply (Tessera).
+
+### Implementation status (2026‑07‑14)
+
+All five entry points are implemented on `main`, header‑only, and folded into `<Tessera.hpp>`.
+
+- **Files:** `src/Tessera_Geometry.hpp` (group 1 + the accessor), `src/Tessera_Stencil.hpp`
+  (groups 2+3), `src/Tessera_FieldReduce.hpp` (group 4), `src/Tessera_Reduction.hpp` (group 5).
+- **The accessor, and why the signature changed.** The design sketched `faceArea(mesh, f)`. That is
+  not implementable on device: a `Mesh` holds AoSoAs, an `MPI_Comm`, and a raw generation pointer and
+  is **not capturable into a `KOKKOS_LAMBDA`**, and the face/edge connectivity stores vertex **gids**
+  (`FaceField::Verts = GlobalId[3]`) with no device‑side gid→local map. So `buildMeshGeometry(mesh)`
+  returns a small **device‑capturable `MeshGeometry`** bundling the position slice + per‑face/per‑edge
+  *local* vertex indices (built host‑side from a gid→local map, exactly as `Tessera_MarkQuality.hpp`
+  already did), and the primitives read that. This is pure mechanism — no convention crossed the line.
+- **Generation‑guard integration (per the §0.2 contract).** `MeshGeometry` holds its position slice as
+  the same `GenerationHandle` `Mesh::vertexSlice()` hands out, so **copying the accessor into a
+  `KOKKOS_LAMBDA` re‑validates it** and aborts if it was built before a topology op. `VertexStencil`
+  wraps its CSR in a `GenerationHandle` stamped via a new minimal read‑only `Mesh::generationPtr()`
+  accessor (`Tessera_Mesh.hpp`); `applyStencil` validates it host‑side before launch. Both must be
+  **rebuilt after any `distribute`/`migrate`/`refine`/`loadBalance`**; both survive `haloExchange`.
+  This is the only change to a core header — a one‑line accessor, no storage/field‑pack change.
+- **Tests** (`tests/`, all `TIER unit`): `test_geometry` (analytic two‑triangle mesh, exact values),
+  `test_stencil_topology` (k=1/k=2 vs an independent edge‑BFS reference), `test_apply_stencil`
+  (analytic `f(p)=p_x`, uniform weights, reference from positions independent of the field‑halo path —
+  a failure is unambiguously an apply/halo bug), `test_reduce_faces` (⅓‑area identity → total surface
+  area, partition‑independent), `test_global_reduce` (min placed at different ranks). SERIAL+HIP where
+  device kernels apply; `global_reduce` is SERIAL‑only (host MPI). The distributed tests run ranks 1–5.
+- **Batch runner:** `scripts/tuolumne/run_all_tests.flux` (pdebug, 20 min) runs the whole suite —
+  SERIAL at ranks 1–5, HIP at ranks 1–4 (4 GPUs/node). Verified green: **117/117 tests passed**.
+- **README:** a new "Geometry & stencil operators" section documents the API and the
+  Tessera‑owns‑traversal / caller‑owns‑weights‑and‑conventions split.
+- **Still outside Tessera, as designed:** weight schemes, vertex‑normal/area/curvature conventions,
+  `mu→omega`, the Bernoulli forcing, ε. Those live in Solverlib (Q2 option c).
 
 ---
 
@@ -485,8 +540,8 @@ for stage in {0,1,2}:
 
   # (1) LOCAL: geometry + operators  --- all one-deep-halo ---
   haloExchange(mesh, halo)                                  # [Tessera] LOCAL comm (1-deep)
-  reduceVertexFromFaces(mesh, faceNormalRaw, vnormal, AreaWeightOp)  # [Tessera apply + Solverlib op]
-  scatterFaceToVertex(mesh, faceArea, varea, ThirdOp)       # [Tessera apply + Solverlib area convention]
+  reduceVertexFromFaces(mesh, geom, faceSlice, vnormal, AreaWeightOp) # [Tessera reduce + Solverlib op]
+  reduceVertexFromFaces(mesh, geom, faceSlice, varea, ThirdAreaOp)    # [Tessera reduce + Solverlib area convention]
   applyStencil(mesh, stencil, W_grad, state, dstate)        # [Tessera] surface gradient of state
   omega = muToOmega(state, metric, vnormal)                 # [Solverlib] PROBLEM-SPECIFIC (ZModel.hpp:82-91)
   applyStencil(mesh, stencil, W_lap, state, lap_state)      # [Tessera] Laplace-Beltrami apply
