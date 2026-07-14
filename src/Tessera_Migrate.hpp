@@ -262,6 +262,16 @@ int migrate( MPI_Comm comm, AoSoAType& aosoa, const DestView& dest,
     }
     Kokkos::fence();
 
+    // INVALIDATION: this reassigns the caller's AoSoA wholesale, invalidating
+    // every slice/tuple handed out against the old storage. This primitive is
+    // mesh-agnostic (it knows nothing about Tessera::Mesh), so it cannot bump
+    // a Mesh's generation() counter itself: a caller that invokes it directly
+    // against mesh.vertices()/edges()/faces() (rather than going through the
+    // mesh-level Tessera::migrate(mesh, halo, dest), which already bumps
+    // generation() via its own resize()/setOwnedCounts() calls) must call
+    // mesh.bumpGeneration() itself afterward so GenerationHandle-wrapped
+    // slices taken beforehand are correctly invalidated. See the "Slice/handle
+    // validity" section of README.md.
     aosoa = migrated;
     return num_sent;
 }

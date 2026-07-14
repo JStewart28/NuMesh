@@ -168,24 +168,26 @@ void buildFromTriangleSoup( MeshT& mesh, const TriangleSoup<Scalar>& soup )
 
     // ---- canonical-key side tables -----------------------------------------
     {
-        mesh.edgeKeys() = Kokkos::View<EdgeKey*, memory_space>(
+        Kokkos::View<EdgeKey*, memory_space> ek(
             Kokkos::view_alloc( Kokkos::WithoutInitializing, "edge_keys" ),
             ne );
-        auto h_ek = Kokkos::create_mirror_view( mesh.edgeKeys() );
+        auto h_ek = Kokkos::create_mirror_view( ek );
         for ( std::size_t e = 0; e < ne; ++e )
             h_ek( e ) = makeEdgeKey( ep[e][0], ep[e][1] );
-        Kokkos::deep_copy( mesh.edgeKeys(), h_ek );
+        Kokkos::deep_copy( ek, h_ek );
+        mesh.setEdgeKeys( ek );
 
-        mesh.faceKeys() = Kokkos::View<FaceKey*, memory_space>(
+        Kokkos::View<FaceKey*, memory_space> fk(
             Kokkos::view_alloc( Kokkos::WithoutInitializing, "face_keys" ),
             nf );
-        auto h_fk = Kokkos::create_mirror_view( mesh.faceKeys() );
+        auto h_fk = Kokkos::create_mirror_view( fk );
         for ( std::size_t f = 0; f < nf; ++f )
             h_fk( f ) = makeFaceKey(
                 static_cast<GlobalId>( soup.triangles[3 * f + 0] ),
                 static_cast<GlobalId>( soup.triangles[3 * f + 1] ),
                 static_cast<GlobalId>( soup.triangles[3 * f + 2] ) );
-        Kokkos::deep_copy( mesh.faceKeys(), h_fk );
+        Kokkos::deep_copy( fk, h_fk );
+        mesh.setFaceKeys( fk );
     }
 
     // ---- CSR: vertex -> incident faces -------------------------------------
@@ -204,7 +206,7 @@ void buildFromTriangleSoup( MeshT& mesh, const TriangleSoup<Scalar>& soup )
                 const int v = soup.triangles[3 * f + k];
                 nbr[cursor[v]++] = static_cast<LocalIndex>( f );
             }
-        detail::fillCsr( mesh.vertexFaces(), off, nbr, "vertex_faces" );
+        mesh.rebuildVertexFaces( off, nbr, "vertex_faces" );
     }
 
     // ---- CSR: vertex -> incident edges -------------------------------------
@@ -225,10 +227,12 @@ void buildFromTriangleSoup( MeshT& mesh, const TriangleSoup<Scalar>& soup )
                 const int v = static_cast<int>( ep[e][j] );
                 nbr[cursor[v]++] = static_cast<LocalIndex>( e );
             }
-        detail::fillCsr( mesh.vertexEdges(), off, nbr, "vertex_edges" );
+        mesh.rebuildVertexEdges( off, nbr, "vertex_edges" );
     }
 
-    // Replicated / serial mesh: every entity is owned by this rank.
+    // Replicated / serial mesh: every entity is owned by this rank. Nothing
+    // can be stale yet (this is the initial build), but setOwnedCounts() bumps
+    // generation() here too for uniformity with every other count-changing op.
     mesh.setOwnedCounts( nv, ne, nf );
 }
 

@@ -25,6 +25,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(Tessera_ENABLE_TESTING   "Build and register the Tessera test suite"  OFF)
 option(Tessera_ENABLE_EXAMPLES  "Build the Tessera example programs"          OFF)
 option(Tessera_ENABLE_PROFILING "Enable Tessera internal profiling"           OFF)
+option(Tessera_ENABLE_DEBUG_CHECKS "Enable Tessera runtime debug checks (e.g. the stale-handle generation guard on Mesh slice/CSR/key-View accessors)" ON)
 set(Tessera_PROFILING_LEVEL "" CACHE STRING
     "Profiling detail level: 0=off, 1=basic phases, 2=detailed sub-phases, 3=verbose")
 set_property(CACHE Tessera_PROFILING_LEVEL PROPERTY STRINGS "" 0 1 2 3)
@@ -99,6 +100,10 @@ if(_tessera_profiling_level GREATER 0)
         TESSERA_ENABLE_PROFILING
         TESSERA_PROFILING_LEVEL=${_tessera_profiling_level}
     )
+endif()
+
+if(Tessera_ENABLE_DEBUG_CHECKS)
+    target_compile_definitions(Tessera INTERFACE TESSERA_ENABLE_DEBUG_CHECKS)
 endif()
 
 # ── Install ───────────────────────────────────────────────────────────────────

@@ -1,8 +1,8 @@
 # Background
 This file contains background information about how this unstructured mesh library, Tessera, will be used to interact with other libraries Canopy (An FMM solver for far-field forces) and Beatnik/rocketrig, a fluid interface solver.
 Those libraries are located at these paths, for reference:
-- Beatnik/rocketrig problem: ~/spack_envs/beatnik/beatnik
-- Canopy: ~/spack_envs/beatnik/canopy
+- Beatnik/rocketrig problem: ~/spack_envs/tuolumne_beatnik/beatnik
+- Canopy: ~/research-bridges/Canopy
 
 ## First milestone
 A simple unstructured rising bubble, explicit time stepping, use the FMM solve Canopy for far-field forces. It exercises every part of the method that matters for parallel scaling while deferring the genuinely hard topology work. Below contains information about what the closed-surface z-model actually requires, flags, and possible "problems" worth knowing up front, and a note about disjoint-surfaces. There's another note on timing at the end.

@@ -207,6 +207,19 @@ tessera_add_test(
     SOURCES  test_refine.cpp
 )
 
+# Stale-handle generation guard: a slice held across a count-changing op and
+# then copied (as it would be when captured into a KOKKOS_LAMBDA) must abort;
+# a slice held across haloExchange() (topology-preserving) must not. This
+# exercises host-side generation bookkeeping, not device kernels, so it is
+# registered SERIAL-only (no HIP duplicate, unlike the other unit tests).
+tessera_add_test(
+    NAME     staleslice_guard
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_staleslice_guard.cpp
+)
+
 # ── Regression tier (ship gate: label regression x {SERIAL,HIP} x ranks 1-5) ────
 
 # Distributed mesh + deterministic ownership + 1-deep halo (Step 5). First

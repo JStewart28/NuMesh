@@ -267,6 +267,11 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     const int nlf = static_cast<int>( forder.size() );
 
     // ---- build compact local AoSoAs, then hand them to the mesh ------------
+    // INVALIDATION: the resize/deep_copy calls below (and the CSR rebuild
+    // further down) reallocate and reassign this mesh's storage, invalidating
+    // every slice/CSR/key-View handed out before this call. Call clear() and
+    // rebuild any HaloExchangePlan (already done for halo below); re-slice from
+    // the mesh after distribute() returns.
     {
         Cabana::AoSoA<typename MeshT::vertex_member_types, Kokkos::HostSpace>
             lv( "lv", nlv );
@@ -355,7 +360,7 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                 nbr[cur[v2l[static_cast<int>( f_v( g, k ) )]]++] =
                     static_cast<LocalIndex>( li );
         }
-        detail::fillCsr( mesh.vertexFaces(), off, nbr, "vertex_faces" );
+        mesh.rebuildVertexFaces( off, nbr, "vertex_faces" );
     }
     {
         TESSERA_SCOPED_TIMER_DETAILED(
@@ -378,7 +383,7 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                 nbr[cur[v2l[static_cast<int>( e_v( g, j ) )]]++] =
                     static_cast<LocalIndex>( li );
         }
-        detail::fillCsr( mesh.vertexEdges(), off, nbr, "vertex_edges" );
+        mesh.rebuildVertexEdges( off, nbr, "vertex_edges" );
     }
 
     // ---- halo plans ---------------------------------------------------------

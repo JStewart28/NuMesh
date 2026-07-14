@@ -14,6 +14,7 @@
 
 #include "Tessera_CsrAdjacency.hpp"
 #include "Tessera_Fields.hpp"
+#include "Tessera_GenerationGuard.hpp"
 #include "Tessera_Types.hpp"
 
 #include <Cabana_AoSoA.hpp>
@@ -23,6 +24,9 @@
 #include <mpi.h>
 
 #include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
 
 namespace Tessera
 {
@@ -107,6 +111,13 @@ class Mesh
     // and kept locally to complete the 1-deep halo). For a replicated / serial
     // mesh every entity is owned. distribute() (Step 5) sets these; migration and
     // refinement (Steps 6-7) update them.
+    //
+    // INVALIDATION: any change to the local entity count or the ghost set
+    // (distribution, migration, refinement) invalidates every slice/CSR/
+    // key-View handed out before the change -- setOwnedCounts() bumps
+    // generation() (see below) so GenerationHandle-wrapped handles taken
+    // beforehand fail loudly on next use instead of silently reading stale
+    // storage.
     std::size_t numOwnedVertices() const { return _n_owned_v; }
     std::size_t numOwnedEdges() const { return _n_owned_e; }
     std::size_t numOwnedFaces() const { return _n_owned_f; }
@@ -115,12 +126,40 @@ class Mesh
         _n_owned_v = nv;
         _n_owned_e = ne;
         _n_owned_f = nf;
+        bumpGeneration();
     }
 
+    // -- generation counter ----------------------------------------------------
+    //
+    // Monotonically increases every time this mesh's local entity count or
+    // storage is reallocated (resize*, setOwnedCounts, the key-View/CSR
+    // rebuild methods below). Slice/CSR/key-View accessors stamp the handles
+    // they return with the generation at creation time (see
+    // Tessera_GenerationGuard.hpp); haloExchange() never bumps this counter,
+    // since it is topology-preserving. Free functions that reallocate mesh
+    // storage without going through this class (e.g. Tessera_Migrate.hpp's
+    // mesh-agnostic migrate() primitive, if ever invoked directly on
+    // mesh.vertices()/edges()/faces()) must call the public bumpGeneration()
+    // themselves -- see the note at Tessera_Migrate.hpp's reassignment site.
+    std::size_t generation() const { return _generation; }
+    void bumpGeneration() { ++_generation; }
+
     // -- resize (used by builder / distribution / refinement) -----------------
-    void resizeVertices( std::size_t n ) { _vertices.resize( n ); }
-    void resizeEdges( std::size_t n ) { _edges.resize( n ); }
-    void resizeFaces( std::size_t n ) { _faces.resize( n ); }
+    void resizeVertices( std::size_t n )
+    {
+        _vertices.resize( n );
+        bumpGeneration();
+    }
+    void resizeEdges( std::size_t n )
+    {
+        _edges.resize( n );
+        bumpGeneration();
+    }
+    void resizeFaces( std::size_t n )
+    {
+        _faces.resize( n );
+        bumpGeneration();
+    }
 
     // -- AoSoA accessors ------------------------------------------------------
     vertex_aosoa_type& vertices() { return _vertices; }
@@ -136,27 +175,99 @@ class Mesh
     // user fields via Tessera::userVertexField<M>() etc. Example:
     //   auto pos  = mesh.vertexSlice<Tessera::VertexField::Position>();
     //   auto vort = mesh.vertexSlice<Tessera::userVertexField<0>()>();
+    //
+    // The returned handle is a GenerationHandle wrapping the Cabana::slice: it
+    // forwards operator() unchanged (no device-side cost) but aborts with a
+    // diagnostic if copied (e.g. captured into a KOKKOS_LAMBDA) after this
+    // mesh's generation() has advanced past the slice's capture point -- see
+    // Tessera_GenerationGuard.hpp for the INVALIDATION contract.
     template <std::size_t M>
     auto vertexSlice()
     {
-        return Cabana::slice<M>( _vertices );
+        using slice_type = decltype( Cabana::slice<M>( _vertices ) );
+        return GenerationHandle<slice_type>( Cabana::slice<M>( _vertices ),
+                                             _generation, &_generation );
     }
     template <std::size_t M>
     auto edgeSlice()
     {
-        return Cabana::slice<M>( _edges );
+        using slice_type = decltype( Cabana::slice<M>( _edges ) );
+        return GenerationHandle<slice_type>( Cabana::slice<M>( _edges ),
+                                             _generation, &_generation );
     }
     template <std::size_t M>
     auto faceSlice()
     {
-        return Cabana::slice<M>( _faces );
+        using slice_type = decltype( Cabana::slice<M>( _faces ) );
+        return GenerationHandle<slice_type>( Cabana::slice<M>( _faces ),
+                                             _generation, &_generation );
+    }
+
+    //! Convenience re-slice helpers: re-derive a whole set of generation-
+    //! stamped slices in one structural call, e.g. at the top of every solver
+    //! stage, rather than re-slicing each field individually.
+    //!   auto [pos, vort] =
+    //!       mesh.vertexSlices<VertexField::Position, userVertexField<0>()>();
+    template <std::size_t... M>
+    auto vertexSlices()
+    {
+        return std::make_tuple( vertexSlice<M>()... );
+    }
+    template <std::size_t... M>
+    auto edgeSlices()
+    {
+        return std::make_tuple( edgeSlice<M>()... );
+    }
+    template <std::size_t... M>
+    auto faceSlices()
+    {
+        return std::make_tuple( faceSlice<M>()... );
     }
 
     // -- vertex 1-ring adjacency (CSR; built in Step 3, rebuilt on topo change)
+    //
+    // INVALIDATION: rebuildVertexFaces()/rebuildVertexEdges() below replace the
+    // CSR's internal offsets/neighbors Views wholesale and bump generation();
+    // these bare accessors are for internal, same-scope use that does not
+    // outlive a topology-changing call. External/solver code that wants a
+    // guarded handle should use vertexFacesHandle()/vertexEdgesHandle().
     csr_type& vertexEdges() { return _vertexEdges; }
     const csr_type& vertexEdges() const { return _vertexEdges; }
     csr_type& vertexFaces() { return _vertexFaces; }
     const csr_type& vertexFaces() const { return _vertexFaces; }
+
+    //! Generation-stamped snapshot of the CSR relation (a cheap copy: two
+    //! Kokkos::Views). Use this to hold a guarded handle across a call that
+    //! might reallocate the CSR.
+    GenerationHandle<csr_type> vertexEdgesHandle() const
+    {
+        return GenerationHandle<csr_type>( _vertexEdges, _generation,
+                                           &_generation );
+    }
+    GenerationHandle<csr_type> vertexFacesHandle() const
+    {
+        return GenerationHandle<csr_type>( _vertexFaces, _generation,
+                                           &_generation );
+    }
+
+    //! Rebuild the vertex->faces / vertex->edges CSR from host offset/neighbor
+    //! vectors, replacing the CSR's storage and bumping generation(). This is
+    //! the sanctioned replacement for calling detail::fillCsr() directly on
+    //! vertexFaces()/vertexEdges().
+    void rebuildVertexFaces( const std::vector<int>& offsets,
+                             const std::vector<LocalIndex>& neighbors,
+                             const std::string& label )
+    {
+        detail::fillCsr( _vertexFaces, offsets, neighbors, label );
+        bumpGeneration();
+    }
+    void rebuildVertexEdges( const std::vector<int>& offsets,
+                             const std::vector<LocalIndex>& neighbors,
+                             const std::string& label )
+    {
+        detail::fillCsr( _vertexEdges, offsets, neighbors, label );
+        bumpGeneration();
+    }
 
     // -- canonical-key side tables --------------------------------------------
     //
@@ -165,6 +276,13 @@ class Mesh
     // parallel to the edge/face AoSoAs but OUT of them (they are only consulted
     // during halo/ghost matching and migration, so the per-entity AoSoA
     // footprint stays small). Allocated on demand by the steps that need them.
+    //
+    // INVALIDATION: setEdgeKeys()/setFaceKeys() below replace these Views
+    // wholesale and bump generation(); the bare reference accessors are for
+    // internal, same-scope use (and for filling the table right after
+    // construction, before any generation-stamped handle exists yet). External/
+    // solver code that wants a guarded handle should use
+    // edgeKeysHandle()/faceKeysHandle().
     Kokkos::View<EdgeKey*, MemorySpace>& edgeKeys() { return _edgeKeys; }
     const Kokkos::View<EdgeKey*, MemorySpace>& edgeKeys() const
     {
@@ -176,6 +294,29 @@ class Mesh
         return _faceKeys;
     }
 
+    //! Replace the edge/face key-View wholesale, bumping generation().
+    void setEdgeKeys( Kokkos::View<EdgeKey*, MemorySpace> keys )
+    {
+        _edgeKeys = std::move( keys );
+        bumpGeneration();
+    }
+    void setFaceKeys( Kokkos::View<FaceKey*, MemorySpace> keys )
+    {
+        _faceKeys = std::move( keys );
+        bumpGeneration();
+    }
+
+    GenerationHandle<Kokkos::View<EdgeKey*, MemorySpace>> edgeKeysHandle() const
+    {
+        return GenerationHandle<Kokkos::View<EdgeKey*, MemorySpace>>(
+            _edgeKeys, _generation, &_generation );
+    }
+    GenerationHandle<Kokkos::View<FaceKey*, MemorySpace>> faceKeysHandle() const
+    {
+        return GenerationHandle<Kokkos::View<FaceKey*, MemorySpace>>(
+            _faceKeys, _generation, &_generation );
+    }
+
   private:
     MPI_Comm _comm;
     int _rank = 0;
@@ -184,6 +325,8 @@ class Mesh
     std::size_t _n_owned_v = 0;
     std::size_t _n_owned_e = 0;
     std::size_t _n_owned_f = 0;
+
+    std::size_t _generation = 0;
 
     vertex_aosoa_type _vertices;
     edge_aosoa_type _edges;

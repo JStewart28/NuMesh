@@ -405,6 +405,10 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                 detail::blendVertexUserCross( lv, idx, hv, la, lb, policy );
             }
         }
+        // INVALIDATION: the resize/deep_copy calls in this function, the key-
+        // View reassignment, and the CSR rebuild below reallocate and reassign
+        // this mesh's storage, invalidating every slice/CSR/key-View handed out
+        // before this call. Re-slice from the mesh after refine() returns.
         mesh.resizeVertices( nNewV );
         Cabana::deep_copy( mesh.vertices(), lv );
 
@@ -632,21 +636,23 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         {
             TESSERA_SCOPED_TIMER_DETAILED(
                 ::Tessera::Profiling::TIMER_REFINE_REBUILD );
-            mesh.edgeKeys() = Kokkos::View<EdgeKey*, memory_space>(
+            Kokkos::View<EdgeKey*, memory_space> ek(
                 Kokkos::view_alloc( Kokkos::WithoutInitializing, "edge_keys" ),
                 nLocalE );
-            auto h_ek = Kokkos::create_mirror_view( mesh.edgeKeys() );
+            auto h_ek = Kokkos::create_mirror_view( ek );
             for ( int e = 0; e < nLocalE; ++e )
                 h_ek( newIndexOf[e] ) = keyOf( ep[e][0], ep[e][1] );
-            Kokkos::deep_copy( mesh.edgeKeys(), h_ek );
+            Kokkos::deep_copy( ek, h_ek );
+            mesh.setEdgeKeys( ek );
 
-            mesh.faceKeys() = Kokkos::View<FaceKey*, memory_space>(
+            Kokkos::View<FaceKey*, memory_space> fk(
                 Kokkos::view_alloc( Kokkos::WithoutInitializing, "face_keys" ),
                 nNewF );
-            auto h_fk = Kokkos::create_mirror_view( mesh.faceKeys() );
+            auto h_fk = Kokkos::create_mirror_view( fk );
             for ( int f = 0; f < nNewF; ++f )
                 h_fk( f ) = makeFaceKey( nFV[f][0], nFV[f][1], nFV[f][2] );
-            Kokkos::deep_copy( mesh.faceKeys(), h_fk );
+            Kokkos::deep_copy( fk, h_fk );
+            mesh.setFaceKeys( fk );
         }
 
         // 3i. best-effort owned-vertex 1-ring CSR over LOCAL faces/edges. It is
@@ -680,7 +686,7 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                     if ( it != gid2nv.end() )
                         nbr[cur[it->second]++] = static_cast<LocalIndex>( f );
                 }
-            detail::fillCsr( mesh.vertexFaces(), off, nbr, "vertex_faces" );
+            mesh.rebuildVertexFaces( off, nbr, "vertex_faces" );
         }
         {
             std::vector<int> off( nNewV + 1, 0 );
@@ -703,12 +709,14 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                         nbr[cur[it->second]++] =
                             static_cast<LocalIndex>( newIndexOf[e] );
                 }
-            detail::fillCsr( mesh.vertexEdges(), off, nbr, "vertex_edges" );
+            mesh.rebuildVertexEdges( off, nbr, "vertex_edges" );
         }
     }
 
-    // The 1-deep halo is now stale (topology changed, ghosts dropped). Clear it;
-    // Step 7 provides the general (non-replicated) halo rebuild.
+    // INVALIDATION: the 1-deep halo is now stale (topology changed, ghosts
+    // dropped), as is every slice/CSR/key-View a caller took out before this
+    // refine() call. Clear the halo plans; Step 7 provides the general
+    // (non-replicated) halo rebuild. Callers must re-slice from the mesh.
     halo.vplan.clear();
     halo.eplan.clear();
     halo.fplan.clear();

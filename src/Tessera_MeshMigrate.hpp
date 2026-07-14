@@ -524,6 +524,12 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     std::vector<LocalIndex> e2l = make_g2l( eord );
     std::vector<LocalIndex> f2l = make_g2l( ford );
 
+    // INVALIDATION: the resize/deep_copy calls below, the key-View
+    // reassignment, and the CSR rebuild reallocate and reassign this mesh's
+    // storage, invalidating every slice/CSR/key-View handed out before this
+    // call. The halo plans are replaced (not merely cleared) further down for
+    // the same reason. Re-slice from the mesh after migrate() returns.
+    //
     // Vertex AoSoA (tuple carries position + user fields; owner set explicitly).
     {
         TESSERA_SCOPED_TIMER_DETAILED(
@@ -593,7 +599,7 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                 nbr[cur[v2l[Cabana::get<FaceField::Verts>( t, k )]]++] =
                     static_cast<LocalIndex>( li );
         }
-        detail::fillCsr( mesh.vertexFaces(), off, nbr, "vertex_faces" );
+        mesh.rebuildVertexFaces( off, nbr, "vertex_faces" );
     }
     {
         std::vector<int> off( nlv + 1, 0 );
@@ -614,27 +620,28 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                 nbr[cur[v2l[Cabana::get<EdgeField::Verts>( t, j )]]++] =
                     static_cast<LocalIndex>( li );
         }
-        detail::fillCsr( mesh.vertexEdges(), off, nbr, "vertex_edges" );
+        mesh.rebuildVertexEdges( off, nbr, "vertex_edges" );
     }
 
     // Rebuild key side tables.
     {
-        mesh.edgeKeys() = Kokkos::View<EdgeKey*, memory_space>(
+        Kokkos::View<EdgeKey*, memory_space> ek(
             Kokkos::view_alloc( Kokkos::WithoutInitializing, "edge_keys" ),
             nle );
-        auto h_ek = Kokkos::create_mirror_view( mesh.edgeKeys() );
+        auto h_ek = Kokkos::create_mirror_view( ek );
         for ( int li = 0; li < nle; ++li )
         {
             const ETuple& t = eById.at( eord[li] );
             h_ek( li ) = makeEdgeKey( Cabana::get<EdgeField::Verts>( t, 0 ),
                                       Cabana::get<EdgeField::Verts>( t, 1 ) );
         }
-        Kokkos::deep_copy( mesh.edgeKeys(), h_ek );
+        Kokkos::deep_copy( ek, h_ek );
+        mesh.setEdgeKeys( ek );
 
-        mesh.faceKeys() = Kokkos::View<FaceKey*, memory_space>(
+        Kokkos::View<FaceKey*, memory_space> fk(
             Kokkos::view_alloc( Kokkos::WithoutInitializing, "face_keys" ),
             nlf );
-        auto h_fk = Kokkos::create_mirror_view( mesh.faceKeys() );
+        auto h_fk = Kokkos::create_mirror_view( fk );
         for ( int li = 0; li < nlf; ++li )
         {
             const FTuple& t = ( li < nOwnedF ) ? faceById.at( ford[li] )
@@ -643,7 +650,8 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                                       Cabana::get<FaceField::Verts>( t, 1 ),
                                       Cabana::get<FaceField::Verts>( t, 2 ) );
         }
-        Kokkos::deep_copy( mesh.faceKeys(), h_fk );
+        Kokkos::deep_copy( fk, h_fk );
+        mesh.setFaceKeys( fk );
     }
 
     // Halo plans: ghosts are the trailing (owner != R) entries, already ascending
@@ -662,6 +670,8 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     for ( const auto& kv : ghostFaceById )
         fOwnerMap[kv.first] = Cabana::get<FaceField::Owner>( kv.second );
 
+    // INVALIDATION: the local entity count and ghost set changed above, so the
+    // previous halo plans are stale; replace (not merely clear) them here.
     halo.vplan = detail::buildKindPlan<memory_space>(
         comm, R, size, ghosts_of( vord, nOwnedV, vOwner ), v2l );
     halo.eplan = detail::buildKindPlan<memory_space>(

@@ -147,6 +147,33 @@ Canopy. The halo is described by a **`HaloExchangePlan`** (per-peer index maps +
 buffer pools); any operation that changes the local entity count or ghost set
 invalidates the plan, which is rebuilt before the next sync.
 
+### Slice/handle validity
+
+Every count-changing operation (`distribute()`, `migrate()`, `refine()`, the
+serial builder) reallocates and reassigns the mesh's AoSoAs, CSR adjacency, and
+edge/face key-Views. `Mesh` tracks this with a monotonic **`generation()`**
+counter, bumped by `resizeVertices/Edges/Faces`, `setOwnedCounts`, and the
+key-View/CSR replacement methods (`setEdgeKeys`/`setFaceKeys`,
+`rebuildVertexFaces`/`rebuildVertexEdges`). `vertexSlice<M>()`/`edgeSlice<M>()`/
+`faceSlice<M>()` (and the `...Handle()` CSR/key-View accessors) return a
+`GenerationHandle` stamped with the generation at creation time: copying a
+stale handle (e.g. capturing it into a `KOKKOS_LAMBDA` after a topology-
+changing call) aborts with a diagnostic instead of silently reading dangling
+storage. Element access (`operator()`) forwards unchanged, so there is no
+per-element device-side cost; the check itself compiles out when
+`Tessera_ENABLE_DEBUG_CHECKS` is off. `haloExchange()` never bumps `generation()`
+(it is topology-preserving), so handles survive it. `vertexSlices<M...>()`/
+`edgeSlices<M...>()`/`faceSlices<M...>()` re-derive a whole tuple of slices in
+one call, for the "re-slice at the top of every solver stage" discipline.
+
+One caveat: `Tessera_Migrate.hpp`'s raw `migrate(comm, aosoa, dest, bufs)`
+primitive is mesh-agnostic (it operates on a bare AoSoA, not a `Mesh&`) and
+therefore cannot bump `generation()` itself. The mesh-level
+`Tessera::migrate(mesh, halo, dest)` wrapper (see Load balancing, below) already
+bumps it via its own `resize()`/`setOwnedCounts()` calls. If you ever call the
+raw primitive directly against `mesh.vertices()`/`edges()`/`faces()` instead of
+going through that wrapper, call `mesh.bumpGeneration()` yourself afterward.
+
 ### Adaptive refinement
 
 Refinement is **split-based**: a face is refined "red" 1→4 by inserting a midpoint
