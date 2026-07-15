@@ -625,6 +625,14 @@ make -j $(nproc)
   refine mask leaves T-junctions bounded to a 2:1 level jump; the owned-only Euler
   number equals 2 only for a uniform (conforming) refine. Green-closure to a fully
   conforming triangulation is a future enhancement.
+- **`buildVertexStencil(mesh, 2)` (k=2) is incomplete within one hop of a partition
+  boundary.** Tessera's halo is **1-deep**, which fully covers a k=1 stencil but not a
+  k=2 one: for an owned vertex whose 2-ring reaches beyond the ghost layer, the missing
+  outer-ring neighbours are silently absent from its CSR row rather than reported as an
+  error. The marked set is therefore only correct for vertices whose entire 2-ring is
+  held locally (all interior vertices on a single rank; interior-of-partition vertices
+  in a distributed run). Workaround: either widen the halo to depth ≥ k before building
+  the stencil, or restrict k=2 stencils to single-rank runs. k=1 stencils are unaffected.
 - **Edge user fields are reset by `refine()`/`refineLocal()`.** Edges are re-derived
   from the new face connectivity, so any per-edge user data is re-initialized (M1
   carries no edge user state through AMR). Vertex and face user fields are preserved

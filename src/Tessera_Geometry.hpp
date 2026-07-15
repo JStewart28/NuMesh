@@ -121,7 +121,15 @@ struct MeshGeometry
 // ghost neighbours. A connectivity gid absent from the local vertex set (should
 // not occur for the 1-ring closure a 1-deep halo guarantees) is stored as
 // invalid_local so downstream primitives skip it rather than read out of range.
-template <class MeshT>
+//
+// The position field is a defaulted template parameter (PosField), so geometry
+// can be evaluated on any position-like vertex field of the same type as
+// VertexField::Position — e.g. a reference configuration — via
+// buildMeshGeometry<userVertexField<K>()>(mesh). The default keeps the existing
+// buildMeshGeometry(mesh) behaviour (VertexField::Position) unchanged; the
+// chosen field must have the same slice type as Position (Scalar[Dim]) so it
+// fits MeshGeometry<MeshT>::pos_handle_type.
+template <std::size_t PosField = VertexField::Position, class MeshT>
 MeshGeometry<MeshT> buildMeshGeometry( MeshT& mesh )
 {
     using memory_space = typename MeshT::memory_space;
@@ -174,13 +182,42 @@ MeshGeometry<MeshT> buildMeshGeometry( MeshT& mesh )
     Kokkos::deep_copy( edgeVerts, h_ev );
 
     return MeshGeometry<MeshT>(
-        mesh.template vertexSlice<VertexField::Position>(), faceVerts,
-        edgeVerts );
+        mesh.template vertexSlice<PosField>(), faceVerts, edgeVerts );
 }
 
 // ============================================================================
 // Raw geometric primitives (KOKKOS_INLINE_FUNCTION, no convention)
 // ============================================================================
+//
+// Every primitive indexes the position slice through the per-face / per-edge
+// LOCAL vertex indices held in the accessor. Those indices are `invalid_local`
+// (-1) for any connectivity entry whose gid was absent from the local vertex
+// set (see buildMeshGeometry). Reading the position slice at -1 is an
+// out-of-range access, so each primitive guards its indices up front: passing a
+// face/edge that carries an invalid corner to a geometric primitive is a
+// programming error (a caller must skip such entries), not a runtime condition,
+// so the guard aborts with a diagnostic rather than silently returning garbage.
+// The check follows the codebase's debug-guard idiom (Tessera_GenerationGuard):
+// it uses Kokkos::abort (device-callable, unlike std::abort) and compiles out
+// entirely when TESSERA_ENABLE_DEBUG_CHECKS is off, so release builds pay
+// nothing on this hot per-element path.
+#if defined( TESSERA_ENABLE_DEBUG_CHECKS )
+#define TESSERA_GEOM_ASSERT_LOCAL( idx, what )                                 \
+    do                                                                         \
+    {                                                                          \
+        if ( ( idx ) == invalid_local )                                        \
+            Kokkos::abort(                                                      \
+                "Tessera geometry: " what                                      \
+                " received a face/edge with an invalid_local vertex "          \
+                "(a boundary/missing connectivity entry). Skip such "          \
+                "entries before calling a geometric primitive." );             \
+    } while ( 0 )
+#else
+#define TESSERA_GEOM_ASSERT_LOCAL( idx, what )                                 \
+    do                                                                         \
+    {                                                                          \
+    } while ( 0 )
+#endif
 
 //! Unsigned triangle area of face f: 1/2 * || (p1 - p0) x (p2 - p0) ||.
 template <class MeshT>
@@ -191,6 +228,9 @@ faceArea( const MeshGeometry<MeshT>& g, LocalIndex f )
     const int a = g.faceVerts( f, 0 );
     const int b = g.faceVerts( f, 1 );
     const int c = g.faceVerts( f, 2 );
+    TESSERA_GEOM_ASSERT_LOCAL( a, "faceArea" );
+    TESSERA_GEOM_ASSERT_LOCAL( b, "faceArea" );
+    TESSERA_GEOM_ASSERT_LOCAL( c, "faceArea" );
     Scalar e1[3], e2[3];
     for ( int d = 0; d < 3; ++d )
     {
@@ -215,6 +255,9 @@ KOKKOS_INLINE_FUNCTION void faceNormalRaw( const MeshGeometry<MeshT>& g,
     const int a = g.faceVerts( f, 0 );
     const int b = g.faceVerts( f, 1 );
     const int c = g.faceVerts( f, 2 );
+    TESSERA_GEOM_ASSERT_LOCAL( a, "faceNormalRaw" );
+    TESSERA_GEOM_ASSERT_LOCAL( b, "faceNormalRaw" );
+    TESSERA_GEOM_ASSERT_LOCAL( c, "faceNormalRaw" );
     Scalar e1[3], e2[3];
     for ( int d = 0; d < 3; ++d )
     {
@@ -235,6 +278,8 @@ KOKKOS_INLINE_FUNCTION void edgeVector( const MeshGeometry<MeshT>& g,
 {
     const int v0 = g.edgeVerts( e, 0 );
     const int v1 = g.edgeVerts( e, 1 );
+    TESSERA_GEOM_ASSERT_LOCAL( v0, "edgeVector" );
+    TESSERA_GEOM_ASSERT_LOCAL( v1, "edgeVector" );
     for ( int d = 0; d < 3; ++d )
         out[d] = g.pos( v1, d ) - g.pos( v0, d );
 }
@@ -250,6 +295,9 @@ cotangentAtCorner( const MeshGeometry<MeshT>& g, LocalIndex f, int corner )
     const int a = g.faceVerts( f, corner );
     const int b = g.faceVerts( f, ( corner + 1 ) % 3 );
     const int c = g.faceVerts( f, ( corner + 2 ) % 3 );
+    TESSERA_GEOM_ASSERT_LOCAL( a, "cotangentAtCorner" );
+    TESSERA_GEOM_ASSERT_LOCAL( b, "cotangentAtCorner" );
+    TESSERA_GEOM_ASSERT_LOCAL( c, "cotangentAtCorner" );
     Scalar u[3], v[3];
     for ( int d = 0; d < 3; ++d )
     {
@@ -263,6 +311,8 @@ cotangentAtCorner( const MeshGeometry<MeshT>& g, LocalIndex f, int corner )
     const Scalar cross_norm = Kokkos::sqrt( cx * cx + cy * cy + cz * cz );
     return cross_norm > Scalar( 0 ) ? dot / cross_norm : Scalar( 0 );
 }
+
+#undef TESSERA_GEOM_ASSERT_LOCAL
 
 } // namespace Tessera
 
