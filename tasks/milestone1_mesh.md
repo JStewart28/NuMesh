@@ -60,7 +60,7 @@ migration path).
 
 | # | What to implement | Starts / ends | Acceptance (tests) | Model | Report back |
 |---|---|---|---|---|---|
-| 0 | Add `hdf5 +mpi` to the spack env; commit `docs/tuolumne/spack.yaml` snapshot; reconfirm full gate builds. | Start: edit spack env. End: gate builds clean with HDF5 discoverable by CMake. | Existing gate (Steps ≤7 once present) still green; `find_package(HDF5)` succeeds. | Sonnet | HDF5 version added; whether the Trilinos-adjacent rebuild perturbed anything; exact `spack.yaml` diff. Do **right before Step 8** to keep the env-mutation window small. |
+| 0 | Add `hdf5 +mpi` to the spack env; commit `systems/tuolumne/spack.yaml` snapshot; reconfirm full gate builds. | Start: edit spack env. End: gate builds clean with HDF5 discoverable by CMake. | Existing gate (Steps ≤7 once present) still green; `find_package(HDF5)` succeeds. | Sonnet | HDF5 version added; whether the Trilinos-adjacent rebuild perturbed anything; exact `spack.yaml` diff. Do **right before Step 8** to keep the env-mutation window small. |
 | 1 | Design docs: this file + README design/data-model/API section. No code. | Start: TEMPLATE.md + README placeholder. End: README is a usable design reference; this contract complete. | N/A (docs). | Opus | Any design ambiguity found while writing; confirm README API matches intended template signature. **(DONE — see Progress log.)** |
 | 2 | Core data model: `Mesh<Scalar, int Dim = 3, ...>` template skeleton; core topology AoSoAs + templated user-state AoSoA (field pack, `position` mandatory `Scalar[Dim]`); 128-bit structured-key utils (edge key, midpoint/child derivation); dense-local-index + canonical-key side table; CSR vertex-adjacency container. Convert INTERFACE target to real lib if needed. | Start: empty `src/`. End: headers under `src/mesh/`; mesh constructs empty; keys + CSR usable. | Unit (SERIAL+HIP), for **both `double` and `float`** (and a `Dim=2` compile check): structured-key determinism (ordering-invariant, same key regardless of endpoint order); AoSoA build; field-pack slice read/write. | Sonnet (keys Opus-spec'd) | Final gid/key struct + footprint decision (128-bit in AoSoA vs side table); field-pack declaration syntax; any Cabana template friction on HIP. |
 | 3 | Serial mesh builder: coarse icosphere triangle soup → derive edges + both-direction connectivity (face→v/e, edge→f, vertex→e/f CSR). Single rank. | Start: Step 2 types. End: `buildIcosphere(subdiv)` yields a valid connected mesh. | Unit: Euler `V−E+F=2`; every edge has exactly 2 incident faces; every face has 3 edges + 3 verts; CSR 1-ring round-trips. | Sonnet | Icosphere generation choice (recursive subdivision vs lookup); base entity counts per subdiv level for test fixtures. |
@@ -146,7 +146,7 @@ migration path).
     sources that for builds too) and is instead injected per test task via
     `MPIEXEC_PREFLAGS` `--env=GLIBC_TUNABLES=...` in `run_cmake_toulumne.sh` (flux
     run passes it to the task only; flux/compiler/linker env stays clean).
-    `docs/tuolumne/claude.md` updated to match. **Reconfigure required** after
+    `systems/tuolumne/claude.md` updated to match. **Reconfigure required** after
     pulling: re-run `run_cmake_toulumne.sh`. **Next:** Step 4a (comm migrate).
 - 2026-07-01 — **Step 4a landed (Opus).** Migrate comm primitive:
   - `Tessera_RegisteredBufferPool.hpp` — verbatim port of Canopy's grow-only
@@ -387,7 +387,7 @@ migration path).
     Canopy will call is unchanged (`ownedFaceCentroids/Gids/Weights` + `migrate()`)
     — `loadBalance()` is purely an additional, optional internal convenience.
   - **Next:** Step 0 (add `hdf5 +mpi` to the Tuolumne spack env, commit the
-    `docs/tuolumne/spack.yaml` snapshot, reconfirm the full gate still builds with
+    `systems/tuolumne/spack.yaml` snapshot, reconfirm the full gate still builds with
     HDF5 discoverable by CMake) right before Step 8 (parallel HDF5 + XDMF writer/
     reader).
 - 2026-07-06 — **Step 0 landed (Sonnet). Env-only, no source changes.** HDF5 for
@@ -398,7 +398,7 @@ migration path).
     `hdf5@1.14.3.7 +mpi` at `/opt/cray/pe/hdf5-parallel/1.14.3.7/crayclang/20.0`
     (Cray's parallel HDF5 module, not a from-source spack build). No install/
     reinstall was needed. Snapshot committed to
-    [docs/tuolumne/spack.yaml](docs/tuolumne/spack.yaml) (verbatim copy of the live
+    [systems/tuolumne/spack.yaml](systems/tuolumne/spack.yaml) (verbatim copy of the live
     env file).
   - Existing gate untouched (no rebuild needed — nothing in the mesh library or its
     dependencies changed); Steps ≤7b remain green as last verified in the Step 7b
@@ -668,7 +668,7 @@ migration path).
     (`HDF5_IS_PARALLEL=FALSE`); its `h5cc` probe also fails non-fatally. On a normal
     system a from-source `hdf5 +mpi` IS view-linked, so `CMAKE_PREFIX_PATH` carries
     it and the same `CMakeLists.txt` resolves the parallel build with no hint —
-    `docs/local` needs no `HDF5_ROOT` injection. The guard is what makes any
+    `systems/local` needs no `HDF5_ROOT` injection. The guard is what makes any
     misconfigured system (serial-only HDF5) fail loudly rather than silently.
 
   Edits:
@@ -701,9 +701,9 @@ migration path).
         echo /opt/cray/pe/hdf5-parallel/1.14.3.7/crayclang/20.0)}"
     ```
     and add `-DHDF5_ROOT="${HDF5_ROOT}"` to the `cmake` args.
-  - **`docs/tuolumne/claude.md`** — mirror the `HDF5_ROOT` requirement into the
+  - **`systems/tuolumne/claude.md`** — mirror the `HDF5_ROOT` requirement into the
     Build-config args section (per the framework "keep docs in sync" invariant).
-    No change to `docs/local` (view-linked HDF5 resolves without a hint).
+    No change to `systems/local` (view-linked HDF5 resolves without a hint).
 
   ### 8.8 — Test (`tests/test_io.cpp`, regression, SERIAL+HIP, ranks 1–5)
   Add via `tessera_add_test(NAME io … TIER regression RANKS ${TESSERA_TEST_MPI_RANKS})`
@@ -742,7 +742,7 @@ migration path).
   - `src/Tessera_HDF5Writer.hpp` (`writeMesh`), `src/Tessera_HDF5Reader.hpp`
     (`readMesh`), `src/Tessera_Xdmf.hpp` (`writeXdmf`, rank 0).
   - Add all four to `src/Tessera.hpp` (umbrella).
-  - `CMakeLists.txt` + `run_cmake_toulumne.sh` + `docs/tuolumne/claude.md` HDF5 fix.
+  - `CMakeLists.txt` + `run_cmake_toulumne.sh` + `systems/tuolumne/claude.md` HDF5 fix.
   - `tests/test_io.cpp` + the two gate rows in `tests/CMakeLists.txt`.
   - BSD-3-Clause SPDX header on every new file; `--target format-check` clean.
   - README: add an I/O section (public `writeMesh`/`readMesh` API, on-disk layout
@@ -802,7 +802,7 @@ migration path).
     the spec: not a standard surface cell type, out of scope for the gate).
   - **CMake fix, with one addition beyond the spec:** the `HDF5_IS_PARALLEL`
     guard + `HDF5_ROOT`/Tuolumne split landed exactly as specified in
-    `CMakeLists.txt` / `run_cmake_toulumne.sh` / `docs/tuolumne/claude.md`.
+    `CMakeLists.txt` / `run_cmake_toulumne.sh` / `systems/tuolumne/claude.md`.
     Discovered while reconfiguring: `FindHDF5.cmake`'s compiler-wrapper probe
     (used when no HDF5 CMake config package exists — true for Cray's parallel
     HDF5 module, which ships only `.pc` files) `try_compile`s a `.c` test

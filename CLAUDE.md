@@ -8,7 +8,7 @@ its rules to keep the framework self-consistent across sessions.
 ## New-checkout quickstart
 
 ```bash
-hostname                        # e.g. tuolumne1004 → use docs/tuolumne/claude.md
+hostname                        # e.g. tuolumne1004 → use systems/tuolumne/claude.md
 
 # Activate environment (Tuolumne):
 spack env activate ~/spack_envs/tuolumne_trilinos/
@@ -42,19 +42,31 @@ Current task logs:
 
 ---
 
+## Repository layout — `systems/` vs `docs/`
+
+| Directory | Holds |
+|---|---|
+| `systems/<system>/` | Per-system **machine** instructions (`claude.md`) and env snapshots (e.g. `spack.yaml`). Hostname-keyed build/run facts live here and nowhere else. |
+| `docs/` | Human-facing project documentation. `docs/design.md` is the detailed description of the algorithms and design decisions (data model, halo, refinement, load balancing, I/O). |
+
+`README.md` links to `docs/design.md` rather than duplicating it — when the design
+changes, update `docs/design.md` and keep the README's API/build sections in sync.
+
+---
+
 ## System detection
 
 Before building or running, run `hostname` and match the prefix:
 
 | Hostname prefix | System token | Per-system instructions |
 |---|---|---|
-| `tuolumne*` | `tuolumne` | [docs/tuolumne/claude.md](docs/tuolumne/claude.md) |
-| *(any other)* | `local` | [docs/local/claude.md](docs/local/claude.md) |
+| `tuolumne*` | `tuolumne` | [systems/tuolumne/claude.md](systems/tuolumne/claude.md) |
+| *(any other)* | `local` | [systems/local/claude.md](systems/local/claude.md) |
 
 The resolver (`scripts/lib/tessera_env.sh`) performs this match automatically.
 Override with `export TESSERA_SYSTEM=<token>` before sourcing.
 
-**Fallback rule:** unmatched hostname or a `docs/<system>/claude.md` missing a
+**Fallback rule:** unmatched hostname or a `systems/<system>/claude.md` missing a
 required section → stop and ask the user before proceeding.
 
 ---
@@ -134,7 +146,7 @@ Tessera targets multiple Kokkos execution spaces:
 | `OPENMP` | `Kokkos::OpenMP` | Tuolumne | No (diagnostic) |
 | `HIP` | `Kokkos::HIP` | Tuolumne (MI300A APU) | **Yes** |
 
-Which backends build and run is declared per-system in `docs/<system>/claude.md`.
+Which backends build and run is declared per-system in `systems/<system>/claude.md`.
 
 Test names carry a backend suffix so `-R <BACKEND>` selects one:
 ```
@@ -200,7 +212,7 @@ Plan-mode plan files are saved to `./plans/` in this repo.
 
 ### Adding a system
 
-1. Create `docs/<system>/claude.md` with **all seven required sections**
+1. Create `systems/<system>/claude.md` with **all seven required sections**
    (Environment, Build-config args, Build command, Run command, Batch template,
    Non-test binaries, Backends).
 2. Add a row to the hostname table above.
@@ -208,8 +220,8 @@ Plan-mode plan files are saved to `./plans/` in this repo.
 4. Add `scripts/<system>/profile.defaults.sh` (committed).
 5. Add `scripts/<system>/runtime_env.sh` if launch-time env vars are needed.
 6. Add `scripts/<system>/run_regression_minset.<scheduler>`.
-7. Declare the system's backends in both this file and `docs/<system>/claude.md`.
-8. Commit an env snapshot under `docs/<system>/` if one is used (e.g. spack.yaml).
+7. Declare the system's backends in both this file and `systems/<system>/claude.md`.
+8. Commit an env snapshot under `systems/<system>/` if one is used (e.g. spack.yaml).
 
 ### Invariants — never violate
 

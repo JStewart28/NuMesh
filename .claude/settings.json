@@ -95,7 +95,7 @@
       "Read(//usr/WS2/stewartj/spack/opt/spack/linux-zen4/trilinos-16.2.0-auezyquadw4cdjeujabbthlonz2y74qu/include/**)",
       "Bash(spack -e ~/spack_envs/tuolumne_trilinos find hdf5)",
       "Bash(spack -e ~/spack_envs/tuolumne_trilinos find -c hdf5)",
-      "Bash(cp ~/spack_envs/tuolumne_trilinos/spack.yaml docs/tuolumne/spack.yaml && cat docs/tuolumne/spack.yaml && echo --- && git status docs/tuolumne/)",
+      "Bash(cp ~/spack_envs/tuolumne_trilinos/spack.yaml systems/tuolumne/spack.yaml && cat systems/tuolumne/spack.yaml && echo --- && git status systems/tuolumne/)",
       "Bash(spack -e ~/spack_envs/tuolumne_trilinos location -i hdf5)",
       "Bash(spack -e ~/spack_envs/tuolumne_trilinos find -p hdf5)",
       "Read(//opt/cray/pe/hdf5-parallel/1.14.3.7/cray/20.0/**)",
@@ -110,7 +110,15 @@
       "Bash(cmake -DTessera_INSTALL_TEST_EXECUTABLES=ON -DTessera_INSTALL_EXAMPLES=ON -DCMAKE_INSTALL_PREFIX=/tmp/stewartj/tessera-install-test .)",
       "Bash(make install *)",
       "Bash(cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DTessera_INSTALL_TEST_EXECUTABLES=OFF -DTessera_INSTALL_EXAMPLES=OFF /g/g20/stewartj/research-bridges/tessera-dev/Tessera/build-tuolumne)",
-      "Bash(git -C /g/g20/stewartj/research-bridges/tessera-dev/Tessera status)"
+      "Bash(git -C /g/g20/stewartj/research-bridges/tessera-dev/Tessera status)",
+      "Bash(make -j 32)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('/g/g20/stewartj/spack-packages/unm/spack-packages/spack_pkgs/spack_repo/compass/packages/tessera/package.py'\\).read\\(\\)\\)\")",
+      "Read(//g/g20/spack-packages/unm/spack-packages/spack_pkgs/spack_repo/compass/packages/tessera/**)",
+      "Bash(xargs -I{} sh -c 'echo \"=== {} ===\"; grep -E \"tests passed|failed|Total Test|100% tests\" {}')",
+      "Bash(awk 'NR>=368 && NR<=378 {printf \"%d:%s\\\\n\", NR, $0}' README.md)",
+      "Bash(python3 -)",
+      "Bash(python3 -c \"import json;json.load\\(open\\('.claude/settings.json'\\)\\);print\\('settings.json valid'\\)\")"
     ],
     "additionalDirectories": [
       "/g/g20/stewartj/research-bridges/Canopy/build-tuolumne",
