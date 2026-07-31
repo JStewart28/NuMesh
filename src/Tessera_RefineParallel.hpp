@@ -141,15 +141,13 @@ struct EdgeOwnMsg
     Level level;
 };
 
-} // namespace detail
-
-//! Distributed 2:1-balanced red refinement of the owned faces flagged in `mask`.
-//! See the header comment for the algorithm, guarantees, and the (deferred) halo.
-template <class MeshT,
-          class Policy = DefaultRefinePolicy<typename MeshT::scalar_type>>
-RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
-                     const std::vector<char>& mask,
-                     const Policy& policy = Policy{} )
+//! RefinementMode::HangingNode2to1 implementation of refine(). Called through
+//! the refine() dispatcher below; see the header comment for the algorithm,
+//! guarantees, and the (deferred) halo.
+template <class MeshT, class Policy>
+RefineResult
+refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
+                   const std::vector<char>& mask, const Policy& policy )
 {
     TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_REFINE );
     using memory_space = typename MeshT::memory_space;
@@ -622,8 +620,10 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                     verts( f, k ) = nFV[f][k];
                     edges( f, k ) = edgeGid[faceEdge[f][k]];
                 }
-                detail::copyUserFields<FaceField::UserBegin>( lf, f, hf,
-                                                              nFParent[f] );
+                copyUserFieldsN<
+                    FaceField::UserBegin,
+                    numFaceUserFields<typename MeshT::face_user_fields>()>(
+                    lf, f, hf, nFParent[f] );
             }
             mesh.resizeFaces( nNewF );
             Cabana::deep_copy( mesh.faces(), lf );
@@ -722,6 +722,39 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     halo.fplan.clear();
 
     return result;
+}
+
+} // namespace detail
+
+//! Distributed 2:1-balanced red refinement of the owned faces flagged in `mask`.
+//! See the header comment for the algorithm, guarantees, and the (deferred) halo.
+//!
+//! Dispatches on MeshT::refinement_mode. RefinementMode::Conforming additionally
+//! un-closes the transient closure layer (and translates `mask` from visible to
+//! red faces) before the phases below, then re-closes every kept red face — Task
+//! 4 of tasks/conforming-refinement.md, not implemented yet.
+template <class MeshT,
+          class Policy = DefaultRefinePolicy<typename MeshT::scalar_type>>
+RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
+                     const std::vector<char>& mask,
+                     const Policy& policy = Policy{} )
+{
+    if constexpr ( MeshT::refinement_mode == RefinementMode::Conforming )
+    {
+        (void)mesh;
+        (void)halo;
+        (void)mask;
+        (void)policy;
+        Kokkos::abort( "Tessera::refine: RefinementMode::Conforming is not "
+                       "implemented yet (the distributed closure is Task 4 of "
+                       "tasks/conforming-refinement.md). Instantiate the mesh "
+                       "with RefinementMode::HangingNode2to1 for now." );
+        return RefineResult{};
+    }
+    else
+    {
+        return detail::refineHangingNode( mesh, halo, mask, policy );
+    }
 }
 
 } // namespace Tessera

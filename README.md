@@ -46,6 +46,10 @@ The full pipeline below is implemented and gate-tested end to end (see
 using namespace Tessera;
 using MeshT = Mesh<double, /*Dim=*/3, VertexFields<>, EdgeFields<>, FaceFields<>,
                    MemSpace, ExecSpace>;
+// An optional 8th parameter selects the refinement conformity contract:
+//   ..., ExecSpace, RefinementMode::HangingNode2to1>   // default: 2:1 hanging nodes
+//   ..., ExecSpace, RefinementMode::Conforming>        // no T-junctions (in progress)
+// See docs/design.md → Adaptive refinement → Refinement modes.
 
 MeshT mesh( MPI_COMM_WORLD );
 buildIcosphere( mesh, /*subdivisions=*/3 );        // initial coarse closed surface,
@@ -285,8 +289,15 @@ make -j $(nproc)
   also calls is a tracked follow-up.
 - **Adaptive `refine()` is non-conforming (bounded hanging nodes).** A partial
   refine mask leaves T-junctions bounded to a 2:1 level jump; the owned-only Euler
-  number equals 2 only for a uniform (conforming) refine. Green-closure to a fully
-  conforming triangulation is a future enhancement.
+  number equals 2 only for a uniform (conforming) refine. A fully conforming
+  triangulation is **in progress**: `Mesh`'s optional 8th template parameter
+  `RefinementMode` now exists, and `RefinementMode::Conforming` selects a face
+  layout carrying the closure bookkeeping members — but the closure itself is not
+  implemented, so `refine()`/`refineLocal()` on a `Conforming`-typed mesh abort
+  with a "not implemented" diagnostic. `RefinementMode::HangingNode2to1` (the
+  current default, and the only mode any test or example uses) is unaffected. See
+  [tasks/conforming-refinement.md](tasks/conforming-refinement.md) for the design
+  and remaining tasks.
 - **`buildVertexStencil(mesh, 2)` (k=2) is incomplete within one hop of a partition
   boundary.** Tessera's halo is **1-deep**, which fully covers a k=1 stencil but not a
   k=2 one: for an owned vertex whose 2-ring reaches beyond the ghost layer, the missing

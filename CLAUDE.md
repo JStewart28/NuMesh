@@ -39,6 +39,7 @@ Current task logs:
 | Task | File | Status |
 |------|------|--------|
 | Milestone 1 — distributed triangle mesh | [tasks/milestone1_mesh.md](tasks/milestone1_mesh.md) | Complete (Steps 0–10b done; regression gate 70/70, unit 28/28) |
+| Conforming refinement | [tasks/conforming-refinement.md](tasks/conforming-refinement.md) | In progress (Task 1 of 8 done — mode plumbing; Task 2 next). Tasks 1–7 run no tests — Task 8 is the single verification pass. |
 
 ---
 

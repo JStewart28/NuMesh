@@ -102,7 +102,21 @@ void copyUserFieldsImpl( Dst& dst, int di, Src& src, int si,
     ( copyMember<UserBegin + Js>( dst, di, src, si ), ... );
 }
 
-//! Copy every user field from src[si] to dst[di].
+//! Copy the N user fields starting at absolute index UserBegin, src[si] ->
+//! dst[di]. Prefer this over copyUserFields() wherever the member list may carry
+//! non-user members AFTER the user pack -- which is exactly the face AoSoA in
+//! RefinementMode::Conforming, whose trailing closure members must not be
+//! treated as user fields. Pass N = numFaceUserFields<MeshT::face_user_fields>().
+template <std::size_t UserBegin, std::size_t N, class Dst, class Src>
+void copyUserFieldsN( Dst& dst, int di, Src& src, int si )
+{
+    copyUserFieldsImpl<UserBegin>( dst, di, src, si,
+                                   std::make_index_sequence<N>{} );
+}
+
+//! Copy every member from UserBegin to the end of the tuple, src[si] -> dst[di].
+//! Correct only when the user pack is the tuple's suffix (vertices and edges,
+//! and faces in RefinementMode::HangingNode2to1).
 template <std::size_t UserBegin, class Dst, class Src>
 void copyUserFields( Dst& dst, int di, Src& src, int si )
 {
@@ -199,14 +213,12 @@ void blendVertexUserCross( Dst& dst, int di, Src& src, int a, int b,
                               std::make_index_sequence<N>{} );
 }
 
-} // namespace detail
-
-//! Red (1->4) refine every face flagged in `refineFace` (indexed by local face
-//! index) on a single rank. See the header comment for conventions/preconditions.
-template <class MeshT,
-          class Policy = DefaultRefinePolicy<typename MeshT::scalar_type>>
-void refineLocal( MeshT& mesh, const std::vector<char>& refineFace,
-                  const Policy& policy = Policy{} )
+//! RefinementMode::HangingNode2to1 implementation of refineLocal(). Called
+//! through the refineLocal() dispatcher below; see the header comment for the
+//! conventions and preconditions.
+template <class MeshT, class Policy>
+void refineLocalHangingNode( MeshT& mesh, const std::vector<char>& refineFace,
+                             const Policy& policy )
 {
     using memory_space = typename MeshT::memory_space;
     using Scalar = typename MeshT::scalar_type;
@@ -407,8 +419,10 @@ void refineLocal( MeshT& mesh, const std::vector<char>& refineFace,
                 verts( f, k ) = static_cast<GlobalId>( newFaceV[f][k] );
                 edges( f, k ) = static_cast<GlobalId>( faceEdge[f][k] );
             }
-            detail::copyUserFields<FaceField::UserBegin>( lf, f, hf,
-                                                          newFaceParent[f] );
+            copyUserFieldsN<
+                FaceField::UserBegin,
+                numFaceUserFields<typename MeshT::face_user_fields>()>(
+                lf, f, hf, newFaceParent[f] );
         }
         mesh.resizeFaces( newNf );
         Cabana::deep_copy( mesh.faces(), lf );
@@ -474,6 +488,36 @@ void refineLocal( MeshT& mesh, const std::vector<char>& refineFace,
                 nbr[cur[static_cast<int>( ep[e][j] )]++] =
                     static_cast<LocalIndex>( e );
         mesh.rebuildVertexEdges( off, nbr, "vertex_edges" );
+    }
+}
+
+} // namespace detail
+
+//! Red (1->4) refine every face flagged in `refineFace` (indexed by local face
+//! index) on a single rank. See the header comment for conventions/preconditions.
+//!
+//! Dispatches on MeshT::refinement_mode: RefinementMode::Conforming additionally
+//! un-closes the transient closure layer before the red split and re-closes
+//! afterwards (Task 2 of tasks/conforming-refinement.md — not implemented yet).
+template <class MeshT,
+          class Policy = DefaultRefinePolicy<typename MeshT::scalar_type>>
+void refineLocal( MeshT& mesh, const std::vector<char>& refineFace,
+                  const Policy& policy = Policy{} )
+{
+    if constexpr ( MeshT::refinement_mode == RefinementMode::Conforming )
+    {
+        (void)mesh;
+        (void)refineFace;
+        (void)policy;
+        Kokkos::abort(
+            "Tessera::refineLocal: RefinementMode::Conforming is not "
+            "implemented yet (the conforming closure kernel is Task "
+            "2 of tasks/conforming-refinement.md). Instantiate the "
+            "mesh with RefinementMode::HangingNode2to1 for now." );
+    }
+    else
+    {
+        detail::refineLocalHangingNode( mesh, refineFace, policy );
     }
 }
 

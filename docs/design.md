@@ -164,6 +164,49 @@ going through that wrapper, call `mesh.bumpGeneration()` yourself afterward.
 
 ## Adaptive refinement
 
+### Refinement modes
+
+Which conformity contract refinement obeys is a **compile-time `Mesh` template
+parameter**, `RefinementMode Mode` (`src/Tessera_RefinementMode.hpp`), appended
+*last* in the parameter list so every existing seven-argument `Mesh<...>` spelling
+is unchanged:
+
+```cpp
+enum class RefinementMode { HangingNode2to1, Conforming };
+
+using MeshT = Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
+                   MemSpace, ExecSpace, RefinementMode::Conforming>;
+//                                      ^ optional; default HangingNode2to1
+```
+
+| Mode | Contract |
+|---|---|
+| `HangingNode2to1` *(current default)* | 2:1-bounded hanging nodes — the behavior described in the rest of this section. A partial mask leaves T-junctions; owned-only Euler `V−E+F = 2` holds only for a uniform refine. |
+| `Conforming` | The same 2:1-balanced **red layer**, plus a *transient* red–green–blue **closure** pass that retriangulates every kept face carrying hanging nodes, so the visible mesh has no T-junctions for an arbitrary adaptive mask. The closure creates no new vertices (it reconnects midpoints the neighbouring red splits already made) and is recomputed from scratch each `refine()` call, which bounds the triangle similarity classes. |
+
+Compile time rather than a runtime flag, because the closure bookkeeping face
+members then exist **only** in `Conforming` mode — a hanging-node mesh pays zero
+extra memory. Those two members, `ClosureParent` (`GlobalId`, the red parent's
+gid; `invalid_gid` on a red face) and `ClosureParentVerts` (`GlobalId[3]`, the
+parent's corners in winding order), are appended **after** the user field pack, so
+`FaceField::UserBegin` stays `5` and `userFaceField<M>()` is bit-identical in both
+modes; their slice indices come from `closureParentField<FaceUserFields>()` /
+`closureParentVertsField<...>()`, or the `MeshT::closure_parent_field` /
+`closure_parent_verts_field` constants. Anything iterating face *user* fields must
+size the loop with `numFaceUserFields<FaceUserFields>()` rather than
+`face_member_types::size - FaceField::UserBegin`, which over-counts by two in
+`Conforming` mode.
+
+`refine()` and `refineLocal()` dispatch on `MeshT::refinement_mode` with
+`if constexpr`. **The `Conforming` branch is currently a stub that aborts**; the
+closure kernel, its distributed wiring, migration, and I/O are staged in
+[tasks/conforming-refinement.md](../tasks/conforming-refinement.md), which holds
+the full design. In `Conforming` mode a face's `Level` will remain the **red**
+level — a closure child carries its parent's level — so `Level` no longer maps 1:1
+to triangle size.
+
+### The red layer (both modes)
+
 Refinement is **split-based**: a face is refined "red" 1→4 by inserting a midpoint
 vertex on each of its 3 edges and connecting them into 4 child triangles. Policy is
 **conforming, 2:1-balanced**: hanging nodes (T-junctions) are permitted but bounded

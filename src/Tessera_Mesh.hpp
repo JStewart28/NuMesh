@@ -15,6 +15,7 @@
 #include "Tessera_CsrAdjacency.hpp"
 #include "Tessera_Fields.hpp"
 #include "Tessera_GenerationGuard.hpp"
+#include "Tessera_RefinementMode.hpp"
 #include "Tessera_Types.hpp"
 
 #include <Cabana_AoSoA.hpp>
@@ -55,12 +56,20 @@ namespace Tessera
 //   FaceUserFields  - Compile-time user field pack for faces.
 //   MemorySpace     - Kokkos memory space for entity storage.
 //   ExecutionSpace  - Kokkos execution space for kernels.
+//   Mode            - Which conformity contract refine()/refineLocal() obey
+//                     (Tessera_RefinementMode.hpp). Appended LAST so every
+//                     existing seven-argument Mesh<...> spelling is unchanged.
+//                     In RefinementMode::Conforming the face member list carries
+//                     two extra closure-bookkeeping members after the user pack;
+//                     FaceField::UserBegin and userFaceField<M>() are identical
+//                     in both modes.
 //
 template <class Scalar, int Dim = 3, class VertexUserFields = VertexFields<>,
           class EdgeUserFields = EdgeFields<>,
           class FaceUserFields = FaceFields<>,
           class MemorySpace = Kokkos::DefaultExecutionSpace::memory_space,
-          class ExecutionSpace = Kokkos::DefaultExecutionSpace>
+          class ExecutionSpace = Kokkos::DefaultExecutionSpace,
+          RefinementMode Mode = RefinementMode::HangingNode2to1>
 class Mesh
 {
   public:
@@ -70,10 +79,28 @@ class Mesh
     using memory_space = MemorySpace;
     using execution_space = ExecutionSpace;
 
+    //! Refinement conformity contract; refine()/refineLocal() dispatch on this.
+    static constexpr RefinementMode refinement_mode = Mode;
+
+    //! The user field packs, re-exported so generic code can size a user-field
+    //! loop without assuming the tuple ends at the user pack (it does not in
+    //! Conforming mode -- see numFaceUserFields<>() in Tessera_Fields.hpp).
+    using vertex_user_fields = VertexUserFields;
+    using edge_user_fields = EdgeUserFields;
+    using face_user_fields = FaceUserFields;
+
     using vertex_member_types =
         VertexMemberTypes<Scalar, Dim, VertexUserFields>;
     using edge_member_types = EdgeMemberTypes<EdgeUserFields>;
-    using face_member_types = FaceMemberTypes<FaceUserFields>;
+    using face_member_types = FaceMemberTypes<FaceUserFields, Mode>;
+
+    //! Slice indices of the Conforming-mode closure members. Slicing these on a
+    //! HangingNode2to1 mesh is a compile error (the members do not exist);
+    //! guard uses with `if constexpr ( refinement_mode == ... )`.
+    static constexpr std::size_t closure_parent_field =
+        closureParentField<FaceUserFields>();
+    static constexpr std::size_t closure_parent_verts_field =
+        closureParentVertsField<FaceUserFields>();
 
     using vertex_aosoa_type = Cabana::AoSoA<vertex_member_types, MemorySpace>;
     using edge_aosoa_type = Cabana::AoSoA<edge_member_types, MemorySpace>;

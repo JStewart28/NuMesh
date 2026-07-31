@@ -24,7 +24,7 @@
 
 | # | Task | Status |
 |---|------|--------|
-| 1 | Refinement-mode plumbing (`RefinementMode`, conditional face fields, dispatch) | Not started |
+| 1 | Refinement-mode plumbing (`RefinementMode`, conditional face fields, dispatch) | **Done** (not yet compiled — see Progress log) |
 | 2 | Serial closure kernel: `closeFaces` / `unclose` + patterns | Not started |
 | 3 | Distributed split-edge discovery (extend Phase 2 to kept faces) | Not started |
 | 4 | Wire closure into distributed `refine()` | Not started |
@@ -33,7 +33,8 @@
 | 7 | Dedicated conforming test suite; flip the default to `Conforming` | Not started |
 | 8 | **Run the full suite and fix everything it finds** (the only task that runs tests) | Not started |
 
-Nothing is implemented yet. Task 1 is next.
+Task 1 has landed: the mode option exists and is inert (the `Conforming` branch of
+`refine()` / `refineLocal()` is an abort stub). Task 2 is next.
 
 ---
 
@@ -191,16 +192,38 @@ sibling lookup:
 | `ClosureParent` | `GlobalId` | Parent red face's gid; `invalid_gid` for a red face (no closure). |
 | `ClosureParentVerts` | `GlobalId[3]` | Parent's three corner vertex gids, in the parent's winding order. |
 
-These are added to `CoreFaceMembers` **only** when `Mode == Conforming`, via a
-conditional member-type alias in `Tessera_Fields.hpp`.
+**As implemented (Task 1).** The two members live in `ClosureFaceMembers` in
+`Tessera_Fields.hpp` and are appended to the face member list **after** the user
+pack — *not* added to `CoreFaceMembers` — only when `Mode == Conforming`:
 
-> **API wrinkle — put the closure fields *after* the user pack.** `FaceField::UserBegin`
-> is the hard-coded constant `5`, and `userFaceField<M>()` is `UserBegin + M`.
-> Inserting closure fields among the core members would shift every user field index
-> and silently break existing consumers. Instead append them after the user pack, so
-> `UserBegin` stays `5` and the closure indices are computed from the user pack size:
-> `closureParentField<FaceUserFields>()` etc. Task 1 must add a compile-time test
-> that `userFaceField<0>()` is identical in both modes.
+```cpp
+using ClosureFaceMembers = Cabana::MemberTypes<GlobalId, GlobalId[3]>;
+
+template <class UserFaceFields, RefinementMode Mode>          // primary
+struct FaceMemberTypesImpl { using type = MemberTypesCat_t<CoreFaceMembers, UserFaceFields>; };
+template <class UserFaceFields>                                // partial spec on the value
+struct FaceMemberTypesImpl<UserFaceFields, RefinementMode::Conforming>
+{ using type = MemberTypesCat_t<MemberTypesCat_t<CoreFaceMembers, UserFaceFields>,
+                                ClosureFaceMembers>; };
+```
+
+so the layout is `[core | user | (closure)]`. Rationale: `FaceField::UserBegin` is
+the hard-coded constant `5` and `userFaceField<M>()` is `UserBegin + M`; inserting
+closure fields among the core members would shift every user field index and
+silently break existing consumers. With the append, `UserBegin` stays `5` and the
+closure indices are computed from the user pack size —
+`closureParentField<FaceUserFields>()` / `closureParentVertsField<...>()`, also
+re-exported as `MeshT::closure_parent_field` / `closure_parent_verts_field`.
+
+> **Consequence — the user pack is no longer the tuple's suffix on faces.** Any code
+> sizing a face user-field loop as `face_member_types::size - FaceField::UserBegin`
+> over-counts by two in `Conforming` mode and would treat the closure members as
+> user data. Task 1 added `numFaceUserFields<UserFaceFields>()` (== the pack size)
+> plus `detail::copyUserFieldsN<UserBegin, N>` and switched both face-field copy
+> sites in `Tessera_Refine.hpp` / `Tessera_RefineParallel.hpp` to it. The
+> tuple-suffix-derived `detail::copyUserFields<UserBegin>` remains, correct for
+> vertices and edges. **The HDF5 writer/reader still derives its face field set
+> from the tuple suffix — Task 6 must audit it against `numFaceUserFields<>()`.**
 
 **Memory.** Only the *visible* face array carries the two fields, in `Conforming`
 mode only: 4 extra `GlobalId` per face on a ~78 B face core. A compressed encoding
@@ -342,34 +365,71 @@ Work on the `conforming-refinement` branch (it exists and currently points at
 
 ---
 
-### Task 1 — Refinement-mode plumbing
+### Task 1 — Refinement-mode plumbing — **DONE**
 
 **Goal.** The option exists and is inert. No behavior change.
 
-- Add `enum class RefinementMode { HangingNode2to1, Conforming }` (new header
-  `src/Tessera_RefinementMode.hpp`, folded into `<Tessera.hpp>`).
-- Add the `RefinementMode Mode = RefinementMode::HangingNode2to1` template parameter
-  to `Mesh`, last in the list; expose
-  `static constexpr RefinementMode refinement_mode = Mode;`.
-  *(Default flips to `Conforming` in Task 7, once the conforming machinery and its
-  tests all exist; Task 8 then verifies both modes.)*
-- In `Tessera_Fields.hpp`, add the conditional closure members
-  (`ClosureParent`, `ClosureParentVerts`) **after** the user pack, plus
-  `closureParentField<UserFaceFields>()` / `closureParentVertsField<...>()` index
-  helpers. `FaceField::UserBegin` must not move.
-- `refine()` / `refineLocal()` dispatch on `MeshT::refinement_mode` with
-  `if constexpr`; the `Conforming` branch is a `static_assert`-free runtime
-  `Kokkos::abort("not implemented")` stub for now.
-- Update `docs/design.md` (refinement section) and `README.md` (API + Known Issues:
-  note conforming is in progress).
+**What landed.**
+
+- `src/Tessera_RefinementMode.hpp` (new, in `<Tessera.hpp>`) —
+  `enum class RefinementMode { HangingNode2to1, Conforming }` with the contract of
+  each mode documented on the enumerators.
+- `Mesh` gained an 8th and last template parameter
+  `RefinementMode Mode = RefinementMode::HangingNode2to1`, exposed as
+  `static constexpr RefinementMode refinement_mode`. **No call site changed** —
+  every existing spelling in `src/`, `tests/`, and `examples/` passes exactly seven
+  arguments. *(Default flips to `Conforming` in Task 7.)*
+  `Mesh` also now re-exports `vertex_user_fields` / `edge_user_fields` /
+  `face_user_fields` (needed to size a user-field loop, see below) and the
+  `closure_parent_field` / `closure_parent_verts_field` slice indices.
+- `Tessera_Fields.hpp` — `ClosureFaceMembers`, the `FaceMemberTypesImpl` partial
+  specialization on the mode value, `numFaceUserFields<>()`,
+  `closureParentField<>()`, `closureParentVertsField<>()`. See *Data model —
+  closure bookkeeping* above for the spelling and the user-pack-is-no-longer-the-
+  suffix consequence.
+- `refineLocal()` and `refine()` are now thin dispatchers on
+  `MeshT::refinement_mode`; the existing bodies moved verbatim into
+  `detail::refineLocalHangingNode()` / `detail::refineHangingNode()`. The
+  `Conforming` branch is a runtime `Kokkos::abort("... not implemented yet ...")`
+  naming the task that will implement it — deliberately not a `static_assert`, so
+  a `Conforming` mesh type stays instantiable (Task 2+ tests need to construct one
+  before the kernels exist).
+- `docs/design.md` gained an *Adaptive refinement → Refinement modes* subsection;
+  `README.md`'s API sketch documents the 8th parameter and its *Known Issues*
+  non-conforming entry now records conforming as in progress with the abort stub.
+- `tests/test_refinement_mode.cpp` + registration (`unit`, SERIAL + HIP, np1).
+
+**Notes for later tasks.**
+
+- **Cabana friction: none.** `Cabana::MemberTypes` concatenation via the existing
+  `MemberTypesCat_t` composed cleanly, and a partial specialization on the
+  `RefinementMode` *value* works without a tag-type detour. `AoSoA`,
+  `MemberTypeAtIndex`, and `Cabana::slice<I>` are all indifferent to the two extra
+  members.
+- The `Conforming` face tuple is 9 members for an empty user pack (7 + 2), and the
+  closure members are always the **last two**, at `tupleSize-2` / `tupleSize-1`.
+- The `Kokkos::abort` in a host-side `if constexpr` branch compiles but is not a
+  `[[noreturn]]` the compiler can see through, so `refine()`'s `Conforming` branch
+  also returns a default `RefineResult{}` to keep the return path well-formed.
 
 **Acceptance.**
-New `unit` test `refinement_mode` (SERIAL + HIP, np1): a `Conforming`-typed mesh
-compiles; `userFaceField<0>()` is identical in both modes; a `Conforming` face tuple
-is larger than a `HangingNode2to1` one; `format-check` clean.
+`unit` test `refinement_mode` (SERIAL + HIP, np1) — written, not run (see the
+handoff contract). It pins: a `Conforming`-typed mesh instantiates, constructs,
+resizes, and round-trips written closure-member values host↔device;
+`FaceField::UserBegin == 5` and `userFaceField<0..1>()` indices *and types* are
+identical in both modes; the `Conforming` face tuple is exactly two members larger
+and the closure indices are its last two, with types `GlobalId` / `GlobalId[3]`;
+vertex and edge member lists are mode-independent;
+`numFaceUserFields<>()` counts the pack while the tuple suffix over-counts by two.
+Most of these are `static_assert`s (a `UserBegin` shift must be a build failure,
+not a silent wrong read) mirrored by run-time checks so a failure names itself.
+The test deliberately does **not** assert what the 7-argument default mode *is*, so
+it survives Task 7's flip.
 
-**Report back.** The final conditional-member-type spelling and any Cabana template
-friction; whether appending the template parameter broke any call site.
+**Report back.** *(delivered — see Notes above; the short version: no Cabana
+friction, no call site broken, and the one real hazard the layout choice creates is
+the face user pack no longer being the tuple suffix, which the I/O path still
+assumes — flagged for Task 6.)*
 
 ---
 
@@ -766,6 +826,20 @@ so collect them from the run output rather than re-running:
 - 2026-07-31 — Added Task 8 (run the full suite, fix everything). Tasks 1–7 are now
   explicitly **no-test** tasks that end at a commit + push; their Acceptance sections
   specify tests to write, not to run. Task 8 is the single verification point.
+- 2026-07-31 — **Task 1 landed.** `RefinementMode` enum + `Mesh`'s 8th template
+  parameter, conditional `ClosureParent`/`ClosureParentVerts` face members appended
+  after the user pack, index/count helpers, `if constexpr` dispatch with an
+  aborting `Conforming` stub, `test_refinement_mode`, docs. **Not compiled:** the
+  build was skipped at the user's request this session, so Task 2 should expect to
+  absorb any Task-1 build break — build before adding to it.
+  `clang-format` (v21, `/usr/bin/clang-format` on Tuolumne) is clean on every file
+  Task 1 touched, but note that several *untouched* files (e.g.
+  `src/Tessera_Geometry.hpp`) already violate v21, so a wholesale `format-check`
+  under that version is not clean and predates this work.
+  Also, running a bare `cmake .` in `build-tuolumne` without the spack env active
+  deleted its `CMakeCache.txt`; that directory needs
+  `bash ../run_cmake_toulumne.sh` (with `spack env activate
+  ~/spack_envs/tuolumne_trilinos/`) re-run before the next `make`.
 - 2026-07-31 — Audited every task's Acceptance / Report-back for consistency with the
   no-test rule: dropped the "gate green" claims from Tasks 2–7, moved all
   runtime-measurement report-back items into a deferred-measurements table in Task 8,

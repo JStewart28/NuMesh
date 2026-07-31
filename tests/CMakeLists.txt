@@ -207,6 +207,26 @@ tessera_add_test(
     SOURCES  test_refine.cpp
 )
 
+# RefinementMode plumbing (conforming refinement, Task 1): a Conforming-typed
+# mesh instantiates and its conditional closure face members round-trip; the
+# public face user-field indices (FaceField::UserBegin, userFaceField<M>()) are
+# bit-identical in both modes, and the Conforming face tuple is exactly two
+# members larger. Type-layout property -> single rank.
+tessera_add_test(
+    NAME     refinement_mode
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_refinement_mode.cpp
+)
+tessera_add_test(
+    NAME     refinement_mode
+    BACKEND  HIP
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_refinement_mode.cpp
+)
+
 # Stale-handle generation guard: a slice held across a count-changing op and
 # then copied (as it would be when captured into a KOKKOS_LAMBDA) must abort;
 # a slice held across haloExchange() (topology-preserving) must not. This

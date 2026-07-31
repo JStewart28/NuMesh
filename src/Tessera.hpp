@@ -36,6 +36,7 @@
 #include "Tessera_Refine.hpp"
 #include "Tessera_RefineParallel.hpp"
 #include "Tessera_RefinePolicy.hpp"
+#include "Tessera_RefinementMode.hpp"
 #include "Tessera_RegisteredBufferPool.hpp"
 #include "Tessera_Stencil.hpp"
 #include "Tessera_Types.hpp"
