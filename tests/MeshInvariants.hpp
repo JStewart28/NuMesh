@@ -24,8 +24,12 @@
 
 #include <mpi.h>
 
+#include <algorithm>
+#include <array>
+#include <iterator>
 #include <map>
 #include <set>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -222,35 +226,30 @@ long long globalOwnedFaces( MeshT& mesh )
     return g;
 }
 
-// 2:1 balance: no edge's two incident (owned) faces differ by more than one
-// refinement level. Each face advertises (edge, level) to the edge's coordinator,
-// which compares the two incidences. Returns LOCAL fails (sum == global).
-template <class MeshT>
-int check21Balance( MeshT& mesh )
+// 2:1 balance over an arbitrary face layer, given each face's corner gids and
+// level. Each face advertises (edge, level) to the edge's coordinator, which
+// compares the two incidences. Edges with a single incidence are SKIPPED: on a
+// hanging-node layer a bisected edge survives only on its kept side, which is
+// precisely the bounded non-conformity the 2:1 rule allows.
+// Returns LOCAL fails (sum across ranks == global).
+inline int
+check21BalanceOn( MPI_Comm comm, int size,
+                  const std::vector<std::array<GlobalId, 3>>& faceVerts,
+                  const std::vector<Tessera::Level>& faceLevel )
 {
-    MPI_Comm comm = mesh.comm();
-    const int size = mesh.commSize();
-    const std::size_t nof = mesh.numOwnedFaces();
-
-    Cabana::AoSoA<typename MeshT::face_member_types, Kokkos::HostSpace> hf(
-        "hf", mesh.numFaces() );
-    Cabana::deep_copy( hf, mesh.faces() );
-    auto fv = Cabana::slice<Tessera::FaceField::Verts>( hf );
-    auto fl = Cabana::slice<Tessera::FaceField::Level>( hf );
-
     struct LvMsg
     {
         Tessera::EdgeKey key;
         Tessera::Level level;
     };
     std::vector<std::vector<LvMsg>> send( size );
-    for ( std::size_t f = 0; f < nof; ++f )
+    for ( std::size_t f = 0; f < faceVerts.size(); ++f )
         for ( int k = 0; k < 3; ++k )
         {
-            const Tessera::EdgeKey key =
-                Tessera::makeEdgeKey( fv( f, k ), fv( f, ( k + 1 ) % 3 ) );
+            const Tessera::EdgeKey key = Tessera::makeEdgeKey(
+                faceVerts[f][k], faceVerts[f][( k + 1 ) % 3] );
             send[Tessera::detail::edgeCoordRank( key, size )].push_back(
-                { key, fl( f ) } );
+                { key, faceLevel[f] } );
         }
     auto got = Tessera::allToAllV( comm, send );
 
@@ -268,6 +267,38 @@ int check21Balance( MeshT& mesh )
                 ++fails;
         }
     return fails;
+}
+
+// Owned corner gids + level of every OWNED face of the VISIBLE layer.
+template <class MeshT>
+void ownedVisibleFaceLevels( MeshT& mesh,
+                             std::vector<std::array<GlobalId, 3>>& verts,
+                             std::vector<Tessera::Level>& level )
+{
+    Cabana::AoSoA<typename MeshT::face_member_types, Kokkos::HostSpace> hf(
+        "hf", mesh.numFaces() );
+    Cabana::deep_copy( hf, mesh.faces() );
+    auto fv = Cabana::slice<Tessera::FaceField::Verts>( hf );
+    auto fl = Cabana::slice<Tessera::FaceField::Level>( hf );
+    const std::size_t nof = mesh.numOwnedFaces();
+    verts.resize( nof );
+    level.resize( nof );
+    for ( std::size_t f = 0; f < nof; ++f )
+    {
+        for ( int k = 0; k < 3; ++k )
+            verts[f][k] = fv( f, k );
+        level[f] = fl( f );
+    }
+}
+
+// 2:1 balance of the VISIBLE face layer. LOCAL fails (sum == global).
+template <class MeshT>
+int check21Balance( MeshT& mesh )
+{
+    std::vector<std::array<GlobalId, 3>> verts;
+    std::vector<Tessera::Level> level;
+    ownedVisibleFaceLevels( mesh, verts, level );
+    return check21BalanceOn( mesh.comm(), mesh.commSize(), verts, level );
 }
 
 // Cross-rank midpoint-gid agreement (the key Step-6b guarantee): every rank that
@@ -300,6 +331,352 @@ inline int checkMidpointAgreement(
             ++fails; // same edge, different midpoint gid across ranks
     }
     return fails;
+}
+
+// ---------------------------------------------------------------------------
+// Conforming-refinement invariants (tasks/conforming-refinement.md, Task 4)
+// ---------------------------------------------------------------------------
+//
+// These are the acceptance criteria for RefinementMode::Conforming. Three of
+// them (checkConforming, checkOwnedEuler, checkNoInteriorVertex) are properties
+// of ANY conforming surface and are deliberately mode-agnostic, so a test can
+// run them on a HangingNode2to1 result too and assert that they FAIL there --
+// otherwise a mask too weak to create a hanging node would prove nothing.
+
+// The VISIBLE owned faces of a Conforming mesh as plain VisibleFace structs
+// (corners, gid, level, and the ClosureParent / ClosureParentVerts bookkeeping).
+template <class MeshT>
+std::vector<Tessera::VisibleFace> ownedVisibleFaces( MeshT& mesh )
+{
+    Cabana::AoSoA<typename MeshT::face_member_types, Kokkos::HostSpace> hf(
+        "hf", mesh.numFaces() );
+    Cabana::deep_copy( hf, mesh.faces() );
+    return Tessera::readVisibleFaces<MeshT>( hf, mesh.numOwnedFaces() );
+}
+
+// THE conformity criterion: every edge of the GLOBAL mesh has exactly two
+// incident faces. A hanging node on edge (a,b) means the refined side carries
+// (a,m) and (m,b) instead, leaving (a,b) with a single incidence -- so this
+// single check subsumes the topological half of "no T-junctions".
+//
+// Verified through the edge coordinator (edgeCoordRank + allToAllV) rather than
+// the halo, so the verdict is rank-count independent and needs no ghost layer
+// (refine() leaves an owned-only mesh). Every rank advertises each edge of each
+// of its OWNED faces exactly once; a face is owned by exactly one rank, so the
+// coordinator's per-edge count is the true global incidence count.
+// Returns LOCAL fails (sum across ranks == global).
+template <class MeshT>
+int checkConforming( MeshT& mesh )
+{
+    MPI_Comm comm = mesh.comm();
+    const int size = mesh.commSize();
+
+    std::vector<std::array<GlobalId, 3>> verts;
+    std::vector<Tessera::Level> level;
+    ownedVisibleFaceLevels( mesh, verts, level );
+
+    struct IncMsg
+    {
+        Tessera::EdgeKey key;
+    };
+    std::vector<std::vector<IncMsg>> send( size );
+    for ( const auto& t : verts )
+        for ( int k = 0; k < 3; ++k )
+        {
+            const Tessera::EdgeKey key =
+                Tessera::makeEdgeKey( t[k], t[( k + 1 ) % 3] );
+            send[Tessera::detail::edgeCoordRank( key, size )].push_back(
+                { key } );
+        }
+    auto got = Tessera::allToAllV( comm, send );
+
+    std::map<Tessera::EdgeKey, int> incidence;
+    for ( const auto& m : got.data )
+        ++incidence[m.key];
+
+    int fails = 0;
+    for ( const auto& kv : incidence )
+        if ( kv.second != 2 )
+            ++fails;
+    return fails;
+}
+
+// Owned-only Euler number V - E + F, summed over ranks. THE headline acceptance
+// criterion for conforming refinement: it is 2 for a closed genus-0 surface
+// under an ARBITRARY (adaptive) mask, which is exactly what the hanging-node
+// mode fails -- there it holds only for a uniform refine. Named separately from
+// ownedEulerGlobal() because it is the criterion, not just a statistic; the
+// value is identical.
+template <class MeshT>
+long long checkOwnedEuler( MeshT& mesh )
+{
+    return ownedEulerGlobal( mesh );
+}
+
+// GEOMETRIC "no T-junction": no vertex lies strictly inside any edge. The purely
+// topological reading -- "some m has edges (u,m) and (m,w)" -- is true of every
+// ordinary triangle, so the test must check that m is COLLINEAR with (u,w) AND
+// strictly between its endpoints.
+//
+// Unlike the other checks this one cannot be routed through an edge coordinator:
+// it needs vertex POSITIONS, and after refine() a face may name a vertex no rank
+// but its owner holds (always true across a partition boundary, and in
+// Conforming mode also true of a closure child's midpoint corner). So the global
+// owned vertices and owned faces are replicated on rank 0 and the exact test is
+// run there. That is affordable and, more importantly, rank-count independent by
+// construction -- the same style of partition-free reference the rest of this
+// suite uses. Returns LOCAL fails (0 off root; sum across ranks == global).
+template <class MeshT>
+int checkNoInteriorVertex( MeshT& mesh )
+{
+    MPI_Comm comm = mesh.comm();
+    const int rank = mesh.rank();
+    const int size = mesh.commSize();
+
+    struct VtxMsg
+    {
+        GlobalId gid;
+        double p[3];
+    };
+    struct FaceMsg
+    {
+        GlobalId v[3];
+    };
+
+    Cabana::AoSoA<typename MeshT::vertex_member_types, Kokkos::HostSpace> hv(
+        "hv", mesh.numVertices() );
+    Cabana::deep_copy( hv, mesh.vertices() );
+    auto vg = Cabana::slice<Tessera::VertexField::Gid>( hv );
+    auto vp = Cabana::slice<Tessera::VertexField::Position>( hv );
+
+    std::vector<std::vector<VtxMsg>> vsend( size );
+    for ( std::size_t i = 0; i < mesh.numOwnedVertices(); ++i )
+    {
+        VtxMsg m;
+        m.gid = vg( i );
+        for ( int d = 0; d < 3; ++d )
+            m.p[d] = ( d < MeshT::dim ) ? static_cast<double>( vp( i, d ) ) : 0;
+        vsend[0].push_back( m );
+    }
+    auto vgot = Tessera::allToAllV( comm, vsend );
+
+    std::vector<std::array<GlobalId, 3>> verts;
+    std::vector<Tessera::Level> level;
+    ownedVisibleFaceLevels( mesh, verts, level );
+    std::vector<std::vector<FaceMsg>> fsend( size );
+    for ( const auto& t : verts )
+        fsend[0].push_back( { { t[0], t[1], t[2] } } );
+    auto fgot = Tessera::allToAllV( comm, fsend );
+
+    if ( rank != 0 )
+        return 0;
+
+    std::map<GlobalId, std::array<double, 3>> pos;
+    for ( const auto& m : vgot.data )
+        pos[m.gid] = { m.p[0], m.p[1], m.p[2] };
+
+    int fails = 0;
+    std::set<Tessera::EdgeKey> edges;
+    for ( const auto& f : fgot.data )
+        for ( int k = 0; k < 3; ++k )
+        {
+            edges.insert( Tessera::makeEdgeKey( f.v[k], f.v[( k + 1 ) % 3] ) );
+            if ( pos.find( f.v[k] ) == pos.end() )
+                ++fails; // a face names a vertex NO rank owns
+        }
+    if ( fails )
+        return fails;
+
+    std::map<GlobalId, std::vector<GlobalId>> nbr;
+    for ( const auto& k : edges )
+    {
+        nbr[k.id[0]].push_back( k.id[1] );
+        nbr[k.id[1]].push_back( k.id[0] );
+    }
+    for ( auto& kv : nbr )
+        std::sort( kv.second.begin(), kv.second.end() );
+
+    for ( const auto& k : edges )
+    {
+        const std::array<double, 3>& pu = pos.at( k.id[0] );
+        const std::array<double, 3>& pw = pos.at( k.id[1] );
+        double d[3], len2 = 0.0;
+        for ( int c = 0; c < 3; ++c )
+        {
+            d[c] = pw[c] - pu[c];
+            len2 += d[c] * d[c];
+        }
+        std::vector<GlobalId> common;
+        const auto& nu = nbr[k.id[0]];
+        const auto& nw = nbr[k.id[1]];
+        std::set_intersection( nu.begin(), nu.end(), nw.begin(), nw.end(),
+                               std::back_inserter( common ) );
+        for ( GlobalId m : common )
+        {
+            const std::array<double, 3>& pm = pos.at( m );
+            double e[3], proj = 0.0;
+            for ( int c = 0; c < 3; ++c )
+            {
+                e[c] = pm[c] - pu[c];
+                proj += e[c] * d[c];
+            }
+            const double cx = e[1] * d[2] - e[2] * d[1];
+            const double cy = e[2] * d[0] - e[0] * d[2];
+            const double cz = e[0] * d[1] - e[1] * d[0];
+            if ( cx * cx + cy * cy + cz * cz <= 1e-20 * len2 * len2 &&
+                 proj > 1e-12 * len2 && proj < ( 1.0 - 1e-12 ) * len2 )
+                ++fails; // m is collinear with and strictly inside (u,w)
+        }
+    }
+    return fails;
+}
+
+// 2:1 balance of the RED layer. In Conforming mode the visible layer is the
+// closure, whose children carry their parent's level, so the balance invariant
+// the fixpoint actually maintains is a property of the RED faces -- recovered
+// here by un-closing. Identical to check21Balance() in HangingNode2to1 mode
+// (there the red layer IS the visible layer).
+// Returns LOCAL fails (sum across ranks == global).
+template <class MeshT>
+int check21BalanceRed( MeshT& mesh )
+{
+    if constexpr ( MeshT::refinement_mode !=
+                   Tessera::RefinementMode::Conforming )
+    {
+        return check21Balance( mesh );
+    }
+    else
+    {
+        const Tessera::UncloseResult un =
+            Tessera::unclose( ownedVisibleFaces( mesh ) );
+        std::vector<std::array<GlobalId, 3>> verts( un.red.size() );
+        std::vector<Tessera::Level> level( un.red.size() );
+        for ( std::size_t r = 0; r < un.red.size(); ++r )
+        {
+            for ( int k = 0; k < 3; ++k )
+                verts[r][k] = un.red[r].v[k];
+            level[r] = un.red[r].level;
+        }
+        return check21BalanceOn( mesh.comm(), mesh.commSize(), verts, level );
+    }
+}
+
+// unclose o close == identity, checked against the mesh as it actually stands.
+// Two independent properties, both purely local (a closure child names its
+// parent outright, so nothing here communicates):
+//
+//   (1) FIDELITY. Re-closing the un-closed red layer with the SAME split-edge
+//       map refine() used reproduces the mesh's visible layer exactly -- as a
+//       multiset of (sorted corner triple, level, parent gid, parent corners).
+//       Child gids are excluded from the comparison only because their base is
+//       an exscan result, not because they are unconstrained; (3) pins them.
+//       A closure that fired where it should not have, or a pattern applied to
+//       the wrong rotation, fails here.
+//   (2) INVERSE. Un-closing that re-closure returns the red layer bit-for-bit
+//       on gid, corner gids, and level.
+//   (3) GID SANITY. Visible face gids are locally distinct, and a passed-through
+//       red face's gid equals its red gid (`parent == invalid_gid`).
+//
+// `midpoints` is RefineResult::midpoints from the refine() call that produced
+// this mesh -- the very map the closure consumed. A no-op (0) in
+// HangingNode2to1 mode, where there is no closure layer.
+// Returns LOCAL fails (sum across ranks == global).
+template <class MeshT>
+int checkClosureInverse(
+    MeshT& mesh,
+    const std::vector<std::pair<Tessera::EdgeKey, GlobalId>>& midpoints )
+{
+    if constexpr ( MeshT::refinement_mode !=
+                   Tessera::RefinementMode::Conforming )
+    {
+        (void)mesh;
+        (void)midpoints;
+        return 0;
+    }
+    else
+    {
+        using Tessera::GlobalId;
+        const std::vector<Tessera::VisibleFace> visible =
+            ownedVisibleFaces( mesh );
+        const Tessera::UncloseResult un = Tessera::unclose( visible );
+
+        std::map<Tessera::EdgeKey, GlobalId> midpointOf;
+        for ( const auto& kv : midpoints )
+            midpointOf.emplace( kv.first, kv.second );
+
+        // Hand the re-closure a fresh gid block above everything live, exactly
+        // as refine() does, so unclose()'s duplicate-gid guard stays meaningful.
+        GlobalId base = 0;
+        for ( const auto& f : visible )
+            base = std::max( base, f.gid );
+        const Tessera::CloseResult cl =
+            Tessera::closeFaces( un.red, midpointOf, base + 1 );
+
+        int fails = 0;
+
+        // (1) fidelity, as a multiset keyed on everything but the child gid.
+        using Sig = std::tuple<GlobalId, GlobalId, GlobalId, long long,
+                               GlobalId, GlobalId, GlobalId, GlobalId>;
+        auto sigOf = []( const Tessera::VisibleFace& f )
+        {
+            std::array<GlobalId, 3> v = { f.v[0], f.v[1], f.v[2] };
+            std::sort( v.begin(), v.end() );
+            return Sig{ v[0],
+                        v[1],
+                        v[2],
+                        static_cast<long long>( f.level ),
+                        f.parent,
+                        f.parentVerts[0],
+                        f.parentVerts[1],
+                        f.parentVerts[2] };
+        };
+        std::multiset<Sig> got, want;
+        for ( const auto& f : visible )
+            got.insert( sigOf( f ) );
+        for ( const auto& f : cl.visible )
+            want.insert( sigOf( f ) );
+        if ( got != want )
+            ++fails;
+
+        // (2) inverse: unclose o close reproduces the red layer bit-for-bit.
+        const Tessera::UncloseResult un2 = Tessera::unclose( cl.visible );
+        if ( un2.red.size() != un.red.size() )
+            ++fails;
+        else
+        {
+            std::map<GlobalId, const Tessera::RedFace*> byGid;
+            for ( const auto& r : un.red )
+                byGid[r.gid] = &r;
+            for ( const auto& r : un2.red )
+            {
+                auto it = byGid.find( r.gid );
+                if ( it == byGid.end() || it->second->level != r.level )
+                {
+                    ++fails;
+                    continue;
+                }
+                for ( int k = 0; k < 3; ++k )
+                    if ( it->second->v[k] != r.v[k] )
+                        ++fails;
+            }
+        }
+
+        // (3) gid sanity on the visible layer: locally distinct gids, and a
+        //     passed-through red face carries NO closure bookkeeping (a
+        //     zero-filled ClosureParentVerts would read as vertex gid 0 here).
+        std::set<GlobalId> seen;
+        for ( const auto& f : visible )
+        {
+            if ( !seen.insert( f.gid ).second )
+                ++fails;
+            if ( f.parent == Tessera::invalid_gid )
+                for ( int k = 0; k < 3; ++k )
+                    if ( f.parentVerts[k] != Tessera::invalid_gid )
+                        ++fails;
+        }
+
+        return fails;
+    }
 }
 
 } // namespace TesseraTest

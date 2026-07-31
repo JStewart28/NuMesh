@@ -16,6 +16,7 @@
 #include "Tessera_HaloExchange.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_Profiling.hpp"
+#include "Tessera_RefineClosure.hpp"
 #include "Tessera_Types.hpp"
 
 #include <Cabana_Core.hpp>
@@ -333,6 +334,12 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                 edges( li, k ) = f_e( g, k );
             }
         }
+        // This builds a FRESH face AoSoA rather than copying tuples, so the
+        // RefinementMode::Conforming closure members would otherwise be left
+        // zero-filled -- and a zero ClosureParent reads as face gid 0, which
+        // unclose() would take for a real retired parent. A no-op in
+        // HangingNode2to1 mode. (migrate() copies whole tuples and needs none.)
+        initClosureFaceMembers<MeshT>( lf, 0, nlf );
         mesh.resizeFaces( nlf );
         Cabana::deep_copy( mesh.faces(), lf );
     }

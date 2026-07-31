@@ -27,18 +27,19 @@
 | 1 | Refinement-mode plumbing (`RefinementMode`, conditional face fields, dispatch) | **Done** (compiles clean as of Task 2) |
 | 2 | Serial closure kernel: `closeFaces` / `unclose` + patterns | **Done** |
 | 3 | Distributed split-edge discovery (extend Phase 2 to kept faces) | **Done** |
-| 4 | Wire closure into distributed `refine()` | Not started |
+| 4 | Wire closure into distributed `refine()` | **Done** |
 | 5 | `migrate()` / `loadBalance()` / halo rebuild on a closed mesh | Not started |
 | 6 | I/O round-trip, `markByQuality`, example + docs | Not started |
 | 7 | Dedicated conforming test suite; flip the default to `Conforming` | Not started |
 | 8 | **Run the full suite and fix everything it finds** (the only task that runs tests) | Not started |
 
-Tasks 1–3 have landed. The closure kernel and its inverse exist as pure local
-functions in `src/Tessera_RefineClosure.hpp`, and `refineLocal()`'s `Conforming`
-branch runs un-close → red split → close on one rank. The distributed `refine()`
-now publishes a **complete split-edge map** in `RefineResult::midpoints` (Task 3),
-which is the input the closure needs — but its `Conforming` branch is still the
-abort stub. Task 4 is next.
+Tasks 1–4 have landed, so **conforming distributed refinement works**: the closure
+kernel and its inverse are pure local functions in `src/Tessera_RefineClosure.hpp`,
+and both `refineLocal()` and the distributed `refine()` run un-close → mask
+translation → red split → close. There is no abort stub left in the refine path.
+What remains is everything *around* refinement — migration/load balance (Task 5),
+I/O and marking (Task 6), the dedicated suite and default flip (Task 7) — and then
+the single verification pass (Task 8). **Nothing has been executed yet.**
 
 ---
 
@@ -279,8 +280,19 @@ in this task.
 
 ### Distributed algorithm — what changes in `refine()`
 
-`refine()` in `Tessera_RefineParallel.hpp` gains three steps. Phases 1–3 are the
-existing code, unchanged in substance.
+**As implemented (Task 4).** There is no separate conforming driver. The former
+`detail::refineHangingNode()` is now `detail::refineImpl()`, shared by both modes,
+and `refine()` is a one-line forward to it — the mode branch lives *inside*, as
+four `if constexpr ( kConforming )` blocks. That was the right shape because the
+conforming path differs from the hanging-node path in exactly three inserted local
+steps and one widened count; everything phases 1–3 do is byte-for-byte the same
+code operating on the same arrays. Concretely, the shared body was re-expressed
+over a **red-layer snapshot** (`fV` / `fG` / `fL` corner gids, gid, level, plus
+`fSrc[r]` = the pre-call visible row supplying red face *r*'s face user fields) and
+a red-indexed `mark`. In `HangingNode2to1` mode that snapshot is the identity read
+of the visible faces and `fSrc[f] == f`; in `Conforming` mode it is the un-close,
+and `mark` is `translateMask()`'d. Phase 1 and Phase 2 then iterate `nRedF` instead
+of `nOwnedF` and are otherwise untouched.
 
 ```
 Conforming refine( mesh, halo, mask ):
@@ -354,14 +366,24 @@ owned-only mesh whose faces reference vertex gids the rank does not hold (see th
 post-refine gotcha in `docs/design.md`). The halo rebuild inside `migrate()` brings
 them in. Do **not** add a position gather to the closure.
 
-**Face gid allocation.** Closure children are new faces and need new gids. Fold them
-into the existing single `MPI_Exscan`: count
-`4 * nRefining + countClosureChildren(newRed, midpointOf)` per rank (that helper
-exists precisely so the count is available *before* `closeFaces()` runs) and allocate
-one contiguous block above the global max face gid. A retired
-parent gid is *reused* by un-close on the next round; since it is below the global
-max it can never collide with a later allocation. Live face gids stay sparse — which
-is already true today and already handled.
+**Face gid allocation. (Landed, Task 4.)** Closure children are new faces and need
+new gids, folded into the existing single `MPI_Exscan`:
+`4 * nRefining + countClosureChildren(newRed, midpointOf)` per rank. Two details
+the design under-specified, both now settled in the code:
+
+- **Ordering.** The red 1→4 split is built *topology first* — corner gids do not
+  depend on face gids — so `countClosureChildren()` can run on the post-split red
+  layer before a single gid is handed out. After the exscan, the fresh red children
+  take the low part of this rank's block and `closeFaces()` is handed the first
+  gid of the remainder as its `firstChildGid`.
+- **Which "global max".** The block sits above the global max of the **pre-refine
+  VISIBLE** face gids, not the max red gid. The visible layer contains every red
+  gid *plus* the closure children allocated above them, so this bound is monotone
+  across rounds and no allocation can collide with anything still referenced —
+  including a retired parent gid, which un-close reuses on the next round. Basing
+  it on the red max would be *nearly* safe (a discarded closure child's gid is
+  referenced by nothing) but gives up monotonicity for no gain. Live face gids stay
+  sparse, which is already true today and already handled.
 
 ### Interaction with the rest of the library
 
@@ -374,24 +396,44 @@ is already true today and already handled.
 | `markByQuality` | Returns a mask over **visible** owned faces; step 0b translates it. `CurvatureCriterion`'s "exactly two incident faces" coordinator assumption becomes *true* in conforming mode rather than silently skipped — a correctness improvement. |
 | `MeshGeometry` / `VertexStencil` | No change; they read the visible mesh and are already generation-guarded. Conforming topology makes the k=1 stencil consistent at former T-junctions. |
 | `RefinePolicy` | Untouched. The closure interpolates nothing. |
-| Profiling | Add level-2 regions `refine_unclose`, `refine_close`; level-3 `refine_closure_patterns`. |
+| Profiling | Level-2 `refine_unclose` / `refine_close` and level-3 `refine_closure_patterns` — added, Task 4. |
 
 ### Invariants and acceptance
 
-New shared checks in `tests/MeshInvariants.hpp`:
+New shared checks in `tests/MeshInvariants.hpp` (**all landed, Task 4**):
 
 - `checkConforming(mesh)` — every edge in the global mesh has **exactly two**
   incident faces, verified through the edge coordinator (`edgeCoordRank` +
-  `allToAllV`), *not* the halo, so the verdict is rank-count independent.
+  `allToAllV`), *not* the halo, so the verdict is rank-count independent and needs
+  no ghost layer (`refine()` leaves an owned-only mesh).
 - `checkOwnedEuler(mesh) == 2` — owned-only `V − E + F = 2` for an **arbitrary**
-  (adaptive, not just uniform) mask. This is the headline acceptance criterion: it is
-  precisely what fails today.
-- `checkNoInteriorVertex(mesh)` — no vertex lies in the interior of any edge, i.e.
-  for every edge `(u,w)` no vertex `m` exists with edges `(u,m)` and `(m,w)`.
-- `checkClosureInverse(mesh)` — `unclose ∘ close` reproduces the red face set
-  (gids, corner gids, levels, user fields) bit-for-bit.
-- `check21Balance(mesh)` — existing check, now applied to the **red layer** (after
-  un-close) rather than the visible mesh.
+  (adaptive, not just uniform) mask. The headline acceptance criterion; it is
+  precisely what the hanging-node mode fails. Value-identical to the existing
+  `ownedEulerGlobal()`, named separately because it is *the criterion*.
+- `checkNoInteriorVertex(mesh)` — **geometric**: no vertex is collinear with and
+  strictly between the endpoints of any edge. The topological reading is true of
+  every ordinary triangle, so geometry is unavoidable — and that forces the one
+  design departure here: this check *cannot* go through an edge coordinator,
+  because it needs vertex positions and a post-`refine()` face may name a vertex
+  only its owner holds (always so across a partition boundary, and in `Conforming`
+  mode also for a closure child's midpoint corner). It therefore replicates the
+  global owned vertices and owned faces on rank 0 and runs the exact test there —
+  affordable at these sizes, and rank-count independent by construction, in the
+  same partition-free-reference style the rest of the suite uses. It also flags a
+  face naming a vertex **no** rank owns, which is a free extra check.
+- `checkClosureInverse(mesh, midpoints)` — takes `RefineResult::midpoints` (the
+  very map the closure consumed) and verifies three things, all local: **fidelity**
+  — re-closing the un-closed red layer reproduces the visible layer as a multiset
+  of (sorted corner triple, level, parent gid, parent corners); **inverse** —
+  un-closing *that* returns the red layer bit-for-bit on gid/corners/level; and
+  **gid sanity** — visible gids are locally distinct and a passed-through red face
+  carries no closure bookkeeping (a zero-filled `ClosureParentVerts` would read as
+  vertex gid 0). Child gids are excluded from the multiset comparison only because
+  their base is an exscan result.
+- `check21BalanceRed(mesh)` — the existing check applied to the **red layer**
+  (after un-close). Identical to `check21Balance()` in `HangingNode2to1` mode. The
+  coordinator logic was factored into `check21BalanceOn(comm, size, verts, levels)`
+  so both wrappers share it.
 
 The existing `checkMidpointAgreement` and `checkOwnershipPartition` must keep
 passing unchanged.
@@ -683,31 +725,78 @@ round 1, with the reply/gid rounds growing only by an O(partition-boundary) term
 
 ---
 
-### Task 4 — Wire closure into distributed `refine()`
+### Task 4 — Wire closure into distributed `refine()` — **DONE**
 
 **Goal.** `Conforming` distributed refinement works. This is the milestone.
 
-- Insert step 0 (un-close), 0b (mask translation), 3b (close), and the extended
-  face-gid allocation into `refine()`, all under `if constexpr Conforming`.
-- Add `checkConforming`, `checkOwnedEuler`, `checkNoInteriorVertex`,
-  `checkClosureInverse` to `tests/MeshInvariants.hpp`; apply `check21Balance` to the
-  red layer.
-- Add the `refine_unclose` / `refine_close` profiling regions.
+**What landed.**
 
-**Acceptance.** New `regression` test `refine_conforming` (SERIAL + HIP, ranks 1–5):
-over **three successive adaptive refine rounds** — `checkConforming`,
-owned Euler `== 2` (the criterion that fails today), no interior vertex,
-`checkOwnershipPartition`, `checkMidpointAgreement`, `check21Balance` on the red
-layer, and `checkClosureInverse`. Plus the degenerate empty-mask and full-mask
-(uniform → closure is a no-op, `|S| = 0` everywhere) cases.
+- `src/Tessera_RefineParallel.hpp`: `detail::refineHangingNode()` →
+  `detail::refineImpl()`, shared by both modes with the mode branch inside; the
+  red-layer snapshot (`fV`/`fG`/`fL`/`fSrc`, `nRedF`) and the red-indexed `mark`;
+  steps 0 / 0b / 3b / the widened 3c gid exscan; `writeClosureFace()` at the face
+  materialization site; step 3e/3g/3h/3i now read the `newVis` visible list.
+  `refine()` is a one-line forward. `RefineResult` gained a `ClosureStats closure`
+  member so a test can report the `|S|` histogram, the closure-face fraction, and
+  both blue-diagonal tallies without instrumenting the library at the call site.
+- `src/Tessera_Distribute.hpp`: **`distribute()` needed
+  `initClosureFaceMembers<MeshT>()`.** It builds a fresh face AoSoA rather than
+  copying tuples, so the closure members were left zero-filled — and a zero
+  `ClosureParent` reads as face gid 0, which `unclose()` would take for a real
+  retired parent. This is the same hazard Task 2 found in the builder and Task 6
+  must still fix in the HDF5 reader. `migrate()` copies whole tuples and needs
+  nothing.
+- `src/Tessera_Profiling.hpp`: level-2 `refine_unclose` / `refine_close`, level-3
+  `refine_closure_patterns`.
+- `tests/MeshInvariants.hpp`: `checkConforming`, `checkOwnedEuler`,
+  `checkNoInteriorVertex`, `checkClosureInverse`, `check21BalanceRed`,
+  `check21BalanceOn`, `ownedVisibleFaces`, `ownedVisibleFaceLevels` — see
+  *Invariants and acceptance* above for what each pins and the one place the
+  design had to bend (`checkNoInteriorVertex` cannot use a coordinator).
+- `tests/test_refine_conforming.cpp` + registration (`regression`, SERIAL + HIP,
+  ranks 1–5).
 
-Have the test **print** the closure-face fraction and the `|S|`-pattern histogram per
-round, so Task 8's run yields those numbers without a re-run.
+**Nothing leaked into a caller-visible API.** The red/visible distinction is
+entirely internal: `refine()`'s signature, the mask's indexing (visible faces, as
+before), and every mesh accessor are unchanged, and no existing call site was
+edited. The only additions are the new `RefineResult::closure` member and the
+already-existing `ClosureParent`/`ClosureParentVerts` face slices.
 
-**Report back.** Any place the red-layer/visible-layer distinction leaked into a
-caller-visible API; anything in the un-close / mask-translation / close insertion that
-the design section got wrong (and rewrite that section). Closure-face fractions and
-`|S|` distributions are Task 8 measurements.
+**Two things the design section got wrong, now rewritten above.** (1) The face-gid
+block must sit above the max **visible** gid, not the max red gid, to stay monotone
+across rounds — see *Face gid allocation*. (2) The design assumed all four new
+invariant checks could be coordinator-routed; `checkNoInteriorVertex` cannot,
+because positions are not available for the vertices a closure child names.
+
+**Acceptance.** `regression` test `refine_conforming` (SERIAL + HIP, ranks 1–5) —
+written and compiled, **not run** (handoff contract). It pins:
+
+- **three successive adaptive rounds** (`gid % 7`, then `gid % 5` twice) with
+  `checkConforming`, owned Euler `== 2`, `checkNoInteriorVertex`,
+  `checkOwnershipPartition`, `checkMidpointAgreement`, `check21BalanceRed`,
+  `checkClosureInverse`, fixpoint termination, and `RefineResult::closure.nVisible`
+  agreeing with the mesh's global owned-face count;
+- **non-vacuity, twice over**: closure children must actually be emitted
+  (`totalClosure > 0`), *and* the identical mask sequence is run on a
+  `HangingNode2to1` mesh as a control whose conformity checks must **fail** —
+  otherwise a mask too weak to create a hanging node would prove nothing. Both are
+  hard failures, not warnings;
+- **empty mask**: V/E/F counts *and* all three gid checksums unchanged, no closure
+  children, no midpoints, Euler 2 — i.e. the closure is the identity on an
+  already-closed mesh;
+- **full (uniform) mask**: no kept faces ⇒ `|S| = 0` everywhere ⇒ no closure
+  children, and the global V/E/F must equal a `HangingNode2to1` mesh's under the
+  same mask. A mismatch means the closure fired when it should have been inert.
+
+It prints per round: the `|S|` histogram, closure-face count and fraction, both
+blue-diagonal tallies, and the control mesh's Euler / bad-incidence / T-junction
+figures.
+
+**Report back.** *(delivered — see above. Short version: nothing leaked into a
+caller-visible API; the two design errors were the gid-allocation bound and the
+assumption that every new invariant could be coordinator-routed; and the one
+hazard found outside the refine path was `distribute()` leaving the closure
+members zero-filled.)*
 
 ---
 
@@ -1068,6 +1157,23 @@ so collect them from the run output rather than re-running:
   `. /usr/WS2/stewartj/spack/share/spack/setup-env.sh` sourced first even under
   `bash -lc`. `clang-format` is clean on both touched files under **both** the v21
   (`/usr/bin`) and v19 (`/opt/rocm-6.4.2/llvm/bin`) binaries on this machine.
+- 2026-07-31 — **Task 4 landed — the milestone.** Distributed conforming
+  refinement works. `detail::refineHangingNode()` became `detail::refineImpl()`,
+  shared by both modes: a red-layer snapshot (`fV`/`fG`/`fL`/`fSrc`, `nRedF`) plus
+  a red-indexed `mark` replaced the owned-face snapshot, and four
+  `if constexpr ( kConforming )` blocks add un-close, mask translation, close, and
+  the widened face-gid exscan. `RefineResult::closure` publishes the `ClosureStats`.
+  Two design corrections, both folded into the sections above: the gid block must
+  sit above the max **visible** face gid (monotone across rounds), and
+  `checkNoInteriorVertex` cannot be coordinator-routed because a closure child may
+  name a vertex whose position no rank but its owner holds — it replicates to rank
+  0 instead. One hazard found outside the refine path: **`distribute()` builds a
+  fresh face AoSoA and so left the closure members zero-filled**; it now calls
+  `initClosureFaceMembers()`. `tests/test_refine_conforming.cpp` registered
+  `regression` SERIAL + HIP ranks 1–5, with a `HangingNode2to1` control mesh run on
+  the same mask as a hard non-vacuity guard. Whole suite (including every HIP
+  target) compiles clean; `clang-format` clean on all five touched files under both
+  the v21 (`/usr/bin`) and v19 (`/opt/rocm-6.4.2/llvm/bin`) binaries.
 - 2026-07-31 — Audited every task's Acceptance / Report-back for consistency with the
   no-test rule: dropped the "gate green" claims from Tasks 2–7, moved all
   runtime-measurement report-back items into a deferred-measurements table in Task 8,

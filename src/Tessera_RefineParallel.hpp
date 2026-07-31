@@ -18,6 +18,7 @@
 #include "Tessera_Mesh.hpp"
 #include "Tessera_Profiling.hpp"
 #include "Tessera_Refine.hpp"
+#include "Tessera_RefineClosure.hpp"
 #include "Tessera_RefinePolicy.hpp"
 #include "Tessera_Types.hpp"
 
@@ -106,6 +107,13 @@ struct RefineResult
     //! Of those, the ones from refining faces — i.e. the pre-Task-3 Phase-2a
     //! volume. `phase2Adverts - phase2AdvertsRefining` is the added traffic.
     long long phase2AdvertsRefining = 0;
+    //! RefinementMode::Conforming only: this rank's closure diagnostics for the
+    //! step-3b pass — the |S| histogram over the post-split red layer, the
+    //! visible / closure-child counts, and the two blue-diagonal tallies. Left
+    //! zeroed in RefinementMode::HangingNode2to1 (there is no closure layer).
+    //! Published so a test can report the closure-face fraction and the pattern
+    //! distribution without instrumenting the library at the call site.
+    ClosureStats closure;
 };
 
 namespace detail
@@ -166,14 +174,41 @@ struct EdgeOwnMsg
     Level level;
 };
 
-//! RefinementMode::HangingNode2to1 implementation of refine(). Called through
-//! the refine() dispatcher below; see the header comment for the algorithm,
+//! Implementation of refine() for BOTH refinement modes. Called through the
+//! refine() dispatcher below; see the header comment for the algorithm,
 //! guarantees, and the (deferred) halo.
+//!
+//! The two modes share phases 1-3 verbatim: conforming refinement is a closure
+//! pass wrapped around the same 2:1-balanced red engine, not a fork of it. What
+//! `if constexpr ( Conforming )` adds is three purely local, communication-free
+//! steps and one widened count:
+//!
+//!   0.  UN-CLOSE   the mesh's VISIBLE faces back to the persistent RED layer,
+//!                  which is the input phases 1-3 have always expected. A
+//!                  closure child names its retired red parent outright, so this
+//!                  is a per-face operation with no sibling lookup.
+//!   0b. TRANSLATE  `mask` from visible-face indexing (what markByQuality and
+//!                  every caller produce) to red-face indexing: a red parent is
+//!                  marked iff ANY of its closure children was.
+//!   3b. CLOSE      every KEPT red face whose edges a neighbour just bisected,
+//!                  using the split-edge map Phase 2 publishes. Red children of
+//!                  a face refined in THIS round always have |S| = 0 (all three
+//!                  of their edges are new), which closeFaces() asserts.
+//!   3c. the single face-gid MPI_Exscan additionally covers the closure
+//!                  children -- countClosureChildren() supplies that count from
+//!                  the post-split red topology, before any gid is handed out.
+//!
+//! In HangingNode2to1 mode the red layer IS the visible layer, the mask needs no
+//! translation, and the "closure" is the identity, so the same code path degrades
+//! to exactly the pre-conforming behaviour with no extra work and no extra
+//! messages.
 template <class MeshT, class Policy>
-RefineResult
-refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
-                   const std::vector<char>& mask, const Policy& policy )
+RefineResult refineImpl( MeshT& mesh,
+                         MeshHalo<typename MeshT::memory_space>& halo,
+                         const std::vector<char>& mask, const Policy& policy )
 {
+    constexpr bool kConforming =
+        ( MeshT::refinement_mode == RefinementMode::Conforming );
     TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_REFINE );
     using memory_space = typename MeshT::memory_space;
     using Scalar = typename MeshT::scalar_type;
@@ -206,26 +241,80 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     for ( int i = 0; i < nv; ++i )
         gid2lv[v_gid( i )] = i;
 
-    // owned-face topology snapshot
-    std::vector<std::array<GlobalId, 3>> fV( nOwnedF );
-    std::vector<GlobalId> fG( nOwnedF );
-    std::vector<Level> fL( nOwnedF );
-    for ( int f = 0; f < nOwnedF; ++f )
-    {
-        for ( int k = 0; k < 3; ++k )
-            fV[f][k] = f_verts( f, k );
-        fG[f] = f_gid( f );
-        fL[f] = f_lev( f );
-    }
     auto keyOf = []( GlobalId a, GlobalId b ) { return makeEdgeKey( a, b ); };
 
-    // ---- Phase 1: 2:1 mark-propagation fixpoint -----------------------------
-    std::vector<char> mark( nOwnedF, 0 );
-    for ( int f = 0; f < nOwnedF && f < static_cast<int>( mask.size() ); ++f )
-        mark[f] = mask[f] ? 1 : 0;
-    std::unordered_map<GlobalId, int> gid2of; // owned face gid -> index
-    gid2of.reserve( nOwnedF * 2 );
+    // New face gids are allocated above the global max of the PRE-REFINE
+    // VISIBLE face gids — not above the face count, and not above the max RED
+    // gid. A refined parent's gid is retired (replaced by 4 children) and, in
+    // Conforming mode, so is a closed parent's (it lives on only in its
+    // children's ClosureParent field), so live gids are sparse and the max
+    // exceeds the count. Taking the max over the visible layer — which contains
+    // every red gid plus the closure children's, allocated above them — makes
+    // the bound monotone across rounds, so no allocation can ever collide with
+    // a gid that is still referenced.
+    long long localMaxF = -1;
     for ( int f = 0; f < nOwnedF; ++f )
+        localMaxF = std::max( localMaxF, static_cast<long long>( f_gid( f ) ) );
+
+    // ---- steps 0 / 0b: the RED-layer snapshot phases 1-3 operate on ---------
+    // fV / fG / fL are the red faces; fSrc[r] is the row of `hf` that supplies
+    // red face r's face USER fields. In HangingNode2to1 mode the red layer is
+    // the visible layer and this is the identity snapshot; in Conforming mode it
+    // is the un-close of the transient closure layer, and `mark` is the caller's
+    // visible-face mask translated onto it.
+    std::vector<std::array<GlobalId, 3>> fV;
+    std::vector<GlobalId> fG;
+    std::vector<Level> fL;
+    std::vector<int> fSrc;
+    std::vector<char> mark;
+
+    if constexpr ( kConforming )
+    {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_REFINE_UNCLOSE );
+        const std::vector<VisibleFace> visible =
+            readVisibleFaces<MeshT>( hf, static_cast<std::size_t>( nOwnedF ) );
+        const UncloseResult un = unclose( visible );
+        const int nRed = static_cast<int>( un.red.size() );
+        fV.resize( nRed );
+        fG.resize( nRed );
+        fL.resize( nRed );
+        fSrc.resize( nRed );
+        for ( int r = 0; r < nRed; ++r )
+        {
+            for ( int k = 0; k < 3; ++k )
+                fV[r][k] = un.red[r].v[k];
+            fG[r] = un.red[r].gid;
+            fL[r] = un.red[r].level;
+            fSrc[r] = un.sourceVisible[r];
+        }
+        mark = translateMask( mask, un );
+    }
+    else
+    {
+        fV.resize( nOwnedF );
+        fG.resize( nOwnedF );
+        fL.resize( nOwnedF );
+        fSrc.resize( nOwnedF );
+        mark.assign( nOwnedF, 0 );
+        for ( int f = 0; f < nOwnedF; ++f )
+        {
+            for ( int k = 0; k < 3; ++k )
+                fV[f][k] = f_verts( f, k );
+            fG[f] = f_gid( f );
+            fL[f] = f_lev( f );
+            fSrc[f] = f;
+            if ( f < static_cast<int>( mask.size() ) )
+                mark[f] = mask[f] ? 1 : 0;
+        }
+    }
+    //! Number of RED faces this rank owns — what phases 1-3 iterate over.
+    const int nRedF = static_cast<int>( fV.size() );
+
+    // ---- Phase 1: 2:1 mark-propagation fixpoint -----------------------------
+    std::unordered_map<GlobalId, int> gid2of; // owned red face gid -> index
+    gid2of.reserve( nRedF * 2 );
+    for ( int f = 0; f < nRedF; ++f )
         gid2of[fG[f]] = f;
 
     const int kCap = 256;
@@ -240,7 +329,7 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                 TESSERA_SCOPED_TIMER_VERBOSE(
                     ::Tessera::Profiling::TIMER_REFINE_ADVERTISE );
                 std::vector<std::vector<detail::PropMsg>> toCoord( size );
-                for ( int f = 0; f < nOwnedF; ++f )
+                for ( int f = 0; f < nRedF; ++f )
                     for ( int k = 0; k < 3; ++k )
                     {
                         const EdgeKey key =
@@ -302,7 +391,7 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     //     assignment, its count, and hence every vertex gid are unchanged.
     {
         std::vector<std::vector<detail::OwnerMsg>> toCoord( size );
-        for ( int f = 0; f < nOwnedF; ++f )
+        for ( int f = 0; f < nRedF; ++f )
         {
             const unsigned char ref = mark[f] ? 1 : 0;
             for ( int k = 0; k < 3; ++k )
@@ -465,45 +554,36 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         mesh.resizeVertices( nNewV );
         Cabana::deep_copy( mesh.vertices(), lv );
 
-        // 3b. new owned faces: kept (retain gid) + 4 children (new gids).
-        //
-        // Child gids are appended above the current global MAX face gid, not
-        // above the face COUNT: a refined parent's gid is retired (it is replaced
-        // by 4 children), so after any round the live gids are sparse and the max
-        // exceeds the count. Basing new gids on the count would collide with the
-        // previous round's high-numbered children on a later refine (surfacing as
-        // duplicate face gids once migrate() brings two ranks' faces together).
-        long long localMaxF = -1;
-        for ( int f = 0; f < nOwnedF; ++f )
-            localMaxF = std::max( localMaxF, static_cast<long long>( fG[f] ) );
-        long long globalMaxF = -1;
-        MPI_Allreduce( &localMaxF, &globalMaxF, 1, MPI_LONG_LONG, MPI_MAX,
-                       comm );
+        // 3b. red 1->4 split: kept faces retain their gid, refined faces are
+        //     replaced by 4 children. TOPOLOGY FIRST — the gids come from the
+        //     exscan below, which in Conforming mode must also cover the closure
+        //     children, and their count is a function of exactly this topology
+        //     plus the split-edge map. Corner gids do not depend on face gids,
+        //     so the ordering costs nothing.
+        std::vector<RedFace> newRed;  // the post-split red layer
+        std::vector<char> freshChild; // parallel: created by THIS round's split
+        std::vector<int> newRedSrc;   // parallel: `hf` row with the user fields
+        newRed.reserve( static_cast<std::size_t>( nRedF ) );
+        freshChild.reserve( static_cast<std::size_t>( nRedF ) );
+        newRedSrc.reserve( static_cast<std::size_t>( nRedF ) );
         int nRefining = 0;
-        for ( int f = 0; f < nOwnedF; ++f )
-            nRefining += mark[f] ? 1 : 0;
-        long long myChild = 4LL * nRefining;
-        long long childBase = 0;
-        MPI_Exscan( &myChild, &childBase, 1, MPI_LONG_LONG, MPI_SUM, comm );
-        if ( R == 0 )
-            childBase = 0;
-        GlobalId childGid = static_cast<GlobalId>( globalMaxF + 1 + childBase );
-
-        std::vector<std::array<GlobalId, 3>> nFV;
-        std::vector<GlobalId> nFG;
-        std::vector<Level> nFL;
-        std::vector<int> nFParent;
-        for ( int f = 0; f < nOwnedF; ++f )
+        for ( int f = 0; f < nRedF; ++f )
         {
             const GlobalId a = fV[f][0], b = fV[f][1], c = fV[f][2];
             if ( !mark[f] )
             {
-                nFV.push_back( { a, b, c } );
-                nFG.push_back( fG[f] );
-                nFL.push_back( fL[f] );
-                nFParent.push_back( f );
+                RedFace rf;
+                rf.v[0] = a;
+                rf.v[1] = b;
+                rf.v[2] = c;
+                rf.gid = fG[f];
+                rf.level = fL[f];
+                newRed.push_back( rf );
+                freshChild.push_back( 0 );
+                newRedSrc.push_back( fSrc[f] );
                 continue;
             }
+            ++nRefining;
             const GlobalId ab = midOf( a, b );
             const GlobalId bc = midOf( b, c );
             const GlobalId ca = midOf( c, a );
@@ -512,15 +592,78 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
             const Level clev = static_cast<Level>( fL[f] + 1 );
             for ( const auto& q : ch )
             {
-                nFV.push_back( q );
-                nFG.push_back( childGid++ );
-                nFL.push_back( clev );
-                nFParent.push_back( f );
+                RedFace rf;
+                for ( int k = 0; k < 3; ++k )
+                    rf.v[k] = q[k];
+                rf.gid = invalid_gid; // assigned from the exscan block below
+                rf.level = clev;
+                newRed.push_back( rf );
+                freshChild.push_back( 1 );
+                newRedSrc.push_back( fSrc[f] );
             }
         }
-        const int nNewF = static_cast<int>( nFV.size() );
 
-        // 3c. re-derive edges from the new owned faces (dedup by EdgeKey).
+        // 3c. face-gid allocation: ONE exscan over a contiguous global block
+        //     above the global max face gid, covering this rank's fresh red
+        //     children AND (Conforming only) its closure children.
+        long long globalMaxF = -1;
+        MPI_Allreduce( &localMaxF, &globalMaxF, 1, MPI_LONG_LONG, MPI_MAX,
+                       comm );
+        long long nClosureNew = 0;
+        if constexpr ( kConforming )
+            nClosureNew = static_cast<long long>(
+                countClosureChildren( newRed, midGid ) );
+        long long myChild = 4LL * nRefining + nClosureNew;
+        long long childBase = 0;
+        MPI_Exscan( &myChild, &childBase, 1, MPI_LONG_LONG, MPI_SUM, comm );
+        if ( R == 0 )
+            childBase = 0;
+        GlobalId childGid = static_cast<GlobalId>( globalMaxF + 1 + childBase );
+        for ( std::size_t i = 0; i < newRed.size(); ++i )
+            if ( freshChild[i] )
+                newRed[i].gid = childGid++;
+        // childGid now names the first gid of this rank's closure-child block.
+
+        // 3b'. CLOSE (Conforming only): retriangulate every kept red face whose
+        //      edges a neighbour bisected, so the VISIBLE layer has no
+        //      T-junctions. Purely local: a face is owned by exactly one rank
+        //      and the closure creates no vertices, so nothing is communicated.
+        //      In HangingNode2to1 mode the visible layer IS the red layer.
+        std::vector<VisibleFace> newVis;
+        std::vector<int> visSrc; // parallel: `hf` row with the user fields
+        if constexpr ( kConforming )
+        {
+            TESSERA_SCOPED_TIMER_DETAILED(
+                ::Tessera::Profiling::TIMER_REFINE_CLOSE );
+            CloseResult cl;
+            {
+                TESSERA_SCOPED_TIMER_VERBOSE(
+                    ::Tessera::Profiling::TIMER_REFINE_CLOSURE_PATTERNS );
+                cl = closeFaces( newRed, midGid, childGid, freshChild );
+            }
+            result.closure = cl.stats;
+            newVis = std::move( cl.visible );
+            visSrc.reserve( newVis.size() );
+            for ( std::size_t i = 0; i < cl.sourceRed.size(); ++i )
+                visSrc.push_back( newRedSrc[cl.sourceRed[i]] );
+        }
+        else
+        {
+            newVis.reserve( newRed.size() );
+            for ( std::size_t i = 0; i < newRed.size(); ++i )
+            {
+                VisibleFace vf;
+                for ( int k = 0; k < 3; ++k )
+                    vf.v[k] = newRed[i].v[k];
+                vf.gid = newRed[i].gid;
+                vf.level = newRed[i].level;
+                newVis.push_back( vf ); // parent stays invalid_gid
+            }
+            visSrc = newRedSrc;
+        }
+        const int nNewF = static_cast<int>( newVis.size() );
+
+        // 3d. re-derive edges from the new VISIBLE faces (dedup by EdgeKey).
         std::map<EdgeKey, int> edge_of;
         std::vector<std::array<GlobalId, 2>> ep;
         std::vector<std::array<int, 2>> efLocal; // incident local face indices
@@ -528,7 +671,8 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         for ( int f = 0; f < nNewF; ++f )
             for ( int k = 0; k < 3; ++k )
             {
-                const EdgeKey key = keyOf( nFV[f][k], nFV[f][( k + 1 ) % 3] );
+                const EdgeKey key =
+                    keyOf( newVis[f].v[k], newVis[f].v[( k + 1 ) % 3] );
                 auto it = edge_of.find( key );
                 int e;
                 if ( it == edge_of.end() )
@@ -548,15 +692,15 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
             }
         const int nLocalE = static_cast<int>( ep.size() );
 
-        // 3d. edge ownership + level via coordinator (min incident child-face
-        //     owner / level). Every edge is owned by exactly one rank globally.
+        // 3e. edge ownership + level via coordinator (min incident face owner /
+        //     level). Every edge is owned by exactly one rank globally.
         std::vector<std::vector<detail::EdgeOwnMsg>> toEC( size );
         for ( int e = 0; e < nLocalE; ++e )
         {
             const EdgeKey key = keyOf( ep[e][0], ep[e][1] );
-            Level lv0 = nFL[efLocal[e][0]];
+            Level lv0 = newVis[efLocal[e][0]].level;
             if ( efLocal[e][1] >= 0 )
-                lv0 = std::min( lv0, nFL[efLocal[e][1]] );
+                lv0 = std::min( lv0, newVis[efLocal[e][1]].level );
             toEC[detail::edgeCoordRank( key, size )].push_back(
                 { key, static_cast<Rank>( R ), lv0 } );
         }
@@ -590,7 +734,7 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         for ( const auto& m : ecRes.data )
             edgeOwner[m.key] = { m.owner, m.level };
 
-        // 3e. order edges owned-first, assign globally-unique gids (exscan over
+        // 3f. order edges owned-first, assign globally-unique gids (exscan over
         //     local edge count; boundary edges carry distinct gids per rank but
         //     are matched by EdgeKey and counted once via the owner field).
         std::vector<int> order; // local edge indices, owned first
@@ -624,7 +768,7 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
             newIndexOf[e] = li;
         }
 
-        // 3f. materialize the edge AoSoA (owned-first).
+        // 3g. materialize the edge AoSoA (owned-first).
         {
             TESSERA_SCOPED_TIMER_DETAILED(
                 ::Tessera::Profiling::TIMER_REFINE_REBUILD );
@@ -644,17 +788,17 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                 lev( li ) = edgeOwner[key].second;
                 verts( li, 0 ) = ep[e][0];
                 verts( li, 1 ) = ep[e][1];
-                // Incident faces: local child gids; the cross-rank second face is
-                // filled when the halo is rebuilt (Step 7).
-                faces( li, 0 ) = nFG[efLocal[e][0]];
-                faces( li, 1 ) =
-                    efLocal[e][1] >= 0 ? nFG[efLocal[e][1]] : invalid_gid;
+                // Incident faces: local visible-face gids; the cross-rank second
+                // face is filled when the halo is rebuilt (Step 7).
+                faces( li, 0 ) = newVis[efLocal[e][0]].gid;
+                faces( li, 1 ) = efLocal[e][1] >= 0 ? newVis[efLocal[e][1]].gid
+                                                    : invalid_gid;
             }
             mesh.resizeEdges( nLocalE );
             Cabana::deep_copy( mesh.edges(), le );
         }
 
-        // 3g. materialize the face AoSoA (edges now have gids).
+        // 3h. materialize the VISIBLE face AoSoA (edges now have gids).
         {
             TESSERA_SCOPED_TIMER_DETAILED(
                 ::Tessera::Profiling::TIMER_REFINE_REBUILD );
@@ -667,18 +811,23 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
             auto edges = Cabana::slice<FaceField::Edges>( lf );
             for ( int f = 0; f < nNewF; ++f )
             {
-                gid( f ) = nFG[f];
+                gid( f ) = newVis[f].gid;
                 own( f ) = static_cast<Rank>( R );
-                lev( f ) = nFL[f];
+                lev( f ) = newVis[f].level;
                 for ( int k = 0; k < 3; ++k )
                 {
-                    verts( f, k ) = nFV[f][k];
+                    verts( f, k ) = newVis[f].v[k];
                     edges( f, k ) = edgeGid[faceEdge[f][k]];
                 }
+                // User fields chase the provenance visible face -> its red face
+                // -> the pre-call visible row that red face's fields came from.
                 copyUserFieldsN<
                     FaceField::UserBegin,
                     numFaceUserFields<typename MeshT::face_user_fields>()>(
-                    lf, f, hf, nFParent[f] );
+                    lf, f, hf, visSrc[f] );
+                // ClosureParent / ClosureParentVerts; no-op in HangingNode2to1.
+                writeClosureFace<MeshT>( lf, static_cast<std::size_t>( f ),
+                                         newVis[f] );
             }
             mesh.resizeFaces( nNewF );
             Cabana::deep_copy( mesh.faces(), lf );
@@ -687,7 +836,7 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         // owned-only mesh: every local entity is owned.
         mesh.setOwnedCounts( nNewV, nOwnedE, nNewF );
 
-        // 3h. rebuild key side tables.
+        // 3i. rebuild key side tables.
         {
             TESSERA_SCOPED_TIMER_DETAILED(
                 ::Tessera::Profiling::TIMER_REFINE_REBUILD );
@@ -705,15 +854,21 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                 nNewF );
             auto h_fk = Kokkos::create_mirror_view( fk );
             for ( int f = 0; f < nNewF; ++f )
-                h_fk( f ) = makeFaceKey( nFV[f][0], nFV[f][1], nFV[f][2] );
+                h_fk( f ) = makeFaceKey( newVis[f].v[0], newVis[f].v[1],
+                                         newVis[f].v[2] );
             Kokkos::deep_copy( fk, h_fk );
             mesh.setFaceKeys( fk );
         }
 
-        // 3i. best-effort owned-vertex 1-ring CSR over LOCAL faces/edges. It is
+        // 3j. best-effort owned-vertex 1-ring CSR over LOCAL faces/edges. It is
         //     incomplete at partition boundaries (ghost faces/edges are dropped
         //     until the Step-7 halo rebuild); provided so the container is not
-        //     stale rather than as a complete 1-ring.
+        //     stale rather than as a complete 1-ring. The gid2nv lookups are
+        //     GUARDED because a face may legitimately name a vertex this rank
+        //     does not hold — always true across a partition boundary, and in
+        //     Conforming mode also true of a closure child, whose midpoint
+        //     corner is owned by the refining neighbour. The halo rebuild inside
+        //     migrate() brings those in.
         std::unordered_map<GlobalId, int> gid2nv;
         gid2nv.reserve( nNewV * 2 );
         {
@@ -726,7 +881,7 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
             for ( int f = 0; f < nNewF; ++f )
                 for ( int k = 0; k < 3; ++k )
                 {
-                    auto it = gid2nv.find( nFV[f][k] );
+                    auto it = gid2nv.find( newVis[f].v[k] );
                     if ( it != gid2nv.end() )
                         ++off[it->second + 1];
                 }
@@ -737,7 +892,7 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
             for ( int f = 0; f < nNewF; ++f )
                 for ( int k = 0; k < 3; ++k )
                 {
-                    auto it = gid2nv.find( nFV[f][k] );
+                    auto it = gid2nv.find( newVis[f].v[k] );
                     if ( it != gid2nv.end() )
                         nbr[cur[it->second]++] = static_cast<LocalIndex>( f );
                 }
@@ -784,32 +939,24 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
 //! Distributed 2:1-balanced red refinement of the owned faces flagged in `mask`.
 //! See the header comment for the algorithm, guarantees, and the (deferred) halo.
 //!
-//! Dispatches on MeshT::refinement_mode. RefinementMode::Conforming additionally
-//! un-closes the transient closure layer (and translates `mask` from visible to
-//! red faces) before the phases below, then re-closes every kept red face — Task
-//! 4 of tasks/conforming-refinement.md, not implemented yet.
+//! `mask` is indexed by this rank's owned faces as the CALLER sees them — i.e.
+//! the VISIBLE faces, which in RefinementMode::Conforming are the closure layer.
+//! The mode branch lives inside detail::refineImpl(); see its comment for the
+//! three steps conforming refinement adds (un-close, mask translation, close)
+//! and why phases 1-3 are shared verbatim.
+//!
+//! RefinementMode::Conforming post-conditions, beyond the hanging-node ones:
+//! every edge of the global visible mesh has exactly two incident faces and the
+//! owned-only Euler number is 2 for an ARBITRARY (not just uniform) mask. Face
+//! `Level` remains the RED level — a closure child carries its parent's — so in
+//! this mode `Level` no longer maps 1:1 to triangle size.
 template <class MeshT,
           class Policy = DefaultRefinePolicy<typename MeshT::scalar_type>>
 RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                      const std::vector<char>& mask,
                      const Policy& policy = Policy{} )
 {
-    if constexpr ( MeshT::refinement_mode == RefinementMode::Conforming )
-    {
-        (void)mesh;
-        (void)halo;
-        (void)mask;
-        (void)policy;
-        Kokkos::abort( "Tessera::refine: RefinementMode::Conforming is not "
-                       "implemented yet (the distributed closure is Task 4 of "
-                       "tasks/conforming-refinement.md). Instantiate the mesh "
-                       "with RefinementMode::HangingNode2to1 for now." );
-        return RefineResult{};
-    }
-    else
-    {
-        return detail::refineHangingNode( mesh, halo, mask, policy );
-    }
+    return detail::refineImpl( mesh, halo, mask, policy );
 }
 
 } // namespace Tessera

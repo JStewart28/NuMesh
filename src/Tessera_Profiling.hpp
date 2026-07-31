@@ -81,6 +81,10 @@ static constexpr const char* TIMER_MARK_CURVATURE = "mark_curvature";
 static constexpr const char* TIMER_REFINE_BALANCE = "refine_2to1_balance";
 static constexpr const char* TIMER_REFINE_MIDPOINT = "refine_midpoint_gids";
 static constexpr const char* TIMER_REFINE_REBUILD = "refine_local_rebuild";
+// RefinementMode::Conforming only: the transient closure layer is discarded
+// (step 0) and rebuilt (step 3b) on every refine call. Both are purely local.
+static constexpr const char* TIMER_REFINE_UNCLOSE = "refine_unclose";
+static constexpr const char* TIMER_REFINE_CLOSE = "refine_close";
 
 // Level 2 — migrate() rounds.
 static constexpr const char* TIMER_MIGRATE_GATHER = "migrate_round_g_gather";
@@ -112,6 +116,9 @@ static constexpr const char* TIMER_LB_SOLVE = "lb_zoltan2_solve";
 static constexpr const char* TIMER_REFINE_ADVERTISE =
     "refine_advertise_alltoallv";
 static constexpr const char* TIMER_REFINE_MARKREQ = "refine_markreq_alltoallv";
+//! The green/blue/red pattern application itself, inside TIMER_REFINE_CLOSE.
+static constexpr const char* TIMER_REFINE_CLOSURE_PATTERNS =
+    "refine_closure_patterns";
 static constexpr const char* TIMER_MARK_EDGE_KERNEL = "mark_edge_length_kernel";
 static constexpr const char* TIMER_MARK_CURV_KERNEL =
     "mark_curvature_normals_kernel";

@@ -430,6 +430,32 @@ tessera_add_test(
     SOURCES  test_refine_splitedges.cpp
 )
 
+# Distributed CONFORMING refinement (conforming refinement, Task 4) -- the
+# milestone test for the feature. Over three successive ADAPTIVE rounds: every
+# global edge has exactly two incident faces, owned-only Euler V-E+F == 2 (the
+# criterion the hanging-node mode fails under an adaptive mask), no vertex
+# strictly inside an edge, ownership still a partition, midpoint gids still
+# agreed cross-rank, 2:1 balance on the RED layer, and unclose o close reproducing
+# the visible and red layers bit-for-bit. The same mask is run on a
+# HangingNode2to1 mesh as a non-vacuity control and MUST fail the conformity
+# checks there. Plus the degenerate empty-mask (identity) and full-mask (no kept
+# faces, so the closure is inert and the counts equal the hanging-node mode's)
+# cases. Prints the closure-face fraction and |S| histogram per round.
+tessera_add_test(
+    NAME     refine_conforming
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_refine_conforming.cpp
+)
+tessera_add_test(
+    NAME     refine_conforming
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_refine_conforming.cpp
+)
+
 # Internal Zoltan2 loadBalance() (Step 7b): rebalancing a deliberately
 # maximally-imbalanced mesh reduces the max-owned-face imbalance while
 # preserving every migrate() distribution invariant and the rank-count-

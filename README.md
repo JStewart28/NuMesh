@@ -291,11 +291,15 @@ make -j $(nproc)
   refine mask leaves T-junctions bounded to a 2:1 level jump; the owned-only Euler
   number equals 2 only for a uniform (conforming) refine. A fully conforming
   triangulation is **in progress**: `Mesh`'s optional 8th template parameter
-  `RefinementMode` now exists, and `RefinementMode::Conforming` selects a face
-  layout carrying the closure bookkeeping members — but the closure itself is not
-  implemented, so `refine()`/`refineLocal()` on a `Conforming`-typed mesh abort
-  with a "not implemented" diagnostic. `RefinementMode::HangingNode2to1` (the
-  current default, and the only mode any test or example uses) is unaffected. See
+  `RefinementMode` selects it, and both `refineLocal()` and the distributed
+  `refine()` now implement `RefinementMode::Conforming` — a transient
+  red–green–blue closure over the same 2:1-balanced red layer, under which the
+  owned-only Euler number is 2 for an arbitrary adaptive mask. Still outstanding:
+  `migrate()`/`loadBalance()` on a closed mesh, HDF5 round-trip of the closure
+  bookkeeping fields, and the dedicated conforming test suite. **None of the
+  conforming code has been executed yet** — the whole feature is verified in one
+  pass at the end of the plan. `RefinementMode::HangingNode2to1` (the current
+  default, and the mode every existing test and example uses) is unaffected. See
   [tasks/conforming-refinement.md](tasks/conforming-refinement.md) for the design
   and remaining tasks.
 - **`buildVertexStencil(mesh, 2)` (k=2) is incomplete within one hop of a partition

@@ -197,12 +197,10 @@ size the loop with `numFaceUserFields<FaceUserFields>()` rather than
 `face_member_types::size - FaceField::UserBegin`, which over-counts by two in
 `Conforming` mode.
 
-`refine()` and `refineLocal()` dispatch on `MeshT::refinement_mode` with
-`if constexpr`. `refineLocal()`'s `Conforming` branch is implemented
-(`src/Tessera_RefineClosure.hpp` — un-close → red split → close, single rank);
-**the distributed `refine()`'s `Conforming` branch is still a stub that aborts**.
-Its prerequisite, complete cross-rank split-edge discovery, is in place (see
-Phase 2 below); the closure wiring, migration, and I/O are staged in
+Both `refineLocal()` and the distributed `refine()` implement `Conforming`
+(`src/Tessera_RefineClosure.hpp` holds the closure kernel; the modes share one
+body in each driver and branch with `if constexpr`). Migration/load balance and
+I/O of a closed mesh are still staged in
 [tasks/conforming-refinement.md](../tasks/conforming-refinement.md), which holds
 the full design. In `Conforming` mode a face's `Level` remains the **red**
 level — a closure child carries its parent's level — so `Level` no longer maps 1:1
@@ -259,6 +257,52 @@ bounded by three messages per *kept* owned face on the first Phase-2 round only;
 no new communication rounds were added. The refined mesh is left holding each rank's owned entities; the 1-deep
 halo is **rebuilt in Step 7** (shared with migration), so `haloExchange()` must not
 run on a freshly-refined mesh until then.
+
+### The closure layer (`Conforming` mode only)
+
+`Conforming` refinement is not a second refinement engine: it is the *same* red
+engine with three purely local, communication-free steps wrapped around it, all
+inside `detail::refineImpl()` under `if constexpr`.
+
+1. **Un-close.** The mesh's *visible* faces are collapsed back to the persistent
+   red layer, which is the input phases 1–3 have always expected. Each closure
+   child stores its retired red parent's gid and corner gids outright
+   (`ClosureParent` / `ClosureParentVerts`), so this is per-face with no sibling
+   lookup and never discards a vertex.
+2. **Mask translation.** The caller's mask — and `markByQuality`'s output — is
+   indexed by *visible* owned faces; a red parent is marked iff **any** of its
+   closure children was.
+3. **Close.** After the red 1→4 split, every **kept** red face is retriangulated
+   according to how many of its edges (|S| ∈ {0,1,2,3}) the split-edge map says
+   were bisected: pass-through, green (2 children), blue (3), or red-closure (4).
+   Children inherit the parent's `Level` and face user fields, and the |S| = 3
+   pattern deliberately does *not* promote the face into the red layer. Red
+   children of a face refined in this round always have |S| = 0 — all three of
+   their edges are new — which `closeFaces()` asserts. The blue quad's diagonal
+   is tie-broken on the **lower midpoint gid**, which is globally agreed, so the
+   closure is partition-independent.
+
+The closure creates **no vertices**, so no `MPI_Exscan`, no interpolation, and no
+`RefinePolicy` involvement. The one widened count is the *face*-gid allocation:
+the single existing exscan covers `4·nRefining + countClosureChildren(...)` per
+rank, allocated above the global max **visible** face gid so a retired parent gid
+(reused by the next round's un-close) can never collide.
+
+Consequences worth knowing:
+
+- Live face gids are **sparse**, and a closure child may name a vertex gid the
+  rank does not hold until the halo is rebuilt — the same post-refine gotcha
+  noted below, just with one more source.
+- The 2:1 balance is a property of the **red** layer; check it after un-closing.
+- Face **user** fields on closure faces are the parent's, copied. If a solver
+  writes per-closure-face state, un-close keeps the lowest-gid child's values and
+  discards the rest — the same contract as "edge user fields are reset by
+  `refine()`".
+- Any site that materializes a face AoSoA from scratch rather than copying whole
+  tuples must call `initClosureFaceMembers<MeshT>()`: a Cabana `AoSoA` is
+  zero-initialized, and a zero `ClosureParent` reads as the perfectly valid face
+  gid 0. `buildTriangleMesh()` and `distribute()` do; `migrate()` copies tuples
+  and needs nothing.
 
 The single-rank building block is the free function
 `Tessera::refineLocal(mesh, faceMask, policy = DefaultRefinePolicy)`: it red-splits
