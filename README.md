@@ -294,9 +294,11 @@ make -j $(nproc)
   `RefinementMode` selects it, and both `refineLocal()` and the distributed
   `refine()` now implement `RefinementMode::Conforming` — a transient
   red–green–blue closure over the same 2:1-balanced red layer, under which the
-  owned-only Euler number is 2 for an arbitrary adaptive mask. Still outstanding:
-  `migrate()`/`loadBalance()` on a closed mesh, HDF5 round-trip of the closure
-  bookkeeping fields, and the dedicated conforming test suite. **None of the
+  owned-only Euler number is 2 for an arbitrary adaptive mask. `migrate()` /
+  `loadBalance()` handle a closed mesh (closure siblings are kept co-resident by
+  a local `dest` fixup, and a red parent's children weigh one unit). Still
+  outstanding: HDF5 round-trip of the closure bookkeeping fields, `markByQuality`
+  in conforming mode, and the dedicated conforming test suite. **None of the
   conforming code has been executed yet** — the whole feature is verified in one
   pass at the end of the plan. `RefinementMode::HangingNode2to1` (the current
   default, and the mode every existing test and example uses) is unaffected. See

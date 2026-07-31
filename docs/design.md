@@ -414,6 +414,37 @@ The public contract is **migration**, not partitioning:
   generic multivector constructor (per-dimension arrays), not a fixed 3D x/y/z
   one, so it works for both `Dim=2` and `Dim=3`.
 
+### Redistributing a conforming mesh
+
+In `RefinementMode::Conforming` the faces a partitioner sees are the **visible**
+(closed) faces, and two things follow.
+
+- **Closure siblings must stay co-resident.** A closure child names its retired
+  red parent outright, so un-closing is local *per child* — but if two ranks each
+  hold a child of the same parent, each restores that parent and the red layer
+  gains a duplicated face. `migrate()` therefore runs a local **sibling-cohesion
+  fixup** (round S) before the move: every child follows the **lowest-gid**
+  sibling's destination. A violating `dest` is **repaired, not rejected** —
+  `computeLoadBalance()` partitions by face *centroid* and siblings have
+  different centroids, so Zoltan2 scatters them routinely; rejecting would make
+  `loadBalance()` unusable on a conforming mesh, and pushing the repair onto
+  callers would duplicate it at each one. The tie-break reads only globally
+  agreed gids, so the repair does not reintroduce partition dependence. The
+  number of `dest` entries overridden is returned in `MigrateStats`
+  (`migrate()` and `loadBalance()` now return one; existing call sites that
+  ignore the value are unaffected).
+- **A red parent is one unit of work.** `ownedFaceWeights()` gives a closure
+  child weight `1/nsiblings` and a passed-through red face weight `1.0`, so the
+  total weight is the **red**-face count and a sibling group weighs 1.0 however
+  it is split. Without this the closure — an O(level-jump-boundary) set that is
+  rebuilt on every refine — would masquerade as real load and pull parts toward
+  refinement fronts. The per-owned-face-in-local-index-order contract is
+  unchanged; only the values differ, and only in `Conforming` mode.
+
+The halo rebuild itself needs nothing new: on a conforming mesh every edge has
+exactly two incident faces, so the 1-ring closure round D performs is cleaner,
+not harder.
+
 ## Parallel I/O
 
 Mesh connectivity and any per-vertex/edge/face fields are written with **manual

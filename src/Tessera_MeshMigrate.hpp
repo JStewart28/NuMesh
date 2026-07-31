@@ -19,6 +19,7 @@
 #include "Tessera_HaloExchange.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_Profiling.hpp"
+#include "Tessera_RefinementMode.hpp"
 #include "Tessera_Types.hpp"
 
 #include <Cabana_Core.hpp>
@@ -62,6 +63,8 @@ namespace Tessera
 // expresses directly.
 //
 // Rounds:
+//   S  (RefinementMode::Conforming only) Sibling-cohesion fixup on `dest`. See
+//      the block comment at the fixup in migrate(); purely local, no comm.
 //   G  Gather referenced-but-non-held tuples. A freshly-refined mesh can hold an
 //      owned face whose vertex/edge is owned elsewhere and held nowhere locally
 //      (refine() ships a midpoint's gid, not its position, and drops the ghost
@@ -148,12 +151,24 @@ struct EdgeInc
 
 } // namespace detail
 
+//! What migrate() had to do beyond applying `dest` verbatim. Returned rather
+//! than logged so a caller/test can assert on it; ignoring it is fine, so every
+//! pre-existing `migrate( mesh, halo, dest )` call site is unaffected.
+struct MigrateStats
+{
+    //! Owned faces whose `dest` entry the sibling-cohesion fixup overrode
+    //! (RefinementMode::Conforming only; always 0 in HangingNode2to1 mode).
+    long long siblingFixups = 0;
+    //! Closure-sibling groups seen locally, i.e. distinct retired parent gids.
+    long long siblingGroups = 0;
+};
+
 //! Migrate owned faces to `dest` (indexed by owned face local index), moving their
 //! vertices/edges + whole field pack, recomputing lowest-rank ownership, and
 //! rebuilding the 1-deep halo. See the header comment for the algorithm.
 template <class MeshT>
-void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
-              const std::vector<Rank>& dest )
+MigrateStats migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
+                      const std::vector<Rank>& dest )
 {
     TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_MIGRATE );
     using memory_space = typename MeshT::memory_space;
@@ -184,6 +199,76 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     auto e_gid = Cabana::slice<EdgeField::Gid>( he );
     auto f_verts = Cabana::slice<FaceField::Verts>( hf );
     auto f_edges = Cabana::slice<FaceField::Edges>( hf );
+
+    // ======================================================================
+    // Round S — sibling-cohesion fixup on `dest` (Conforming mode only).
+    // ======================================================================
+    // A closure child names its retired red parent outright, so un-closing is
+    // local PER CHILD and siblings need not be co-resident for a child to know
+    // its parent. What they must not do is get SPLIT across ranks: unclose()
+    // would then restore the same red parent on two ranks, duplicating a face
+    // and breaking the ownership partition. Co-residency is therefore an
+    // invariant of the conforming mesh, and migrate() is the only thing that
+    // can break it.
+    //
+    // It is REPAIRED, not rejected. A violating `dest` is the normal case, not
+    // an error: computeLoadBalance() partitions by face CENTROID and closure
+    // siblings have different centroids, so Zoltan2 routinely scatters them.
+    // Rejecting would make loadBalance() unusable on a conforming mesh, and
+    // pushing the repair onto every caller would duplicate this loop at each
+    // one. The repair is well-defined and cheap: all children of a parent
+    // follow the LOWEST-GID sibling's destination -- a choice that reads only
+    // globally-agreed gids, so it does not reintroduce partition dependence.
+    // The number of entries overridden is returned in MigrateStats so a caller
+    // that cares (or a test) can see it; a large count means the partitioner's
+    // cost model and the closure disagree, which is what the per-parent weight
+    // in ownedFaceWeights() exists to reduce.
+    //
+    // Purely local: siblings are co-resident on entry (the invariant), so every
+    // group is visible on the one rank that holds it. `destUse` aliases `dest`
+    // untouched in HangingNode2to1 mode -- no copy, no scan.
+    MigrateStats stats;
+    std::vector<Rank> destFixed;
+    if constexpr ( MeshT::refinement_mode == RefinementMode::Conforming )
+    {
+        TESSERA_SCOPED_TIMER_DETAILED(
+            ::Tessera::Profiling::TIMER_MIGRATE_SIBLING );
+        auto f_gid = Cabana::slice<FaceField::Gid>( hf );
+        auto f_parent = Cabana::slice<MeshT::closure_parent_field>( hf );
+
+        // parent gid -> (lowest child gid seen, that child's destination).
+        std::map<GlobalId, std::pair<GlobalId, Rank>> leader;
+        for ( int f = 0; f < nof; ++f )
+        {
+            const GlobalId p = f_parent( f );
+            if ( p == invalid_gid )
+                continue;
+            auto it = leader.find( p );
+            if ( it == leader.end() )
+                leader.emplace( p, std::make_pair( f_gid( f ), dest[f] ) );
+            else if ( f_gid( f ) < it->second.first )
+                it->second = { f_gid( f ), dest[f] };
+        }
+        stats.siblingGroups = static_cast<long long>( leader.size() );
+
+        if ( !leader.empty() )
+        {
+            destFixed = dest;
+            for ( int f = 0; f < nof; ++f )
+            {
+                const GlobalId p = f_parent( f );
+                if ( p == invalid_gid )
+                    continue;
+                const Rank d = leader.at( p ).second;
+                if ( destFixed[f] != d )
+                {
+                    destFixed[f] = d;
+                    ++stats.siblingFixups;
+                }
+            }
+        }
+    }
+    const std::vector<Rank>& destUse = destFixed.empty() ? dest : destFixed;
 
     // gid -> currently-held tuple (owned + any ghost). After refine() a rank can
     // own a face whose vertex/edge is owned by another rank and held nowhere
@@ -289,7 +374,7 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         std::vector<std::vector<detail::TupleBlob<ETuple>>> sendE( size );
         for ( int f = 0; f < nof; ++f )
         {
-            const Rank d = dest[f];
+            const Rank d = destUse[f];
             sendF[d].push_back( detail::toBlob( hf.getTuple( f ) ) );
             for ( int k = 0; k < 3; ++k )
             {
@@ -678,6 +763,8 @@ void migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         comm, R, size, ghosts_of( eord, nOwnedE, eOwner ), e2l );
     halo.fplan = detail::buildKindPlan<memory_space>(
         comm, R, size, ghosts_of( ford, nOwnedF, fOwnerMap ), f2l );
+
+    return stats;
 }
 
 // ============================================================================
@@ -819,13 +906,45 @@ std::vector<GlobalId> ownedFaceGids( const MeshT& mesh )
     return out;
 }
 
-//! Per-owned-face work weight for a partitioner. Milestone 1 treats every leaf
-//! face as one unit of work; a refinement-descendant-aware weight can be layered
-//! in later without changing the migrate()/loadBalance() contract.
+//! Per-owned-face work weight for a partitioner, one entry per OWNED face in
+//! local index order (the contract every caller already relies on -- unchanged).
+//!
+//! A red leaf face is one unit of work. In RefinementMode::Conforming the
+//! VISIBLE faces a partitioner sees include the transient closure children, and
+//! a red parent's 2-4 children are NOT 2-4 units of work: they are one red face
+//! retriangulated, they carry that parent's level and user fields, and
+//! migrate()'s sibling-cohesion fixup will move them as a block regardless of
+//! what the partitioner decides individually. Weighting them 1.0 each would let
+//! the closure -- an O(level-jump-boundary) set that changes shape on every
+//! refine -- masquerade as real load and pull parts toward refinement fronts.
+//!
+//! So each closure child gets 1/(number of siblings) and a passed-through red
+//! face gets 1.0. The total weight is then exactly the red-face count, and the
+//! weight of a sibling group is 1.0 however the group is split -- which is what
+//! makes the post-fixup partition's load equal the load Zoltan2 optimized.
 template <class MeshT>
 std::vector<double> ownedFaceWeights( const MeshT& mesh )
 {
-    return std::vector<double>( mesh.numOwnedFaces(), 1.0 );
+    const std::size_t nof = mesh.numOwnedFaces();
+    std::vector<double> w( nof, 1.0 );
+
+    if constexpr ( MeshT::refinement_mode == RefinementMode::Conforming )
+    {
+        Cabana::AoSoA<typename MeshT::face_member_types, Kokkos::HostSpace> hf(
+            "hf", mesh.numFaces() );
+        Cabana::deep_copy( hf, mesh.faces() );
+        auto f_parent = Cabana::slice<MeshT::closure_parent_field>( hf );
+
+        std::map<GlobalId, int> siblings;
+        for ( std::size_t f = 0; f < nof; ++f )
+            if ( f_parent( f ) != invalid_gid )
+                ++siblings[f_parent( f )];
+        for ( std::size_t f = 0; f < nof; ++f )
+            if ( f_parent( f ) != invalid_gid )
+                w[f] =
+                    1.0 / static_cast<double>( siblings.at( f_parent( f ) ) );
+    }
+    return w;
 }
 
 } // namespace Tessera

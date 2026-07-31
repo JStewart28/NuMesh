@@ -87,6 +87,9 @@ static constexpr const char* TIMER_REFINE_UNCLOSE = "refine_unclose";
 static constexpr const char* TIMER_REFINE_CLOSE = "refine_close";
 
 // Level 2 — migrate() rounds.
+// RefinementMode::Conforming only: the local pre-move pass that makes every
+// closure sibling follow the lowest-gid sibling's destination.
+static constexpr const char* TIMER_MIGRATE_SIBLING = "migrate_sibling_cohesion";
 static constexpr const char* TIMER_MIGRATE_GATHER = "migrate_round_g_gather";
 static constexpr const char* TIMER_MIGRATE_MOVE = "migrate_round_a_move";
 static constexpr const char* TIMER_MIGRATE_OWNERSHIP =

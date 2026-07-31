@@ -679,6 +679,83 @@ int checkClosureInverse(
     }
 }
 
+// Closure siblings are CO-RESIDENT: no retired red parent has children on two
+// ranks. unclose() is local per child, so a split sibling group would have each
+// holding rank restore the SAME red parent -- a duplicated face, a broken
+// ownership partition, and a global face count that grows on every refine.
+// Co-residency holds by construction after refine() (closeFaces() runs on one
+// rank's red layer) and is maintained by migrate()'s sibling-cohesion fixup;
+// this is the check that the fixup actually covered every case.
+//
+// Verified through the same gid coordinator (gid % size) the other partition
+// checks use, so it is rank-count independent and needs no ghost layer. A
+// no-op (0) in HangingNode2to1 mode. Returns LOCAL fails (sum == global).
+template <class MeshT>
+int checkSiblingCoresidency( MeshT& mesh )
+{
+    if constexpr ( MeshT::refinement_mode !=
+                   Tessera::RefinementMode::Conforming )
+    {
+        (void)mesh;
+        return 0;
+    }
+    else
+    {
+        MPI_Comm comm = mesh.comm();
+        const int rank = mesh.rank();
+        const int size = mesh.commSize();
+
+        struct ClaimMsg
+        {
+            GlobalId parent;
+            Rank owner;
+        };
+        std::set<GlobalId> mine;
+        for ( const auto& f : ownedVisibleFaces( mesh ) )
+            if ( f.parent != Tessera::invalid_gid )
+                mine.insert( f.parent );
+
+        std::vector<std::vector<ClaimMsg>> send( size );
+        for ( GlobalId p : mine )
+            send[p % size].push_back( { p, static_cast<Rank>( rank ) } );
+        auto got = Tessera::allToAllV( comm, send );
+
+        std::map<GlobalId, Rank> claimed;
+        int fails = 0;
+        for ( const auto& m : got.data )
+        {
+            auto it = claimed.find( m.parent );
+            if ( it == claimed.end() )
+                claimed.emplace( m.parent, m.owner );
+            else if ( it->second != m.owner )
+                ++fails; // siblings of this parent live on two ranks
+        }
+        return fails;
+    }
+}
+
+// Number of distinct retired red parents this rank holds children of, i.e. the
+// local closure-sibling group count. 0 in HangingNode2to1 mode. Reported by the
+// conforming migrate test so the Task-8 run yields the group/fixup figures.
+template <class MeshT>
+long long closureSiblingGroups( MeshT& mesh )
+{
+    if constexpr ( MeshT::refinement_mode !=
+                   Tessera::RefinementMode::Conforming )
+    {
+        (void)mesh;
+        return 0;
+    }
+    else
+    {
+        std::set<GlobalId> p;
+        for ( const auto& f : ownedVisibleFaces( mesh ) )
+            if ( f.parent != Tessera::invalid_gid )
+                p.insert( f.parent );
+        return static_cast<long long>( p.size() );
+    }
+}
+
 } // namespace TesseraTest
 
 #endif // TESSERA_TEST_MESH_INVARIANTS_HPP

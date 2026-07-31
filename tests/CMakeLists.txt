@@ -456,6 +456,30 @@ tessera_add_test(
     SOURCES  test_refine_conforming.cpp
 )
 
+# migrate() / loadBalance() / halo rebuild on a CONFORMING mesh (conforming
+# refinement, Task 5). A closure child names its retired red parent outright, so
+# splitting a sibling group across ranks would have each holding rank restore
+# the same red face. migrate() repairs `dest` so siblings follow the lowest-gid
+# sibling; this drives that with a deliberately sibling-splitting assignment and
+# with Zoltan2 (which scatters siblings on its own, partitioning by centroid),
+# then re-checks every conforming invariant, the owned 1-ring, the ghost
+# corrupt-resync over the wider conforming face tuple, and the topology
+# checksum. Prints the fixup counts and the pre/post imbalance figures.
+tessera_add_test(
+    NAME     conforming_migrate
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_conforming_migrate.cpp
+)
+tessera_add_test(
+    NAME     conforming_migrate
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_conforming_migrate.cpp
+)
+
 # Internal Zoltan2 loadBalance() (Step 7b): rebalancing a deliberately
 # maximally-imbalanced mesh reduces the max-owned-face imbalance while
 # preserving every migrate() distribution invariant and the rank-count-

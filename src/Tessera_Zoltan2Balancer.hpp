@@ -174,14 +174,21 @@ std::vector<Rank> computeLoadBalance( MeshT& mesh,
 
 //! Internal load-balance: compute a Zoltan2 geometric assignment and migrate
 //! to it. Thin wrapper over migrate() (Step 7) — no separate migration path.
+//!
+//! Returns migrate()'s MigrateStats. On a RefinementMode::Conforming mesh that
+//! is the interesting output: Zoltan2 partitions by face centroid and closure
+//! siblings have different centroids, so a nonzero `siblingFixups` is expected
+//! here, not a defect. The per-parent weighting in ownedFaceWeights() is what
+//! keeps the resulting perturbation load-neutral.
 template <class MeshT>
-void loadBalance( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
-                  double imbalanceTolerance = 0.05 )
+MigrateStats loadBalance( MeshT& mesh,
+                          MeshHalo<typename MeshT::memory_space>& halo,
+                          double imbalanceTolerance = 0.05 )
 {
     TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_LOAD_BALANCE );
     const std::vector<Rank> dest =
         computeLoadBalance( mesh, imbalanceTolerance );
-    migrate( mesh, halo, dest );
+    return migrate( mesh, halo, dest );
 }
 
 } // namespace Tessera

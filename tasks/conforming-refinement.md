@@ -28,18 +28,20 @@
 | 2 | Serial closure kernel: `closeFaces` / `unclose` + patterns | **Done** |
 | 3 | Distributed split-edge discovery (extend Phase 2 to kept faces) | **Done** |
 | 4 | Wire closure into distributed `refine()` | **Done** |
-| 5 | `migrate()` / `loadBalance()` / halo rebuild on a closed mesh | Not started |
+| 5 | `migrate()` / `loadBalance()` / halo rebuild on a closed mesh | **Done** |
 | 6 | I/O round-trip, `markByQuality`, example + docs | Not started |
 | 7 | Dedicated conforming test suite; flip the default to `Conforming` | Not started |
 | 8 | **Run the full suite and fix everything it finds** (the only task that runs tests) | Not started |
 
-Tasks 1–4 have landed, so **conforming distributed refinement works**: the closure
-kernel and its inverse are pure local functions in `src/Tessera_RefineClosure.hpp`,
-and both `refineLocal()` and the distributed `refine()` run un-close → mask
-translation → red split → close. There is no abort stub left in the refine path.
-What remains is everything *around* refinement — migration/load balance (Task 5),
-I/O and marking (Task 6), the dedicated suite and default flip (Task 7) — and then
-the single verification pass (Task 8). **Nothing has been executed yet.**
+Tasks 1–5 have landed, so **conforming distributed refinement works and survives
+redistribution**: the closure kernel and its inverse are pure local functions in
+`src/Tessera_RefineClosure.hpp`, both `refineLocal()` and the distributed
+`refine()` run un-close → mask translation → red split → close, and
+`migrate()` / `loadBalance()` keep closure siblings co-resident and weight a red
+parent's children as one unit. There is no abort stub left in the refine path.
+What remains is I/O and marking (Task 6), the dedicated suite and default flip
+(Task 7) — and then the single verification pass (Task 8). **Nothing has been
+executed yet.**
 
 ---
 
@@ -390,7 +392,7 @@ the design under-specified, both now settled in the code:
 | Area | Impact |
 |---|---|
 | `Level` semantics | Face `Level` remains the **red** level. A closure child carries its parent's level, so in `Conforming` mode `Level` no longer maps 1:1 to triangle size. Edge level stays `min` of incident face levels. Document in `docs/design.md`. |
-| `migrate()` / `loadBalance()` | The visible (closed) mesh migrates. Un-close is local *per child*, so siblings need not stay co-resident for correctness — but two ranks each holding a child of the same parent would each restore the parent, duplicating it. **Fix: constrain the `dest` array so all closure siblings follow the lowest-gid sibling's destination.** Siblings are co-resident *before* migrate, so this fixup is purely local. `loadBalance()` should weight a parent's children as one unit. Task 5. |
+| `migrate()` / `loadBalance()` | **Done, Task 5.** The visible (closed) mesh migrates. Un-close is local *per child*, so siblings need not stay co-resident for correctness — but two ranks each holding a child of the same parent would each restore the parent, duplicating it. `migrate()` round S constrains `dest` so all closure siblings follow the lowest-gid sibling's destination (purely local — siblings are co-resident on entry); `ownedFaceWeights()` weights a child `1/nsiblings`. |
 | Halo rebuild | Unchanged in mechanism. On a conforming mesh every edge has exactly 2 incident faces, so the 1-ring closure invariant is cleaner, not harder. |
 | I/O | The two closure fields must round-trip through HDF5/XDMF, else a read-back mesh cannot be un-closed. Task 6. |
 | `markByQuality` | Returns a mask over **visible** owned faces; step 0b translates it. `CurvatureCriterion`'s "exactly two incident faces" coordinator assumption becomes *true* in conforming mode rather than silently skipped — a correctness improvement. |
@@ -800,32 +802,95 @@ members zero-filled.)*
 
 ---
 
-### Task 5 — migrate / loadBalance / halo on a closed mesh
+### Task 5 — migrate / loadBalance / halo on a closed mesh — **DONE**
 
 **Goal.** A conforming mesh survives redistribution and re-haloing.
 
-- Sibling-cohesion fixup on the `dest` array in `migrate()`: all closure children of
-  one parent follow the lowest-gid sibling's destination (local — siblings are
-  co-resident pre-migrate). Reject or repair an external `dest` that violates it,
-  loudly.
-- `loadBalance()` / `computeLoadBalance()`: weight a red parent's closure children as
-  one unit so Zoltan2 does not see the closure as spurious load.
-- Confirm the halo rebuild inside `migrate()` closes the 1-ring on a conforming mesh.
+**What landed.**
 
-**Acceptance.** Extend `refine_conforming` (or add `regression` test
-`conforming_migrate`, SERIAL + HIP, ranks 1–5): refine → migrate → `haloExchange` →
-all conforming invariants still hold; the rank-count-independent topology checksum
-matches across ranks 1–5; siblings are co-resident post-migrate;
-`owned1RingLocal` passes; `loadBalance` reduces imbalance while preserving every
-conforming invariant.
+- `src/Tessera_MeshMigrate.hpp` — **round S**, a `Conforming`-only local pass at
+  the head of `migrate()` that makes every closure child follow the **lowest-gid**
+  sibling's destination. `MigrateStats { siblingFixups, siblingGroups }` is now
+  `migrate()`'s return type (was `void`); every pre-existing call site is
+  unaffected because they all discard it. `ownedFaceWeights()` gained the
+  per-parent weighting (below). Header rounds list and the block comment at the
+  fixup carry the rationale.
+- `src/Tessera_Zoltan2Balancer.hpp` — `loadBalance()` forwards the `MigrateStats`.
+  `computeLoadBalance()` is **unchanged**: it already fed `ownedFaceWeights()` to
+  Zoltan2, so the weighting needed no signature or call-order change.
+- `src/Tessera_Profiling.hpp` — level-2 `migrate_sibling_cohesion`.
+- `tests/MeshInvariants.hpp` — `checkSiblingCoresidency()` (coordinator-routed, so
+  rank-count independent and no ghost layer needed) and `closureSiblingGroups()`.
+- `tests/test_conforming_migrate.cpp` + registration (`regression`, SERIAL + HIP,
+  ranks 1–5).
 
-Have the test **print** the count of `dest` entries the sibling fixup moved, and the
-pre/post imbalance figures, so Task 8's run yields them directly.
+**Repair, not reject.** A `dest` that splits a sibling group is the *normal* case,
+not a caller error: `computeLoadBalance()` partitions by face **centroid** and
+closure siblings have distinct centroids, so Zoltan2 scatters them on essentially
+every call. Rejecting would make `loadBalance()` unusable on a conforming mesh,
+and pushing the repair onto callers would duplicate the same loop at each one. So
+the fixup repairs and *reports*: `MigrateStats::siblingFixups` is the loud
+channel, and it is a returned value rather than a log line so a test can assert on
+it — `conforming_migrate` fails if it is zero at ranks ≥ 2, which is what keeps
+the case from being vacuous. The repair reads only globally-agreed face gids
+(lowest-gid sibling wins), so it does not reintroduce a partition dependence of
+the kind the blue-diagonal tie-break was careful to avoid.
 
-**Report back.** Whether a sibling-cohesion-violating external `dest` is *rejected* or
-*repaired*, and why you chose that; whether the Zoltan2 weighting changed the
-`computeLoadBalance` signature or the `ownedFaceWeights` contract. Fixup counts and
-balance-quality numbers are Task 8 measurements.
+**Co-residency is a real invariant, not a nicety.** Two ranks each holding a child
+of one parent would each `unclose()` it into a red face — a duplicated face, a
+broken ownership partition, and a global face count that grows every round. It
+holds by construction after `refine()` (`closeFaces()` runs on one rank's red
+layer), and `migrate()` is the only operation that can break it, hence the fixup
+sits there and nowhere else. Detecting a *pre-existing* violation would need
+communication, so that check lives in the test (`checkSiblingCoresidency`) rather
+than in `migrate()`'s hot path.
+
+**Weighting: contract unchanged, values changed.** `ownedFaceWeights()` still
+returns one `double` per owned face in local index order. In `Conforming` mode a
+closure child now gets `1/nsiblings` and a passed-through red face `1.0`, so the
+total weight is exactly the **red**-face count and a sibling group weighs 1.0
+however it is split — which is precisely what makes the post-fixup partition's
+load equal the load Zoltan2 optimized. Without it the closure (an
+O(level-jump-boundary) set, rebuilt on every refine) would read as real load and
+pull parts toward refinement fronts.
+
+**Halo rebuild needed nothing.** Round D is generic over the face tuple, and on a
+conforming mesh every edge has exactly two incident faces, so the 1-ring it closes
+is cleaner rather than harder. The one place the wider face tuple could bite is
+the ghost pack/unpack, which the test exercises directly.
+
+**Acceptance.** New `regression` test `conforming_migrate` (SERIAL + HIP, ranks
+1–5) — written and compiled, **not run** (handoff contract). Two cases, both after
+`buildIcosphere(2)` → `distribute` → two adaptive conforming rounds:
+
+- **adversarial `dest`** — `dest[f] = faceGid % size`. Siblings hold consecutive
+  gids, so at size > 1 essentially every group is scattered and the fixup must
+  fire. Then `checkSiblingCoresidency`, `checkOwnershipPartition`,
+  `owned1RingLocal`, `checkConforming`, owned Euler `== 2`,
+  `checkNoInteriorVertex`, `check21BalanceRed`, and an unchanged topology
+  checksum; plus a ghost **corrupt-and-resync** over all three halo plans, which
+  is what exercises the two extra closure members of the wider conforming face
+  tuple (Task 8 risk point 6). Non-vacuity: the global fixup count must be
+  positive at ranks ≥ 2, and the closure-group count must be positive at every
+  rank count.
+- **`loadBalance`** — dump every owned face on rank 0, then `loadBalance()`.
+  Asserts the max owned-face count improves and that the **weighted** max load
+  (the quantity `ownedFaceWeights()` defines and Zoltan2 optimizes) lands within
+  2× ideal, then re-runs the same invariant sweep.
+
+Both print their figures: sibling groups, `dest` fixups, and pre/post max face
+count and max weighted load against ideal. The topology checksum is printed
+per rank count by the gate's ranks-1–5 sweep, which is how the cross-rank-count
+comparison is obtained; the dedicated rank-count-independence assertion is Task
+7's `conforming_determinism`.
+
+**Report back.** *(delivered — see above. Short version: a violating `dest` is
+**repaired**, because Zoltan2 produces one on every call and rejecting would make
+`loadBalance()` unusable on a conforming mesh, with `MigrateStats::siblingFixups`
+as the reported channel; `computeLoadBalance()`'s signature and
+`ownedFaceWeights()`'s contract are both unchanged — only the weight *values*
+differ, and only in `Conforming` mode. `migrate()`/`loadBalance()` now return
+`MigrateStats` instead of `void`, which no existing call site notices.)*
 
 ---
 
@@ -877,7 +942,7 @@ counterpart for every mode-sensitive test:
 |---|---|---|
 | `refine` (unit, np1) | yes | `refine_closure` (Task 2) — already covers `refineLocal` conforming |
 | `refine_parallel` (regression) | yes | `refine_conforming` (Task 4) |
-| `migrate_mesh`, `loadbalance` (regression) | yes | `conforming_migrate` (Task 5) |
+| `migrate_mesh`, `loadbalance` (regression) | yes | `conforming_migrate` (Task 5) — landed |
 | `io` (regression) | yes | `io` conforming case (Task 6) |
 | `markquality_edge`, `markquality_curv` (regression) | yes | conforming variants (Task 6) |
 | `distribute`, `connectivity`, `keys`, `data_model`, `halo`, `migrate`, `geometry`, `global_reduce` | n/a — no `refine()` call, mode-insensitive | — |
@@ -1070,7 +1135,7 @@ so collect them from the run output rather than re-running:
 | Task 2 | Whether the "red child of a refined face has `|S| = 0`" assert in `closeFaces()` ever fired; and the `refine_closure` printout (per-`\|S\|` histogram, closure-face count, both blue-diagonal counts, conforming vs hanging-node Euler / bad-incidence / T-junction figures) |
 | Task 3 | Actual message-volume increase on the extended Phase-2 rounds vs the estimated `1/ρ`; and the `refine_splitedges` printout (split-edge count, kept-side-discovered count per rank count, phase-2a total vs refining-only per round) |
 | Task 4 | Closure-face fraction vs mask fraction, and the `|S|`-pattern histogram, per rank count |
-| Task 5 | How many `dest` entries the sibling-cohesion fixup moved; pre/post `loadBalance` imbalance |
+| Task 5 | How many `dest` entries the sibling-cohesion fixup moved (both the adversarial `dest` and Zoltan2's); pre/post `loadBalance` max face count and max weighted load vs ideal |
 | Task 6 | Actual on-disk size delta for a conforming vs hanging-node file |
 | Task 7 | Closure-vertex count per rank count (non-vacuity); closure-vertex vs interior-vertex `applyStencil` max error; per-round min angle / max aspect ratio / closure-face fraction over ≥8 rounds |
 
@@ -1174,6 +1239,26 @@ so collect them from the run output rather than re-running:
   the same mask as a hard non-vacuity guard. Whole suite (including every HIP
   target) compiles clean; `clang-format` clean on all five touched files under both
   the v21 (`/usr/bin`) and v19 (`/opt/rocm-6.4.2/llvm/bin`) binaries.
+- 2026-07-31 — **Task 5 landed.** `migrate()` gained round S, a `Conforming`-only
+  local sibling-cohesion fixup on `dest` (every closure child follows the
+  lowest-gid sibling), and now returns `MigrateStats { siblingFixups,
+  siblingGroups }` instead of `void` — no call site noticed, since all of them
+  discard it. A violating `dest` is **repaired, not rejected**: Zoltan2 partitions
+  by centroid and so produces one on every call. `ownedFaceWeights()` weights a
+  closure child `1/nsiblings` so a red parent is one unit of work; the
+  per-owned-face contract and `computeLoadBalance()`'s signature are unchanged.
+  New level-2 timer `migrate_sibling_cohesion`;
+  `TesseraTest::checkSiblingCoresidency()` / `closureSiblingGroups()`;
+  `tests/test_conforming_migrate.cpp` registered `regression` SERIAL + HIP ranks
+  1–5, with an adversarial `dest = faceGid % size` case (fixup count asserted
+  positive at ranks ≥ 2 as the non-vacuity guard) and a `loadBalance` case that
+  checks weighted load, plus a ghost corrupt-and-resync over all three halo plans
+  to exercise the wider conforming face tuple. The halo rebuild itself needed no
+  change. Whole suite compiles clean (SERIAL + HIP); `clang-format` clean on every
+  touched file under both the v21 (`/usr/bin`) and v19
+  (`/opt/rocm-6.4.2/llvm/bin`) binaries. `README.md` Known Issues and
+  `docs/design.md`'s *Load balancing* section updated (new *Redistributing a
+  conforming mesh* subsection).
 - 2026-07-31 — Audited every task's Acceptance / Report-back for consistency with the
   no-test rule: dropped the "gate green" claims from Tasks 2–7, moved all
   runtime-measurement report-back items into a deferred-measurements table in Task 8,
