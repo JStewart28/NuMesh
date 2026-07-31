@@ -26,18 +26,19 @@
 |---|------|--------|
 | 1 | Refinement-mode plumbing (`RefinementMode`, conditional face fields, dispatch) | **Done** (compiles clean as of Task 2) |
 | 2 | Serial closure kernel: `closeFaces` / `unclose` + patterns | **Done** |
-| 3 | Distributed split-edge discovery (extend Phase 2 to kept faces) | Not started |
+| 3 | Distributed split-edge discovery (extend Phase 2 to kept faces) | **Done** |
 | 4 | Wire closure into distributed `refine()` | Not started |
 | 5 | `migrate()` / `loadBalance()` / halo rebuild on a closed mesh | Not started |
 | 6 | I/O round-trip, `markByQuality`, example + docs | Not started |
 | 7 | Dedicated conforming test suite; flip the default to `Conforming` | Not started |
 | 8 | **Run the full suite and fix everything it finds** (the only task that runs tests) | Not started |
 
-Tasks 1–2 have landed. The closure kernel and its inverse exist as pure local
+Tasks 1–3 have landed. The closure kernel and its inverse exist as pure local
 functions in `src/Tessera_RefineClosure.hpp`, and `refineLocal()`'s `Conforming`
-branch runs un-close → red split → close on one rank. The **distributed**
-`refine()`'s `Conforming` branch is still the abort stub (Tasks 3–4). Task 3 is
-next.
+branch runs un-close → red split → close on one rank. The distributed `refine()`
+now publishes a **complete split-edge map** in `RefineResult::midpoints` (Task 3),
+which is the input the closure needs — but its `Conforming` branch is still the
+abort stub. Task 4 is next.
 
 ---
 
@@ -314,21 +315,38 @@ Conforming refine( mesh, halo, mask ):
   3d..3i. edges / keys / CSR / ownership    [unchanged, driven by the final face list]
 ```
 
-**Phase 2 extension — kept faces must learn their split edges.** Today Phase 2
-advertises only *refining* faces' edges to the edge coordinator, and only refining
-participants receive the midpoint gid. A kept face on rank R needs to know which of
-its edges were bisected by a refining neighbour on rank R′. Extend the existing
-rounds — **no new communication rounds**:
+**Phase 2 extension — kept faces must learn their split edges. (Landed, Task 3.)**
+Before Task 3, Phase 2 advertised only *refining* faces' edges to the edge
+coordinator, and only refining participants received the midpoint gid. A kept face
+on rank R needs to know which of its edges were bisected by a refining neighbour on
+rank R′. The existing rounds were extended — **no new communication rounds**:
 
-- **2a:** advertise the edges of *all* owned faces, refining and kept, carrying a
-  `refining` flag.
-- **2b:** the coordinator computes the midpoint owner from the *refining*
-  participants only (unchanged rule: lowest incident refining-face owner), but
-  replies `(key, midOwner)` to **all** participants of a split edge.
-- **2c:** the midpoint owner sends the gid to **all** co-sharers, refining or kept.
+- **2a:** `detail::OwnerMsg` gained an `unsigned char refining` field and is now
+  emitted for the edges of *all* owned faces, refining and kept.
+- **2b:** the coordinator aggregates per edge into `{participants, refOwner,
+  anyRefining}`. An edge is **split iff `anyRefining`** — one with no refining
+  incidence is dropped right there, so the extra advertisements create no
+  downstream state. For a split edge the midpoint owner is the minimum *refining*
+  participant (rule unchanged), and `(key, midOwner)` is replied to **all**
+  participants, with `(key, cosharer)` sent to the owner for each other
+  participant.
+- **2c:** unchanged code — the midpoint owner therefore ships the gid to **all**
+  co-sharers, refining or kept.
 
 Every rank then holds `EdgeKey → midpoint gid` for every split edge it touches, which
-is exactly the split-edge map step 3b needs.
+is exactly the split-edge map step 3b needs. It is published as
+**`RefineResult::midpoints`**, whose contract was widened from "edges of my refining
+faces" to "edges of *any* of my owned faces that were bisected" — a superset, so
+`checkMidpointAgreement` (its other consumer) only gets stronger. `RefineResult`
+also gained `phase2Adverts` / `phase2AdvertsRefining` counters so a test can report
+the added message volume without instrumenting the library at the call site.
+
+**Why the midpoint assignment is bit-identical to before.** Ownership reads only
+refining participants, and the set of split edges is unchanged (an edge with no
+refining incidence is dropped), so `myMid` — the owned-midpoint list each rank
+exscans over — is the same list in the same order as before. Vertex gids, counts,
+and positions are therefore untouched; only the *distribution* of already-decided
+gids got wider.
 
 **A closure child may reference a non-local vertex.** The midpoint gid arrives, the
 midpoint *position* does not. This is not new: `refine()` already leaves an
@@ -595,30 +613,73 @@ initialization.)*
 
 ---
 
-### Task 3 — Distributed split-edge discovery
+### Task 3 — Distributed split-edge discovery — **DONE**
 
 **Goal.** Every rank learns the midpoint gid of every split edge it touches,
 including on kept faces. No closure yet.
 
-- Extend Phase 2 of `refine()` per *Phase 2 extension* above: advertise all owned
-  faces' edges with a `refining` flag; coordinator replies to all participants;
-  owner ships the gid to all co-sharers. Midpoint **ownership** rule unchanged
-  (lowest incident *refining*-face owner) — verify `checkMidpointAgreement` still
-  passes.
-- Return the split-edge map from `refine()` (extend `RefineResult`, or an internal
-  handoff to Task 4 — the map is already recorded in `RefineResult::midpoints`, so
-  prefer widening what that field contains and documenting it).
+**What landed.** All of it in `src/Tessera_RefineParallel.hpp` — see *Phase 2
+extension* above for the spelling. `detail::OwnerMsg` gained `refining`; 2a
+advertises every owned face; 2b aggregates `{participants, refOwner, anyRefining}`
+and drops non-split edges; 2c is unchanged and now reaches kept co-sharers.
+`RefineResult::midpoints` is documented as the split-edge map, and
+`phase2Adverts` / `phase2AdvertsRefining` were added for the Task-8 volume
+measurement. No call site changed; `refine_parallel` and both `markquality` tests
+were not edited.
 
-**Acceptance.** New `regression` test `refine_splitedges` (SERIAL + HIP, ranks 1–5):
-for an adaptive mask, each rank's `(EdgeKey → midpoint gid)` set equals a
-partition-free reference computed independently, at every rank count. The existing
-`refine_parallel` and both `markquality` tests must be behaviorally unchanged — do
-not edit them.
+**The `inc.size() != 2` guard is unaffected.** That guard lives in **Phase 1**, the
+2:1 mark-propagation fixpoint, which *already* advertised every owned face's edges
+(one `PropMsg` per (owned face, edge)). Task 3 did not touch Phase 1, so the
+coordinator still receives exactly two `PropMsg`s per edge of a closed surface — one
+from each incident face, since a face is owned by exactly one rank and every face
+advertises. **Phase 2 has no such guard**: it aggregates by *participant rank*, not
+by incidence, into a `std::set<Rank>` whose size is 1 (both incident faces on one
+rank) or 2. A count-of-two assumption would have been wrong there both before and
+after this change, and none is made.
 
-**Report back.** The analytic argument that the coordinator still receives exactly
-two incident faces per edge now that kept faces also advertise (the
-`inc.size() != 2` guard depends on it); your *estimated* message-volume increase on
-the extended rounds and how you derived it — Task 8 measures the actual.
+**Estimated message-volume increase (Task 8 measures the actual).** Phase 2a goes
+from `3·nRefining` to `3·nOwnedF` messages per rank — a factor of `1/ρ` where
+`ρ = nRefining/nOwnedF` is the post-fixpoint refine fraction. Downstream rounds grow
+far less: 2b's replies and 2c's gid sends are per *(split edge, participant)* and a
+split edge has at most 2 participants either way, so their volume rises only by the
+edges whose kept side sits on a different rank — an O(boundary) term, not O(F). The
+test's fixture (`gid % 7`, subdiv-2 icosphere, no fixpoint propagation at level 0)
+has `ρ ≈ 1/7`, so 2a should be roughly **7×** on round 1 and closer to `1/ρ` for the
+later rounds' larger `ρ`. Since 2a is one `allToAllV` of a 24-byte struct over
+`3·nOwnedF` entries, this is a constant-factor bump on the cheapest of Phase 2's
+rounds, not a complexity change. The test prints total-vs-refining-only per round.
+
+**Acceptance.** New `regression` test `refine_splitedges` (SERIAL + HIP, ranks 1–5)
+— written and compiled, **not run** (handoff contract). It pins:
+
+- **round-1 exactness against a partition-free reference.** On the level-0 subdiv-2
+  icosphere the 2:1 fixpoint provably cannot fire (all levels equal ⇒ no
+  final-level gap reaches 2), so the refining set *is* the caller's mask and the
+  split set is exactly the edges of `{f : gid % 7 == 0}` — computed from a
+  replicated, un-partitioned mesh with no MPI. Each rank's key set must equal that
+  reference restricted to the edges of its own pre-refine owned faces.
+- **the midpoint gid block**: the globally distinct gids are exactly
+  `[V0, V0 + |S|)`, checked by count *and* sum *and* XOR against the closed forms,
+  so a duplicate and a gap both fail. This is the check that would catch the
+  extension accidentally creating or renumbering a midpoint.
+- **non-vacuity**: at ranks ≥ 2 the global count of split edges a rank holds that
+  lie on *none* of its refining owned faces must be **positive** — those are
+  exactly the kept-side discoveries the pre-Task-3 code missed. Zero ⇒ the test
+  proved nothing ⇒ it fails. (It is legitimately 0 at np1, so the check is
+  rank-gated.)
+- **multi-round soundness + completeness** over three further adaptive rounds,
+  where levels do differ and the fixpoint really propagates so no cheap serial
+  reference exists. `checkSplitEdgeCoverage()` derives the ground truth from the
+  edge coordinator instead: an edge is split iff *some* rank reports it; then every
+  rank touching it must report it (completeness) and no rank may report an edge
+  none of its faces touches (soundness). Plus `checkMidpointAgreement` and
+  `check21Balance` each round.
+
+**Report back.** *(delivered — see the `inc.size() != 2` and message-volume
+subsections above. Short version: the two-incidence guard is Phase 1's and Phase 1
+was already advertising every owned face, so nothing there changed; Phase 2 never
+assumed two incidences. Estimated 2a growth is `1/ρ` ≈ 7× on the test fixture's
+round 1, with the reply/gid rounds growing only by an O(partition-boundary) term.)*
 
 ---
 
@@ -918,7 +979,7 @@ so collect them from the run output rather than re-running:
 | Deferred from | Measurement |
 |---|---|
 | Task 2 | Whether the "red child of a refined face has `|S| = 0`" assert in `closeFaces()` ever fired; and the `refine_closure` printout (per-`\|S\|` histogram, closure-face count, both blue-diagonal counts, conforming vs hanging-node Euler / bad-incidence / T-junction figures) |
-| Task 3 | Actual message-volume increase on the extended Phase-2 rounds vs the estimate |
+| Task 3 | Actual message-volume increase on the extended Phase-2 rounds vs the estimated `1/ρ`; and the `refine_splitedges` printout (split-edge count, kept-side-discovered count per rank count, phase-2a total vs refining-only per round) |
 | Task 4 | Closure-face fraction vs mask fraction, and the `|S|`-pattern histogram, per rank count |
 | Task 5 | How many `dest` entries the sibling-cohesion fixup moved; pre/post `loadBalance` imbalance |
 | Task 6 | Actual on-disk size delta for a conforming vs hanging-node file |
@@ -991,6 +1052,22 @@ so collect them from the run output rather than re-running:
   resolves to `/opt/rocm-6.4.2/llvm/bin/clang-format` (v19), under which every file
   Task 2 touched is clean; pre-existing violations in untouched files (e.g.
   `src/Tessera_Geometry.hpp`) remain and predate this work.
+- 2026-07-31 — **Task 3 landed.** `detail::OwnerMsg` gained a `refining` flag and
+  Phase 2a now advertises every owned face's edges; the coordinator aggregates
+  `{participants, refOwner, anyRefining}`, drops non-split edges, and replies to all
+  participants, so 2c's gid delivery reaches kept co-sharers.
+  `RefineResult::midpoints` is now the complete split-edge map (contract widened and
+  documented), plus new `phase2Adverts` / `phase2AdvertsRefining` counters.
+  `tests/test_refine_splitedges.cpp` registered `regression` SERIAL + HIP ranks 1–5.
+  `docs/design.md`'s Phase-2 paragraph rewritten, and its stale "the `Conforming`
+  branch is a stub that aborts" line corrected — that is now true of the
+  *distributed* `refine()` only, since Task 2 implemented `refineLocal()`.
+  Midpoint **assignment** is provably unchanged (ownership still reads refining
+  participants only, and the split-edge set is unchanged), so no existing test's
+  expected gids move. Build note: `spack env activate` needs
+  `. /usr/WS2/stewartj/spack/share/spack/setup-env.sh` sourced first even under
+  `bash -lc`. `clang-format` is clean on both touched files under **both** the v21
+  (`/usr/bin`) and v19 (`/opt/rocm-6.4.2/llvm/bin`) binaries on this machine.
 - 2026-07-31 — Audited every task's Acceptance / Report-back for consistency with the
   no-test rule: dropped the "gate green" claims from Tasks 2–7, moved all
   runtime-measurement report-back items into a deferred-measurements table in Task 8,

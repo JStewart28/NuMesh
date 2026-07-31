@@ -198,10 +198,13 @@ size the loop with `numFaceUserFields<FaceUserFields>()` rather than
 `Conforming` mode.
 
 `refine()` and `refineLocal()` dispatch on `MeshT::refinement_mode` with
-`if constexpr`. **The `Conforming` branch is currently a stub that aborts**; the
-closure kernel, its distributed wiring, migration, and I/O are staged in
+`if constexpr`. `refineLocal()`'s `Conforming` branch is implemented
+(`src/Tessera_RefineClosure.hpp` — un-close → red split → close, single rank);
+**the distributed `refine()`'s `Conforming` branch is still a stub that aborts**.
+Its prerequisite, complete cross-rank split-edge discovery, is in place (see
+Phase 2 below); the closure wiring, migration, and I/O are staged in
 [tasks/conforming-refinement.md](../tasks/conforming-refinement.md), which holds
-the full design. In `Conforming` mode a face's `Level` will remain the **red**
+the full design. In `Conforming` mode a face's `Level` remains the **red**
 level — a closure child carries its parent's level — so `Level` no longer maps 1:1
 to triangle size.
 
@@ -239,7 +242,21 @@ allocated in a global block via `MPI_Exscan` over the pre-refinement global vert
 count, and the owner **sends** the gid to co-sharers, so a shared edge's midpoint is
 bit-identical on every side with no reliance on matching local order; (3) edge
 ownership (lowest incident child-face owner) so owned counts stay a global
-partition. The refined mesh is left holding each rank's owned entities; the 1-deep
+partition.
+
+Phase 2 advertises the edges of **every** owned face — refining *and* kept — each
+tagged with a `refining` flag. An edge is split iff some incident face refines;
+ownership is still derived from the refining participants alone, so nothing about
+which midpoints exist or what gid each gets depends on the kept advertisements.
+What they buy is completeness of the reply: the coordinator answers *every*
+participant, and the midpoint owner ships the gid to *every* co-sharer, so a rank
+holding only the **kept** side of an edge a neighbour bisected still learns that
+edge's midpoint gid. `RefineResult::midpoints` is therefore a full **split-edge
+map** — every edge of any owned face that was bisected, with its globally agreed
+midpoint gid — which is both what `checkMidpointAgreement` verifies and the input
+the conforming closure needs to retriangulate a kept face. The extra traffic is
+bounded by three messages per *kept* owned face on the first Phase-2 round only;
+no new communication rounds were added. The refined mesh is left holding each rank's owned entities; the 1-deep
 halo is **rebuilt in Step 7** (shared with migration), so `haloExchange()` must not
 run on a freshly-refined mesh until then.
 

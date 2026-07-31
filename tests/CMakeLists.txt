@@ -406,6 +406,30 @@ tessera_add_test(
     SOURCES  test_refine_parallel.cpp
 )
 
+# Distributed split-edge discovery (conforming refinement, Task 3): refine()'s
+# Phase 2 advertises EVERY owned face's edges, so RefineResult::midpoints is a
+# complete split-edge map -- a rank holding only the KEPT side of an edge a
+# neighbour bisected still learns its midpoint gid, which is what the conforming
+# closure (Task 4) needs. Pins round-1 exactness against a partition-free
+# reference, the midpoint gids forming the contiguous block above the pre-refine
+# global vertex count, non-vacuity (kept-side discovery actually occurs at
+# ranks >= 2), and coordinator-decided soundness+completeness over three further
+# adaptive rounds where the 2:1 fixpoint really propagates.
+tessera_add_test(
+    NAME     refine_splitedges
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_refine_splitedges.cpp
+)
+tessera_add_test(
+    NAME     refine_splitedges
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_refine_splitedges.cpp
+)
+
 # Internal Zoltan2 loadBalance() (Step 7b): rebalancing a deliberately
 # maximally-imbalanced mesh reduces the max-owned-face imbalance while
 # preserving every migrate() distribution invariant and the rank-count-

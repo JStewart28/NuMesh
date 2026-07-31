@@ -57,11 +57,16 @@ namespace Tessera
 //      coordinator flags the coarser face of any edge whose incident final
 //      levels would differ by >1; marks only ever turn on (monotone) so the
 //      fixpoint terminates, guarded by MPI_Allreduce(changed) and a hard cap.
-//   2. Midpoint-gid assignment: for each split edge the midpoint owner is the
-//      lowest incident refining-face owner; owners count their midpoints,
-//      MPI_Exscan a global contiguous block onto the pre-refinement global vertex
-//      count, assign, and SEND the gid to co-sharers — so both sides agree with
-//      no reliance on identical local ordering.
+//   2. Midpoint-gid assignment: every owned face — refining OR kept — advertises
+//      its three edges with a `refining` flag. An edge is split iff some incident
+//      face refines; its midpoint owner is the lowest incident refining-face
+//      owner. Owners count their midpoints, MPI_Exscan a global contiguous block
+//      onto the pre-refinement global vertex count, assign, and SEND the gid to
+//      ALL co-sharers — so both sides agree with no reliance on identical local
+//      ordering, and a rank holding only the KEPT side of a bisected edge still
+//      learns the midpoint gid. That last part is what makes RefineResult::
+//      midpoints a complete split-edge map, which the conforming closure needs
+//      (Task 4); ownership and hence every assigned gid are unaffected.
 //   3. Edge ownership: each refined edge is owned by the lowest incident (child)
 //      face owner, so owned counts remain a global partition (for Euler).
 //
@@ -82,10 +87,25 @@ struct RefineResult
 {
     //! 2:1 mark-propagation rounds executed to reach the fixpoint.
     int iterations = 0;
-    //! (bisected edge, midpoint gid) for every split edge this rank participates
-    //! in — owned midpoints it assigned and shared ones it received. Used to
-    //! verify cross-rank gid agreement.
+    //! THE SPLIT-EDGE MAP: (bisected edge, midpoint gid) for every split edge
+    //! this rank TOUCHES — i.e. every edge of any of this rank's owned faces
+    //! (refining *or* kept) that some incident face bisected, whether the
+    //! midpoint was assigned here or received from its owner. Sorted and unique
+    //! by EdgeKey.
+    //!
+    //! Widened in Task 3 of tasks/conforming-refinement.md: before, this held
+    //! only the edges of this rank's *refining* faces, which is enough to verify
+    //! cross-rank gid agreement but not enough to close a kept face whose
+    //! neighbour across a partition boundary refined. It is now the input the
+    //! conforming closure pass (Task 4) needs, and it remains exactly what
+    //! checkMidpointAgreement consumes (a superset of the old contents, so the
+    //! agreement check only gets stronger).
     std::vector<std::pair<EdgeKey, GlobalId>> midpoints;
+    //! Phase-2a edge advertisements this rank sent: 3 per owned face.
+    long long phase2Adverts = 0;
+    //! Of those, the ones from refining faces — i.e. the pre-Task-3 Phase-2a
+    //! volume. `phase2Adverts - phase2AdvertsRefining` is the added traffic.
+    long long phase2AdvertsRefining = 0;
 };
 
 namespace detail
@@ -108,11 +128,16 @@ struct PropMsg
     Level level;
     unsigned char mark;
 };
-//! (edge, incident refining-face owner) advertisement for midpoint ownership.
+//! (edge, incident owned-face owner, is-that-face-refining) advertisement for
+//! midpoint ownership. Sent for EVERY owned face's edges, not just refining
+//! ones, so a kept face learns the midpoint gid of an edge a neighbour bisected
+//! (Task 3 of tasks/conforming-refinement.md). The coordinator still derives
+//! ownership from the refining participants alone.
 struct OwnerMsg
 {
     EdgeKey key;
     Rank owner;
+    unsigned char refining;
 };
 //! (edge, its midpoint owner) reply delivered to each participant.
 struct OwnerReply
@@ -269,37 +294,64 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     result.iterations = iter;
 
     // ---- Phase 2: midpoint-gid assignment with cross-rank agreement ---------
-    // 2a. advertise each refining face's edges (owner) to the coordinator.
+    // 2a. advertise EVERY owned face's edges (owner + refining flag) to the
+    //     coordinator. Advertising kept faces too is what lets a rank holding
+    //     only the kept side of a bisected edge learn its midpoint gid — the
+    //     split-edge map the conforming closure needs. Ownership is still
+    //     decided by the refining participants alone (2b), so the midpoint
+    //     assignment, its count, and hence every vertex gid are unchanged.
     {
         std::vector<std::vector<detail::OwnerMsg>> toCoord( size );
         for ( int f = 0; f < nOwnedF; ++f )
         {
-            if ( !mark[f] )
-                continue;
+            const unsigned char ref = mark[f] ? 1 : 0;
             for ( int k = 0; k < 3; ++k )
             {
                 const EdgeKey key = keyOf( fV[f][k], fV[f][( k + 1 ) % 3] );
                 toCoord[detail::edgeCoordRank( key, size )].push_back(
-                    { key, static_cast<Rank>( R ) } );
+                    { key, static_cast<Rank>( R ), ref } );
             }
+            result.phase2Adverts += 3;
+            result.phase2AdvertsRefining += ref ? 3 : 0;
         }
         auto got = allToAllV( comm, toCoord );
 
-        // 2b. coordinator: per split edge, owner = min incident refining owner;
-        //     reply (key, owner) to every participant, and (key, cosharer) to the
-        //     owner for each other participant.
-        std::map<EdgeKey, std::set<Rank>> owners;
+        // 2b. coordinator: an edge is SPLIT iff at least one incident face is
+        //     refining. For a split edge the midpoint owner is the lowest
+        //     incident REFINING-face owner (rule unchanged); reply (key, owner)
+        //     to every participant — refining or kept — and (key, cosharer) to
+        //     the owner for each other participant. An edge with no refining
+        //     incidence is not split and is dropped here, so the extra kept-face
+        //     advertisements add no downstream state.
+        struct EdgeAgg
+        {
+            std::set<Rank> participants;
+            Rank refOwner = 0;
+            bool anyRefining = false;
+        };
+        std::map<EdgeKey, EdgeAgg> agg;
         for ( const auto& m : got.data )
-            owners[m.key].insert( m.owner );
+        {
+            EdgeAgg& a = agg[m.key];
+            a.participants.insert( m.owner );
+            if ( m.refining )
+            {
+                if ( !a.anyRefining || m.owner < a.refOwner )
+                    a.refOwner = m.owner;
+                a.anyRefining = true;
+            }
+        }
 
         std::vector<std::vector<detail::OwnerReply>> reply( size );
         std::vector<std::vector<detail::CosharerMsg>> coshare( size );
-        for ( auto& kv : owners )
+        for ( auto& kv : agg )
         {
             const EdgeKey& key = kv.first;
-            const std::set<Rank>& os = kv.second;
-            const Rank owner = *os.begin(); // std::set is ordered ascending
-            for ( Rank r : os )
+            const EdgeAgg& a = kv.second;
+            if ( !a.anyRefining )
+                continue; // edge is not bisected this round
+            const Rank owner = a.refOwner;
+            for ( Rank r : a.participants )
             {
                 reply[r].push_back( { key, owner } );
                 if ( r != owner )
@@ -309,7 +361,8 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         auto replies = allToAllV( comm, reply );
         auto coshares = allToAllV( comm, coshare );
 
-        // 2c. this rank now knows the owner of every split edge it touches.
+        // 2c. this rank now knows the owner of every split edge it TOUCHES —
+        //     including edges it only sees from a kept face.
         std::map<EdgeKey, Rank> midOwner;
         for ( const auto& m : replies.data )
             midOwner[m.key] = m.owner;
@@ -339,7 +392,7 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
             midGid[myMid[i]] = static_cast<GlobalId>(
                 globalV + baseOff + static_cast<long long>( i ) );
 
-        // deliver owned midpoint gids to co-sharers.
+        // deliver owned midpoint gids to co-sharers (refining or kept).
         std::vector<std::vector<detail::KeyGid>> toShare( size );
         for ( const EdgeKey& key : myMid )
         {
@@ -353,7 +406,9 @@ refineHangingNode( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         for ( const auto& m : shared.data )
             midGid[m.key] = m.gid;
 
-        // record for verification + hand to local reconstruction below.
+        // Publish the split-edge map: every edge of an owned face that some
+        // incident face bisected, with its (globally agreed) midpoint gid.
+        // Consumed by checkMidpointAgreement and, from Task 4, by the closure.
         result.midpoints.reserve( midGid.size() );
         for ( const auto& kv : midGid )
             result.midpoints.push_back( { kv.first, kv.second } );
