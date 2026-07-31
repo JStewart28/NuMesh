@@ -227,6 +227,31 @@ tessera_add_test(
     SOURCES  test_refinement_mode.cpp
 )
 
+# Serial closure kernel (conforming refinement, Task 2): the green/blue/red
+# closure patterns and their inverse. Pins the hand-computed child triangles for
+# each |S| in {0,1,2,3}, CCW winding, the blue lower-gid diagonal tie-break in
+# both directions, rotation invariance of the emitted triangle set (why the
+# tie-break is partition-independent), unclose o close == identity on a random
+# partial mask over buildIcosphere(3), and -- for refineLocal() in Conforming
+# mode with a PARTIAL mask -- Euler V-E+F == 2, exactly two faces per edge, no
+# T-junction, outward winding, and the same vertex count as HangingNode2to1 mode.
+# The same conformity checks are run on the hanging-node result and must fail
+# there, so the case cannot go vacuous. Local by construction -> single rank.
+tessera_add_test(
+    NAME     refine_closure
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_refine_closure.cpp
+)
+tessera_add_test(
+    NAME     refine_closure
+    BACKEND  HIP
+    TIER     unit
+    RANKS    "1"
+    SOURCES  test_refine_closure.cpp
+)
+
 # Stale-handle generation guard: a slice held across a count-changing op and
 # then copied (as it would be when captured into a KOKKOS_LAMBDA) must abort;
 # a slice held across haloExchange() (topology-preserving) must not. This

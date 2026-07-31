@@ -24,8 +24,8 @@
 
 | # | Task | Status |
 |---|------|--------|
-| 1 | Refinement-mode plumbing (`RefinementMode`, conditional face fields, dispatch) | **Done** (not yet compiled — see Progress log) |
-| 2 | Serial closure kernel: `closeFaces` / `unclose` + patterns | Not started |
+| 1 | Refinement-mode plumbing (`RefinementMode`, conditional face fields, dispatch) | **Done** (compiles clean as of Task 2) |
+| 2 | Serial closure kernel: `closeFaces` / `unclose` + patterns | **Done** |
 | 3 | Distributed split-edge discovery (extend Phase 2 to kept faces) | Not started |
 | 4 | Wire closure into distributed `refine()` | Not started |
 | 5 | `migrate()` / `loadBalance()` / halo rebuild on a closed mesh | Not started |
@@ -33,8 +33,11 @@
 | 7 | Dedicated conforming test suite; flip the default to `Conforming` | Not started |
 | 8 | **Run the full suite and fix everything it finds** (the only task that runs tests) | Not started |
 
-Task 1 has landed: the mode option exists and is inert (the `Conforming` branch of
-`refine()` / `refineLocal()` is an abort stub). Task 2 is next.
+Tasks 1–2 have landed. The closure kernel and its inverse exist as pure local
+functions in `src/Tessera_RefineClosure.hpp`, and `refineLocal()`'s `Conforming`
+branch runs un-close → red split → close on one rank. The **distributed**
+`refine()`'s `Conforming` branch is still the abort stub (Tasks 3–4). Task 3 is
+next.
 
 ---
 
@@ -181,6 +184,36 @@ Rules:
 - Face `e[3]` follows the existing convention `e[k] = edge(v[k], v[(k+1)%3])` and is
   re-derived with the rest of the edge table.
 
+**As implemented (Task 2).** The `|S| = 1` and `|S| = 2` patterns are written once
+for a *rotated* corner triple `(A,B,C)`, where the rotation is chosen by which edge
+is split (green: rotate the split edge to position 0) or unsplit (blue: rotate the
+unsplit edge to position 2, `rot = (u+1) % 3`). Two consequences:
+
+- a cyclic rotation of a CCW triple is CCW, so winding preservation is structural
+  rather than checked per pattern;
+- the working triple `(A,B,C)` is a function of *the triangle and which edge is
+  (un)split*, **not** of which corner happens to be stored at `v[0]`. The emitted
+  child-triangle set is therefore invariant under a cyclic relabelling of the
+  parent's corners, which is the concrete form of partition independence. Pinned by
+  the `refine_closure` rotation-invariance check.
+
+**Blue tie-break, precisely.** With `(A,B,C)` as above, `q0 = mid(A,B)` and
+`q1 = mid(B,C)`; the corner triangle `(q0, B, q1)` is always cut off and the
+remaining quad `(A, q0, q1, C)` is split along the diagonal from the lower-gid
+midpoint to *its opposite corner* — `q0 ↔ C` when `q0 < q1`, else `q1 ↔ A`:
+
+| condition | children |
+|---|---|
+| `q0 < q1` | `(A,q0,C)`, `(q0,B,q1)`, `(q0,q1,C)` |
+| `q1 < q0` | `(A,q0,q1)`, `(q0,B,q1)`, `(A,q1,C)` |
+
+This is partition-independent because *both* inputs are global: the two midpoint
+gids are bit-identical on every rank sharing the bisected edge (`refine()`'s Phase-2
+guarantee, verified by `checkMidpointAgreement`), and `(A,B,C)` is rotation-derived
+as above. Nothing partition-local — local index, owner rank, map iteration order,
+`v[0]` — enters the comparison. `ClosureStats` counts both branches so a test can
+assert the tie-break actually fires in both directions rather than being vacuous.
+
 ### Data model — closure bookkeeping
 
 Un-closing must reconstruct the red parent from its children. Each closure child
@@ -224,6 +257,18 @@ re-exported as `MeshT::closure_parent_field` / `closure_parent_verts_field`.
 > tuple-suffix-derived `detail::copyUserFields<UserBegin>` remains, correct for
 > vertices and edges. **The HDF5 writer/reader still derives its face field set
 > from the tuple suffix — Task 6 must audit it against `numFaceUserFields<>()`.**
+
+> **Consequence — the closure members must be explicitly initialized.** A Cabana
+> `AoSoA`'s backing View is *zero*-initialized, so an untouched `ClosureParent`
+> reads as face gid `0` — a perfectly valid gid — and `unclose()` would restore a
+> bogus parent for every face. Task 2 added
+> `initClosureFaceMembers<MeshT>( hostFaceAoSoA, begin, end )` (a no-op in
+> `HangingNode2to1` mode) and calls it from `buildTriangleMesh()` in
+> `Tessera_MeshBuilder.hpp`. `distribute()` / `migrate()` / `haloExchange()` are
+> generic over the whole face tuple and carry the members through unchanged, so they
+> need nothing. **The HDF5 reader materializes faces too — Task 6 must call it
+> there.** `unclose()` guards the failure mode anyway: it aborts if two restored red
+> faces share a gid, which is exactly what an uninitialized field produces.
 
 **Memory.** Only the *visible* face array carries the two fields, in `Conforming`
 mode only: 4 extra `GlobalId` per face on a ~78 B face core. A compressed encoding
@@ -292,8 +337,10 @@ post-refine gotcha in `docs/design.md`). The halo rebuild inside `migrate()` bri
 them in. Do **not** add a position gather to the closure.
 
 **Face gid allocation.** Closure children are new faces and need new gids. Fold them
-into the existing single `MPI_Exscan`: count `4 * nRefining + Σ closureChildren` per
-rank and allocate one contiguous block above the global max face gid. A retired
+into the existing single `MPI_Exscan`: count
+`4 * nRefining + countClosureChildren(newRed, midpointOf)` per rank (that helper
+exists precisely so the count is available *before* `closeFaces()` runs) and allocate
+one contiguous block above the global max face gid. A retired
 parent gid is *reused* by un-close on the next round; since it is below the global
 max it can never collide with a later allocation. Live face gids stay sparse — which
 is already true today and already handled.
@@ -433,33 +480,118 @@ assumes — flagged for Task 6.)*
 
 ---
 
-### Task 2 — Serial closure kernel
+### Task 2 — Serial closure kernel — **DONE**
 
 **Goal.** The closure and its inverse exist as pure, testable local functions.
 
-- New header `src/Tessera_RefineClosure.hpp`:
-  - `closeFaces(...)` — given a red face list (corner gids, gids, levels) and a
-    `EdgeKey → midpoint gid` map, produce the visible face list plus each child's
-    `ClosureParent` / `ClosureParentVerts`. Implements the green / blue / red-closure
-    patterns above, with the lower-gid blue diagonal and winding preserved.
-  - `unclose(...)` — inverse: group by `ClosureParent`, restore one red face per
-    parent (gid, corner gids, level, user fields from the lowest-gid child).
-  - `translateMask(...)` — visible-face mask → red-face mask (OR over children).
-- Add a `RefinementMode::Conforming` path to `refineLocal()` that runs
-  un-close → red split → close on one rank.
+**What landed.**
 
-**Acceptance.** New `unit` test `refine_closure` (SERIAL + HIP, np1):
-hand-built parent + each of the four `|S|` cases with expected child triangles;
-`unclose ∘ close` identity on a random partial mask over `buildIcosphere(3)`;
-after `refineLocal` with a **partial** mask — Euler `V−E+F == 2`, every edge exactly
-2 incident faces, no interior vertex, winding consistent (all `faceNormalRaw`
-outward), vertex count identical to the hanging-node mode's (closure adds no
-vertices).
+`src/Tessera_RefineClosure.hpp` (new, in `<Tessera.hpp>`, depends only on
+`Tessera_Fields` / `Tessera_RefinementMode` / `Tessera_Types` so both
+`Tessera_MeshBuilder.hpp` and `Tessera_Refine.hpp` can include it without a cycle):
 
-**Report back.** The blue-diagonal tie-break as implemented, and why it is
-partition-independent. Where you placed the assert that a red child of a refined face
-can never have `|S| > 0`, and the argument for why that holds by construction —
-whether it actually fires is a Task 8 observation.
+| Symbol | Role |
+|---|---|
+| `RedFace { v[3], gid, level }` | one face of the persistent red layer |
+| `VisibleFace { v[3], gid, level, parent, parentVerts[3] }` | one face of the visible layer; `parent == invalid_gid` ⇒ a passed-through red face |
+| `ClosureStats` | `|S|` histogram, visible/closure-child counts, per-diagonal blue counts |
+| `closureChildCount(nSplit)` | `nSplit + 1` |
+| `faceSplitEdges(v, midpointOf, mid)` | fills `mid[k]` per edge, returns `|S|` |
+| `countClosureChildren(red, midpointOf)` | new-gid count, for Task 4's `MPI_Exscan` *before* closing |
+| `closeFaces(red, midpointOf, firstChildGid, freshChild = {})` → `CloseResult` | the patterns; children take consecutive gids from `firstChildGid` |
+| `unclose(visible)` → `UncloseResult` | the inverse |
+| `translateMask(visibleMask, uncloseResult)` | visible-face mask → red-face mask |
+| `readVisibleFaces<MeshT>(hostFaceAoSoA, n)` | AoSoA → `VisibleFace` vector |
+| `writeClosureFace<MeshT>(hf, f, vf)` / `initClosureFaceMembers<MeshT>(hf, b, e)` | the write side; both no-ops in `HangingNode2to1` mode |
+
+`CloseResult` carries `sourceRed[i]` (which red face visible face *i* takes its face
+user fields from) and `UncloseResult` carries `sourceVisible[r]` (the lowest-gid
+child) plus `redOfVisible[i]` — the latter is what makes `translateMask()` a plain
+scatter with no gid map, and Task 4 will reuse it.
+
+`detail::refineLocalConforming()` in `Tessera_Refine.hpp` runs
+un-close → mask translation → red 1→4 split → close, then re-derives edges, keys, and
+the vertex 1-ring CSR from the **visible** face list. `refineLocal()`'s dispatcher
+calls it; the abort stub is gone. Two contract changes, both documented at the
+function:
+
+- **Face gids are no longer local indices** in `Conforming` mode. A closed red face's
+  gid is retired into its children's `ClosureParent`, so it must not be reissued:
+  red gids persist across the call and closure children are allocated above the
+  current max. (Vertex and edge gids still equal their index.) Live face gids are
+  therefore sparse — already true of the distributed `refine()`. As a knock-on, the
+  edge AoSoA's incident-face field now stores real face **gids** rather than indices
+  that happened to equal them.
+- **`refineLocal()` enforces no 2:1 balance** (neither mode does — that is
+  `refine()`'s Phase 1). *One* call from a balanced mesh bisects each edge of a kept
+  face at most once, so the patterns apply; a *sequence* of adaptive `refineLocal()`
+  calls can drive a >2:1 jump, at which point an edge carries more than one midpoint
+  and no fixed pattern applies. `closeFaces()` detects exactly that — it checks
+  whether either half-edge `(v[k], m)` / `(m, v[k+1])` of a split edge is itself in
+  the split-edge map — and aborts, rather than silently emitting a mesh that still
+  has hanging nodes.
+
+**Where the "red child of a refined face has `|S| = 0`" assert lives.** Inside
+`closeFaces()`, driven by the optional `freshChild` flag array that
+`refineLocalConforming()` passes (Task 4's `refine()` will pass the same). It sits
+where `|S|` is already computed, so it costs nothing, and it is a property of the
+*pair* (red list, split-edge map) — checking it in the caller would duplicate the
+`|S|` computation. **Why it holds by construction:** the 1→4 split replaces parent
+`(a,b,c)` with children whose nine edges are the six half-edges `(a,m_ab)`,
+`(m_ab,b)`, … and the three interior edges `(m_ab,m_bc)`, … Every one of those edges
+has a *midpoint vertex of this round* as an endpoint, and the split-edge map is keyed
+by edges of the **pre-split** red layer, whose endpoints are all pre-existing
+vertices. So no child edge can be a key in the map. It can only fire if the map is
+polluted with an edge that did not exist before the split — which is the real bug it
+is there to catch. Whether it ever fires is a Task 8 observation.
+
+**Extra hazard found and fixed: closure-member initialization.** See the consequence
+box under *Data model — closure bookkeeping* above. This was not in the design and is
+the one thing Task 2 had to add outside the closure header.
+
+**Acceptance.** New `unit` test `refine_closure` (SERIAL + HIP, np1) — written and
+compiled, **not run** (see the handoff contract). It pins:
+
+- each of the four `|S|` cases against hand-written child triangles, in emission
+  order, for a hand-built parent; CCW winding via a planar embedding of the parent
+  (signed area > 0); consecutive child gids from `firstChildGid`; every child
+  carrying the parent's level and `ClosureParent`/`ClosureParentVerts`; the `|S| = 3`
+  red-closure *not* incrementing the level; `unclose()` restoring the parent exactly
+  from any single child;
+- the green pattern for each of the three edges in turn (the rotation);
+- the blue tie-break in **both** directions, by relabelling the two midpoint gids so
+  the diagonal must flip, with `ClosureStats`' per-diagonal counters asserted;
+- **rotation invariance**: cyclically relabelling the parent's corners leaves the
+  emitted triangle *set* (sorted corner-gid triples) unchanged, for all four `|S|`;
+- `translateMask()`: any single marked child marks the parent, no marked child marks
+  nothing, and a random visible mask maps to exactly the owning red set;
+- `unclose ∘ close == identity` on a hand-built red layer from a random (seeded LCG)
+  ~35 % mask over `buildIcosphere(3)`, compared gid-keyed on gid/corners/level;
+  plus `countClosureChildren()` agreeing with the number actually emitted, and
+  `sourceVisible[r]` being the lowest-gid child;
+- `refineLocal()` with a **partial** mask on `buildIcosphere(2)` in `Conforming`
+  mode: owned Euler `V−E+F == 2`, every edge with exactly two incident faces, no
+  vertex in the interior of an edge, all `faceNormalRaw` outward, and the **same
+  vertex count** as `HangingNode2to1` mode; face user fields inherited (all children
+  of one parent agree, every value is one of the seeded base-face values).
+
+The "no interior vertex" check is **geometric, not topological**: the topological
+reading ("some `m` has edges `(u,m)` and `(m,w)`") is true of every ordinary
+triangle. It intersects the neighbour sets of `u` and `w` and tests each candidate for
+collinearity with *and* strict betweenness on the segment.
+
+**Non-vacuity guard.** The three conformity checks are also run on the
+`HangingNode2to1` result *with the same mask*, and the test **fails** if they pass
+there — otherwise a mask too weak to create a hanging node would make the conforming
+case prove nothing.
+
+**Report back.** *(delivered — see the blue-tie-break and assert subsections above.
+Short version: the tie-break compares the two globally-agreed midpoint gids over a
+rotation-derived corner triple, so it reads no partition-local quantity; the
+`|S| = 0` assert lives in `closeFaces()` behind the `freshChild` flag and holds
+because every edge of a fresh child has a this-round midpoint as an endpoint while
+the split-edge map is keyed by pre-split edges. The one design gap was closure-member
+initialization.)*
 
 ---
 
@@ -551,7 +683,11 @@ balance-quality numbers are Task 8 measurements.
 
 **Goal.** The feature is usable and documented end to end.
 
-- Persist `ClosureParent` / `ClosureParentVerts` in the HDF5 writer/reader.
+- Persist `ClosureParent` / `ClosureParentVerts` in the HDF5 writer/reader. Audit the
+  writer's face field set against `numFaceUserFields<>()` (it still derives it from
+  the tuple suffix, which over-counts by two in `Conforming` mode), and call
+  `initClosureFaceMembers<MeshT>()` on the reader's freshly-materialized face AoSoA —
+  a zero-filled `ClosureParent` reads as face gid 0.
 - Confirm `markByQuality` (both criteria) drives `Conforming` refine correctly through
   the mask translation; confirm `CurvatureCriterion`'s coordinator now sees two
   incident faces at former T-junction edges.
@@ -781,7 +917,7 @@ so collect them from the run output rather than re-running:
 
 | Deferred from | Measurement |
 |---|---|
-| Task 2 | Whether the "red child of a refined face has `|S| = 0`" assert ever fired |
+| Task 2 | Whether the "red child of a refined face has `|S| = 0`" assert in `closeFaces()` ever fired; and the `refine_closure` printout (per-`\|S\|` histogram, closure-face count, both blue-diagonal counts, conforming vs hanging-node Euler / bad-incidence / T-junction figures) |
 | Task 3 | Actual message-volume increase on the extended Phase-2 rounds vs the estimate |
 | Task 4 | Closure-face fraction vs mask fraction, and the `|S|`-pattern histogram, per rank count |
 | Task 5 | How many `dest` entries the sibling-cohesion fixup moved; pre/post `loadBalance` imbalance |
@@ -840,6 +976,21 @@ so collect them from the run output rather than re-running:
   deleted its `CMakeCache.txt`; that directory needs
   `bash ../run_cmake_toulumne.sh` (with `spack env activate
   ~/spack_envs/tuolumne_trilinos/`) re-run before the next `make`.
+- 2026-07-31 — **Task 2 landed.** `src/Tessera_RefineClosure.hpp` (`RedFace`,
+  `VisibleFace`, `ClosureStats`, `closeFaces`, `unclose`, `translateMask`,
+  `countClosureChildren`, `faceSplitEdges`, `readVisibleFaces`, `writeClosureFace`,
+  `initClosureFaceMembers`), `detail::refineLocalConforming()` replacing
+  `refineLocal()`'s `Conforming` abort stub, `initClosureFaceMembers()` wired into
+  `buildTriangleMesh()`, and `tests/test_refine_closure.cpp` registered `unit`
+  SERIAL + HIP np1. **Task 1's build break risk is discharged:** the Task-1 code
+  compiled clean with no changes needed. Note for later sessions — the Bash tool
+  runs a *non-login* shell, where no `PrgEnv-*` module is loaded and the Cray `CC`
+  wrapper fails at configure with "A PrgEnv-* modulefile must be loaded"; run the
+  build under `bash -lc` (and export
+  `SPACK_USER_CONFIG_PATH=$HOME/.spack/tuolumne`). `clang-format` on this checkout
+  resolves to `/opt/rocm-6.4.2/llvm/bin/clang-format` (v19), under which every file
+  Task 2 touched is clean; pre-existing violations in untouched files (e.g.
+  `src/Tessera_Geometry.hpp`) remain and predate this work.
 - 2026-07-31 — Audited every task's Acceptance / Report-back for consistency with the
   no-test rule: dropped the "gate green" claims from Tasks 2–7, moved all
   runtime-measurement report-back items into a deferred-measurements table in Task 8,

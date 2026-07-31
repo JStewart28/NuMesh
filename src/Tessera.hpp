@@ -34,6 +34,7 @@
 #include "Tessera_Profiling.hpp"
 #include "Tessera_Reduction.hpp"
 #include "Tessera_Refine.hpp"
+#include "Tessera_RefineClosure.hpp"
 #include "Tessera_RefineParallel.hpp"
 #include "Tessera_RefinePolicy.hpp"
 #include "Tessera_RefinementMode.hpp"

@@ -15,6 +15,7 @@
 #include "Tessera_Icosphere.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_Profiling.hpp"
+#include "Tessera_RefineClosure.hpp"
 #include "Tessera_Types.hpp"
 
 #include <Cabana_Core.hpp>
@@ -162,6 +163,12 @@ void buildFromTriangleSoup( MeshT& mesh, const TriangleSoup<Scalar>& soup )
                 edges( f, k ) = static_cast<GlobalId>( face_edges[f][k] );
             }
         }
+        // A freshly built mesh is entirely RED -- no face is a closure child. In
+        // RefinementMode::Conforming the closure members must say so explicitly:
+        // the AoSoA's backing View is zero-initialized, and an all-zero
+        // ClosureParent reads as face gid 0, which unclose() would take for a
+        // real parent. No-op in HangingNode2to1 mode.
+        initClosureFaceMembers<MeshT>( hf, 0, nf );
         mesh.resizeFaces( nf );
         Cabana::deep_copy( mesh.faces(), hf );
     }
