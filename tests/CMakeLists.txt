@@ -556,3 +556,25 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_markquality_curv.cpp
 )
+
+# markByQuality() driving CONFORMING refinement (Task 6 of
+# tasks/conforming-refinement.md): the conforming counterpart of the two
+# markquality tests above. Pins the criteria COMPOSED WITH the closure -- the
+# visible-to-red mask translation, and the fact that CurvatureCriterion's edge
+# coordinator now sees exactly two incident faces where a hanging-node mesh
+# leaves a T-junction it silently skips. A HangingNode2to1 control run with the
+# same criterion must fail conformity, or the case is vacuous.
+tessera_add_test(
+    NAME     markquality_conforming
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_markquality_conforming.cpp
+)
+tessera_add_test(
+    NAME     markquality_conforming
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_markquality_conforming.cpp
+)

@@ -142,16 +142,26 @@ void forEachUserFieldImpl( Fn&& fn, std::index_sequence<Js...> )
     ( fn( std::integral_constant<std::size_t, UserBegin + Js>{} ), ... );
 }
 
+//! Iterate exactly `N` user fields starting at `UserBegin`. Use this whenever
+//! the user pack is NOT the tuple's suffix -- which is the case for FACES in
+//! RefinementMode::Conforming, where the two closure bookkeeping members are
+//! appended after the user pack (see numFaceUserFields<>()). Iterating to the
+//! end of the tuple there would treat ClosureParent/ClosureParentVerts as user
+//! fields "u<n>"/"u<n+1>" on disk.
+template <std::size_t UserBegin, std::size_t N, class AoSoAType, class Fn>
+void forEachUserFieldN( Fn&& fn )
+{
+    if constexpr ( N > 0 )
+        forEachUserFieldImpl<UserBegin, AoSoAType>(
+            std::forward<Fn>( fn ), std::make_index_sequence<N>{} );
+}
+
 template <std::size_t UserBegin, class AoSoAType, class Fn>
 void forEachUserField( Fn&& fn )
 {
     constexpr std::size_t total = AoSoAType::member_types::size;
-    if constexpr ( total > UserBegin )
-    {
-        constexpr std::size_t N = total - UserBegin;
-        forEachUserFieldImpl<UserBegin, AoSoAType>(
-            std::forward<Fn>( fn ), std::make_index_sequence<N>{} );
-    }
+    constexpr std::size_t N = total > UserBegin ? total - UserBegin : 0;
+    forEachUserFieldN<UserBegin, N, AoSoAType>( std::forward<Fn>( fn ) );
 }
 
 //! Number of user fields (0 for an empty pack) of an entity kind's AoSoA.

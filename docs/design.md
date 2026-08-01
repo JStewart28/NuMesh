@@ -197,14 +197,18 @@ size the loop with `numFaceUserFields<FaceUserFields>()` rather than
 `face_member_types::size - FaceField::UserBegin`, which over-counts by two in
 `Conforming` mode.
 
-Both `refineLocal()` and the distributed `refine()` implement `Conforming`
-(`src/Tessera_RefineClosure.hpp` holds the closure kernel; the modes share one
-body in each driver and branch with `if constexpr`). Migration/load balance and
-I/O of a closed mesh are still staged in
+`Conforming` is implemented end to end: `refineLocal()` and the distributed
+`refine()` (`src/Tessera_RefineClosure.hpp` holds the closure kernel; the modes
+share one body in each driver and branch with `if constexpr`), `migrate()` /
+`loadBalance()` (see *Redistributing a conforming mesh*), HDF5 write/read (see
+*Parallel I/O*), and `markByQuality` — whose two criteria are mode-agnostic,
+since a criterion produces a mask over *visible* faces and `refine()` translates
+it. In `Conforming` mode a face's `Level` remains the **red** level — a closure
+child carries its parent's level — so `Level` no longer maps 1:1 to triangle
+size. The default is still `HangingNode2to1` and **none of the conforming path
+has been executed yet**; see
 [tasks/conforming-refinement.md](../tasks/conforming-refinement.md), which holds
-the full design. In `Conforming` mode a face's `Level` remains the **red**
-level — a closure child carries its parent's level — so `Level` no longer maps 1:1
-to triangle size.
+the full design and the remaining tasks.
 
 ### The red layer (both modes)
 
@@ -301,8 +305,26 @@ Consequences worth knowing:
 - Any site that materializes a face AoSoA from scratch rather than copying whole
   tuples must call `initClosureFaceMembers<MeshT>()`: a Cabana `AoSoA` is
   zero-initialized, and a zero `ClosureParent` reads as the perfectly valid face
-  gid 0. `buildTriangleMesh()` and `distribute()` do; `migrate()` copies tuples
-  and needs nothing.
+  gid 0. `buildTriangleMesh()`, `distribute()`, and the HDF5 reader do;
+  `migrate()` copies tuples and needs nothing.
+- Closure siblings must stay **co-resident** — two ranks each holding a child of
+  one parent would each un-close it into a duplicate red face. `migrate()`
+  repairs a `dest` that splits a group (round S, local); a caller that hands the
+  mesh a partition derived from outside the mesh's own layout — the HDF5 reader
+  is the one such caller — must first run the collective
+  `repairClosureCohesion(mesh, dest)`, since round S can only see groups that
+  are already co-resident.
+
+### Quality-based marking on a conforming mesh
+
+`markByQuality` needs no mode awareness: a criterion returns a mask over
+**visible** owned faces and step 2 above translates it to the red layer. One
+behavior does improve. `CurvatureCriterion`'s edge coordinator computes a
+dihedral only for edges with exactly two incident faces and silently skips the
+rest; on a hanging-node mesh those skipped edges are exactly the T-junctions, so
+a fold running through a refinement front is under-marked. On a conforming mesh
+there are none, so the coordinator's assumption is true rather than merely
+usually true.
 
 The single-rank building block is the free function
 `Tessera::refineLocal(mesh, faceMask, policy = DefaultRefinePolicy)`: it red-splits
@@ -480,7 +502,7 @@ void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
 |---|---|---|
 | `/vertices` | `gid` (uint64), `position` (Scalar×Dim), `u0..uN` (per user field) | |
 | `/edges` | `gid`, `verts` (uint64×2, **dense** vertex indices), `level` (int16), `u0..uN` | |
-| `/faces` | `gid`, `verts` (uint64×3, dense), `edges` (uint64×3, dense), `level`, `u0..uN` | XDMF triangle connectivity references `/faces/verts` |
+| `/faces` | `gid`, `verts` (uint64×3, dense), `edges` (uint64×3, dense), `level`, `u0..uN`, and in `Conforming` mode `closure_parent` (uint64), `closure_parent_verts` (uint64×3) | XDMF triangle connectivity references `/faces/verts` |
 
 Every entity carries both its persistent 64-bit `gid` (the cross-run/checksum
 identity, stored verbatim) and is referenced elsewhere by a **dense** index in
@@ -489,7 +511,36 @@ connectivity needs 0-based contiguous indices, so `verts`/`edges` datasets
 store dense references while `gid` carries the persistent one. Partition-
 dependent state (owner rank, ghost layer, CSR, key tables) is **not** written;
 the reader reconstructs it by handing a covering of the file to the tested
-`migrate()`. Root attributes (`format_version`, `dim`, `scalar_bytes`,
-`Nv`/`Ne`/`Nf`, per-user-field extents) let the reader hard-fail on a
-template/schema mismatch instead of silently misreading. Building I/O requires
+`migrate()`. Root attributes (`format_version`, `refinement_mode`, `dim`,
+`scalar_bytes`, `Nv`/`Ne`/`Nf`, per-user-field extents) let the reader hard-fail
+on a template/schema mismatch instead of silently misreading. Building I/O requires
 a **parallel** (`+mpi`) HDF5 -- see **Dependencies and Build Notes** in [README.md](../README.md).
+
+### Conforming meshes on disk (format version 2)
+
+The visible faces of a `Conforming` mesh are the *transient* closure layer; the
+persistent thing is the red layer un-close derives from the two closure
+bookkeeping members. A file that dropped them would read back looking perfectly
+healthy — same faces, same gids, Euler 2 — and then un-close to garbage on the
+next `refine()`. So they are written as their own `/faces/closure_parent` and
+`/faces/closure_parent_verts` datasets. Three details:
+
+- **They are not user fields.** The two members sit *after* the face user pack,
+  so the pack is no longer the face tuple's suffix and every face user-field
+  loop in the writer and reader is bounded by `numFaceUserFields<>()`. Emitting
+  them as `u<n>`/`u<n+1>` would round-trip by accident but would also inflate
+  `n_user_f_fields` and put them in the XDMF attribute list.
+- **They hold persistent gids** (a retired red face gid, three vertex gids), so
+  unlike `verts`/`edges` they need no dense translation and no ghost fetch.
+- **The reader must re-cohere the closure siblings.** Its fresh dense-index
+  block partition cuts wherever the block boundaries fall and so routinely
+  splits a sibling group across ranks, which `migrate()`'s local round S cannot
+  detect; `readMesh()` calls the collective `repairClosureCohesion()` to build a
+  `dest` that puts each group back on one rank before migrating.
+
+`format_version` is **2**, and the root attribute `refinement_mode`
+(0 = `HangingNode2to1`, 1 = `Conforming`) is written in both modes. That is how
+the two file shapes are told apart: reading a hanging-node file into a
+conforming mesh, or the reverse, aborts with a named attribute mismatch rather
+than producing a mesh with no closure bookkeeping. A version-1 file (no
+`refinement_mode` attribute) is not readable by this reader.

@@ -17,6 +17,7 @@
 #include "Tessera_IoCommon.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_Profiling.hpp"
+#include "Tessera_RefinementMode.hpp"
 #include "Tessera_Types.hpp"
 #include "Tessera_Xdmf.hpp"
 
@@ -47,6 +48,32 @@ namespace Tessera
 // their dense index fetched from that owner via two allToAllV rounds (the
 // halo plan is not needed -- each entity's `Owner` field is enough).
 // Collective under MPI-IO (spec 8.3); needs only the mesh (no halo argument).
+//
+// FORMAT VERSION 2 — refinement mode on disk.
+// A RefinementMode::Conforming mesh's visible faces carry two extra closure
+// bookkeeping members, and a file that dropped them could not be un-closed
+// after a read-back, so the red layer — and with it every subsequent refine()
+// — would be lost. They are written as their own datasets
+// /faces/closure_parent (u64) and /faces/closure_parent_verts (u64 x 3), NOT as
+// user fields:
+//
+//   * the two members are appended AFTER the face user pack, so the pack is no
+//     longer the face tuple's suffix. The face user-field loop is therefore
+//     bounded by numFaceUserFields<>() rather than by the tuple size — writing
+//     them as "u<n>"/"u<n+1>" would round-trip by accident but would also put
+//     them in `n_user_f_fields` and in the XDMF attribute list;
+//   * they hold PERSISTENT gids (a retired red face gid and three vertex gids),
+//     not dense indices, so unlike /edges/verts and /faces/verts they need no
+//     dense translation and no ghost fetch. A parent's corners are always
+//     corners of the parent's own children, hence of faces this rank holds.
+//
+// The root attribute `refinement_mode` (0 = HangingNode2to1, 1 = Conforming)
+// records which shape the file has; the reader validates it against the mesh
+// type it was handed, so reading a hanging-node file into a conforming mesh (or
+// vice versa) aborts with a named mismatch instead of silently producing a mesh
+// with no closure bookkeeping. It is written in BOTH modes — the version bump
+// from 1 to 2 is what makes that safe, since a v1 file carries no such
+// attribute and the reader would fail to open it.
 template <class MeshT>
 void writeMesh( const MeshT& mesh, const std::string& stem )
 {
@@ -59,6 +86,13 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
     using HostV = Cabana::AoSoA<VMT, Kokkos::HostSpace>;
     using HostE = Cabana::AoSoA<EMT, Kokkos::HostSpace>;
     using HostF = Cabana::AoSoA<FMT, Kokkos::HostSpace>;
+
+    constexpr bool kConforming =
+        ( MeshT::refinement_mode == RefinementMode::Conforming );
+    // The face user pack is NOT the face tuple's suffix in Conforming mode, so
+    // every face user-field loop below is bounded by this, not by the tuple.
+    constexpr std::size_t nUserF =
+        numFaceUserFields<typename MeshT::face_user_fields>();
 
     MPI_Comm comm = mesh.comm();
     const int R = mesh.rank();
@@ -295,7 +329,7 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
                                     levelBuf.data() );
         }
 
-        detail::forEachUserField<FaceField::UserBegin, HostF>(
+        detail::forEachUserFieldN<FaceField::UserBegin, nUserF, HostF>(
             [&]( auto MabsIc )
             {
                 constexpr std::size_t Mabs = decltype( MabsIc )::value;
@@ -321,10 +355,35 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
                                       E );
                 fXdmf.push_back( { name, "f" + name, E } );
             } );
+
+        // ---- closure bookkeeping (Conforming mode only) -------------------
+        // Persistent gids throughout, so no dense translation: ClosureParent is
+        // a retired red FACE gid (it names no live entity in the file at all —
+        // that is the point of retiring it) and ClosureParentVerts holds three
+        // VERTEX gids. invalid_gid marks a passed-through red face.
+        if constexpr ( kConforming )
+        {
+            auto cp = Cabana::slice<MeshT::closure_parent_field>( hf );
+            auto cv = Cabana::slice<MeshT::closure_parent_verts_field>( hf );
+            std::vector<std::uint64_t> parentBuf( nOwnedF ),
+                parentVertsBuf( static_cast<std::size_t>( nOwnedF ) * 3 );
+            for ( long long i = 0; i < nOwnedF; ++i )
+            {
+                const int li = static_cast<int>( i );
+                parentBuf[i] = cp( li );
+                for ( int k = 0; k < 3; ++k )
+                    parentVertsBuf[i * 3 + k] = cv( li, k );
+            }
+            detail::writeHyperslab( gFaces, "closure_parent", gcF.N, 1, gcF.off,
+                                    nOwnedF, parentBuf.data() );
+            detail::writeHyperslab( gFaces, "closure_parent_verts", gcF.N, 3,
+                                    gcF.off, nOwnedF, parentVertsBuf.data() );
+        }
     }
 
     // ---- root attributes (identical on every rank; safe under MPIO) -------
-    detail::writeIntAttr( file, "format_version", 1 );
+    detail::writeIntAttr( file, "format_version", 2 );
+    detail::writeIntAttr( file, "refinement_mode", kConforming ? 1 : 0 );
     detail::writeIntAttr( file, "dim", Dim );
     detail::writeIntAttr( file, "scalar_bytes",
                           static_cast<int>( sizeof( Scalar ) ) );
@@ -339,10 +398,7 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
         file, "n_user_e_fields",
         static_cast<int>(
             detail::userFieldCount<HostE, EdgeField::UserBegin>() ) );
-    detail::writeIntAttr(
-        file, "n_user_f_fields",
-        static_cast<int>(
-            detail::userFieldCount<HostF, FaceField::UserBegin>() ) );
+    detail::writeIntAttr( file, "n_user_f_fields", static_cast<int>( nUserF ) );
 
     H5Gclose( gVerts );
     H5Gclose( gEdges );

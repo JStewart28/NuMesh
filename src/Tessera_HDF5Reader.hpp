@@ -18,6 +18,8 @@
 #include "Tessera_Mesh.hpp"
 #include "Tessera_MeshMigrate.hpp"
 #include "Tessera_Profiling.hpp"
+#include "Tessera_RefineClosure.hpp"
+#include "Tessera_RefinementMode.hpp"
 #include "Tessera_Types.hpp"
 
 #include <Cabana_Core.hpp>
@@ -51,6 +53,21 @@ namespace Tessera
 // 1-deep ghost layer, and rebuilds the CSR + key tables + halo plans. The
 // postcondition is a valid distributed mesh identical in structure to the
 // Step-5/7 output, so every Step-5 invariant passes by construction.
+//
+// CONFORMING MODE. Two things the hanging-node path does not need:
+//
+//   * the closure bookkeeping members are read from /faces/closure_parent and
+//     /faces/closure_parent_verts (persistent gids, no dense translation) after
+//     initClosureFaceMembers() has stamped the whole freshly-materialized block
+//     — a Cabana AoSoA's backing View is zero-initialized, so an untouched
+//     ClosureParent reads as face gid 0 and unclose() would restore a bogus red
+//     parent for every face;
+//   * the fresh dense-index block partition cuts wherever it likes, so it
+//     routinely SPLITS a closure sibling group across ranks. migrate()'s round
+//     S repairs only groups that are already co-resident, which is exactly the
+//     assumption a read-back breaks, so the collective
+//     repairClosureCohesion() runs first and builds a `dest` that puts each
+//     group back on one rank.
 template <class MeshT>
 void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                const std::string& stem )
@@ -78,9 +95,20 @@ void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     H5Pclose( fapl );
 
     // ---- validate root attrs against the compile-time template ------------
+    constexpr bool kConforming =
+        ( MeshT::refinement_mode == RefinementMode::Conforming );
+
     detail::abortOnMismatch( comm,
-                             detail::readIntAttr( file, "format_version" ) == 1,
+                             detail::readIntAttr( file, "format_version" ) == 2,
                              "format_version" );
+    // Which mode wrote the file is a hard mismatch, not a fallback: a
+    // conforming mesh read from a hanging-node file would have no closure
+    // bookkeeping to un-close, and a hanging-node mesh cannot carry a
+    // conforming file's closure layer at all.
+    detail::abortOnMismatch( comm,
+                             detail::readIntAttr( file, "refinement_mode" ) ==
+                                 ( kConforming ? 1 : 0 ),
+                             "refinement_mode" );
     detail::abortOnMismatch( comm, detail::readIntAttr( file, "dim" ) == Dim,
                              "dim" );
     detail::abortOnMismatch( comm,
@@ -92,8 +120,9 @@ void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         detail::userFieldCount<HostV, VertexField::UserBegin>();
     constexpr std::size_t nUserE =
         detail::userFieldCount<HostE, EdgeField::UserBegin>();
+    // NOT the face tuple's suffix in Conforming mode — see the writer.
     constexpr std::size_t nUserF =
-        detail::userFieldCount<HostF, FaceField::UserBegin>();
+        numFaceUserFields<typename MeshT::face_user_fields>();
     detail::abortOnMismatch( comm,
                              detail::readIntAttr( file, "n_user_v_fields" ) ==
                                  static_cast<int>( nUserV ),
@@ -128,7 +157,7 @@ void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                  E )
                 extentsOk = false;
         } );
-    detail::forEachUserField<FaceField::UserBegin, HostF>(
+    detail::forEachUserFieldN<FaceField::UserBegin, nUserF, HostF>(
         [&]( auto MabsIc )
         {
             constexpr std::size_t Mabs = decltype( MabsIc )::value;
@@ -187,7 +216,7 @@ void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
             own( li ) = static_cast<Rank>( R );
             lev( li ) = levelBuf[i];
         }
-        detail::forEachUserField<FaceField::UserBegin, HostF>(
+        detail::forEachUserFieldN<FaceField::UserBegin, nUserF, HostF>(
             [&]( auto MabsIc )
             {
                 constexpr std::size_t Mabs = decltype( MabsIc )::value;
@@ -210,6 +239,32 @@ void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                             s( li, c ) = buf[i * E + c];
                 }
             } );
+
+        // ---- closure bookkeeping (Conforming mode only) --------------------
+        // Stamp the whole block first: this is a freshly-materialized AoSoA, so
+        // without it an unwritten ClosureParent reads as the perfectly valid
+        // face gid 0 (see initClosureFaceMembers()). The datasets then overwrite
+        // every row, but the stamp is what keeps a future partial read honest.
+        initClosureFaceMembers<MeshT>( hf, 0,
+                                       static_cast<std::size_t>( blockFaces ) );
+        if constexpr ( kConforming )
+        {
+            std::vector<std::uint64_t> parentBuf( blockFaces ),
+                parentVertsBuf( static_cast<std::size_t>( blockFaces ) * 3 );
+            detail::readHyperslab( gFaces, "closure_parent", 1, fs, blockFaces,
+                                   parentBuf.data() );
+            detail::readHyperslab( gFaces, "closure_parent_verts", 3, fs,
+                                   blockFaces, parentVertsBuf.data() );
+            auto cp = Cabana::slice<MeshT::closure_parent_field>( hf );
+            auto cv = Cabana::slice<MeshT::closure_parent_verts_field>( hf );
+            for ( long long i = 0; i < blockFaces; ++i )
+            {
+                const int li = static_cast<int>( i );
+                cp( li ) = parentBuf[i];
+                for ( int k = 0; k < 3; ++k )
+                    cv( li, k ) = parentVertsBuf[i * 3 + k];
+            }
+        }
     }
 
     // Dense vertex/edge indices this rank's face block references.
@@ -432,8 +487,12 @@ void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     H5Fclose( file );
 
     // ---- hand off to migrate(): recomputes ownership, ghosts, halo --------
+    // `dest` is self everywhere (the dense block partition IS the target
+    // partition), except where repairClosureCohesion() has to pull a sibling
+    // group the block boundary split back onto one rank.
     std::vector<Rank> dest( static_cast<std::size_t>( blockFaces ),
                             static_cast<Rank>( R ) );
+    repairClosureCohesion( mesh, dest );
     migrate( mesh, halo, dest );
 }
 

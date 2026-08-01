@@ -33,6 +33,15 @@
 //                iteration (default 0.1).
 //   --seed N     RNG seed for the per-rank random marking (default 42);
 //                reproducible across reruns.
+//   --refine-mode {hanging,conforming}
+//                Which RefinementMode the mesh type is instantiated with
+//                (default conforming). `hanging` keeps the 2:1-bounded
+//                hanging-node behavior: a partial mask leaves T-junctions, so
+//                the frames show level jumps across edges. `conforming` adds
+//                the transient red-green-blue closure pass, so every frame is
+//                a conforming triangulation with no hanging nodes -- visibly
+//                different in Paraview at every refinement front, and the
+//                owned-face counts are higher by the closure children.
 //   --out STEM   Output file stem (default "mesh_pipeline"); the exec-space
 //                tag, rank count, and frame index are appended automatically.
 
@@ -63,6 +72,7 @@ struct Options
     int iterations = 3;
     double refineFraction = 0.1;
     unsigned seed = 42;
+    bool conforming = true;
     std::string outStem = "mesh_pipeline";
 };
 
@@ -86,6 +96,8 @@ Options parseOptions( int argc, char* argv[] )
             opt.refineFraction = std::atof( next().c_str() );
         else if ( arg == "--seed" )
             opt.seed = static_cast<unsigned>( std::atoi( next().c_str() ) );
+        else if ( arg == "--refine-mode" )
+            opt.conforming = ( next() != "hanging" );
         else if ( arg == "--out" )
             opt.outStem = next();
     }
@@ -94,7 +106,8 @@ Options parseOptions( int argc, char* argv[] )
 
 // Output file stem for a given execution-space tag, rank count, and frame
 // index: "<out>_<tag>_np<size>_frame<i>" -> writeMesh() appends .h5/.xmf.
-std::string frameStem( const Options& opt, const char* tag, int size, int i )
+std::string frameStem( const Options& opt, const std::string& tag, int size,
+                       int i )
 {
     return opt.outStem + "_" + tag + "_np" + std::to_string( size ) + "_frame" +
            std::to_string( i );
@@ -105,12 +118,16 @@ std::string frameStem( const Options& opt, const char* tag, int size, int i )
 // whichever Kokkos backend Exec resolves to (Serial always; the platform
 // default and, on Tuolumne, OpenMP as well -- see main()).
 // ----------------------------------------------------------------------------
-template <class Exec>
-void run( int rank, int size, const char* tag, const Options& opt )
+// `Mode` is the Mesh template's RefinementMode -- a compile-time parameter, so
+// the two --refine-mode choices are two distinct mesh types and main() below
+// instantiates run() twice. Nothing else in the pipeline changes: refine()
+// dispatches internally, and the closure is invisible to every accessor.
+template <class Exec, RefinementMode Mode>
+void run( int rank, int size, const std::string& tag, const Options& opt )
 {
     using mem = typename Exec::memory_space;
-    using MeshT =
-        Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>, mem, Exec>;
+    using MeshT = Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
+                       mem, Exec, Mode>;
 
     // Step 1: construct an empty distributed-mesh container bound to a
     // communicator. No entities exist yet -- the builder below populates it.
@@ -138,7 +155,7 @@ void run( int rank, int size, const char* tag, const Options& opt )
     writeMesh( mesh, frameStem( opt, tag, size, 0 ) );
     if ( rank == 0 )
         std::printf( "  [%s] frame 0: ownedF=%zu ownedE=%zu ownedV=%zu -> %s\n",
-                     tag, mesh.numOwnedFaces(), mesh.numOwnedEdges(),
+                     tag.c_str(), mesh.numOwnedFaces(), mesh.numOwnedEdges(),
                      mesh.numOwnedVertices(),
                      frameStem( opt, tag, size, 0 ).c_str() );
 
@@ -169,10 +186,12 @@ void run( int rank, int size, const char* tag, const Options& opt )
         for ( int f = 0; f < nOwnedF; ++f )
             mask[f] = ( unif( rng ) < opt.refineFraction ) ? 1 : 0;
 
-        // 5b. Refine: conforming 2:1-balanced split of the marked faces (plus
-        // whatever the cross-rank 2:1 fixpoint pulls in). This clears `halo`
-        // as a documented side effect -- no haloExchange() may run until it
-        // is rebuilt.
+        // 5b. Refine: 2:1-balanced 1->4 split of the marked faces (plus
+        // whatever the cross-rank 2:1 fixpoint pulls in), followed -- in
+        // RefinementMode::Conforming only -- by the transient closure pass that
+        // retriangulates the kept neighbours so no hanging node survives. This
+        // clears `halo` as a documented side effect -- no haloExchange() may
+        // run until it is rebuilt.
         RefineResult rr = refine( mesh, halo, mask );
         totalRefineIters += rr.iterations;
 
@@ -204,9 +223,9 @@ void run( int rank, int size, const char* tag, const Options& opt )
         if ( rank == 0 )
             std::printf( "  [%s] frame %d: ownedF=%zu ownedE=%zu ownedV=%zu "
                          "(refine rounds=%d, cumulative=%d) -> %s\n",
-                         tag, it, mesh.numOwnedFaces(), mesh.numOwnedEdges(),
-                         mesh.numOwnedVertices(), rr.iterations,
-                         totalRefineIters,
+                         tag.c_str(), it, mesh.numOwnedFaces(),
+                         mesh.numOwnedEdges(), mesh.numOwnedVertices(),
+                         rr.iterations, totalRefineIters,
                          frameStem( opt, tag, size, it ).c_str() );
 
         // End of this "timestep": report the window aggregate, then reset so
@@ -231,23 +250,39 @@ int main( int argc, char* argv[] )
     Kokkos::initialize( argc, argv );
     {
         const Options opt = parseOptions( argc, argv );
+        const char* modeTag = opt.conforming ? "conforming" : "hanging";
         if ( rank == 0 )
             std::printf(
                 "=== Tessera mesh_pipeline: subdiv=%d axis=%d balance=%s "
-                "iters=%d frac=%g seed=%u out=%s ===\n",
+                "iters=%d frac=%g seed=%u refine-mode=%s out=%s ===\n",
                 opt.subdiv, opt.axis, opt.balance ? "on" : "off",
-                opt.iterations, opt.refineFraction, opt.seed,
+                opt.iterations, opt.refineFraction, opt.seed, modeTag,
                 opt.outStem.c_str() );
 
-        run<Kokkos::Serial>( rank, size, "Serial", opt );
+        // The mode is a compile-time mesh parameter, so it selects between two
+        // instantiations of the same pipeline rather than a runtime branch
+        // inside it. The mode tag goes in the frame stem so a conforming and a
+        // hanging-node run of the same --out can be compared side by side.
+        auto dispatch = [&]( auto execTag, const char* spaceTag )
+        {
+            using Exec = decltype( execTag );
+            const std::string tag = std::string( spaceTag ) + "_" + modeTag;
+            if ( opt.conforming )
+                run<Exec, RefinementMode::Conforming>( rank, size, tag, opt );
+            else
+                run<Exec, RefinementMode::HangingNode2to1>( rank, size, tag,
+                                                            opt );
+        };
+
+        dispatch( Kokkos::Serial{}, "Serial" );
         if ( !std::is_same<Kokkos::DefaultExecutionSpace,
                            Kokkos::Serial>::value )
-            run<Kokkos::DefaultExecutionSpace>( rank, size, "Default", opt );
+            dispatch( Kokkos::DefaultExecutionSpace{}, "Default" );
 #ifdef KOKKOS_ENABLE_OPENMP
         if ( !std::is_same<Kokkos::OpenMP, Kokkos::Serial>::value &&
              !std::is_same<Kokkos::OpenMP,
                            Kokkos::DefaultExecutionSpace>::value )
-            run<Kokkos::OpenMP>( rank, size, "OpenMP", opt );
+            dispatch( Kokkos::OpenMP{}, "OpenMP" );
 #endif
     }
     Kokkos::finalize();

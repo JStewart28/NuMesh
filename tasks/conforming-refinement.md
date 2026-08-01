@@ -29,19 +29,20 @@
 | 3 | Distributed split-edge discovery (extend Phase 2 to kept faces) | **Done** |
 | 4 | Wire closure into distributed `refine()` | **Done** |
 | 5 | `migrate()` / `loadBalance()` / halo rebuild on a closed mesh | **Done** |
-| 6 | I/O round-trip, `markByQuality`, example + docs | Not started |
+| 6 | I/O round-trip, `markByQuality`, example + docs | **Done** |
 | 7 | Dedicated conforming test suite; flip the default to `Conforming` | Not started |
 | 8 | **Run the full suite and fix everything it finds** (the only task that runs tests) | Not started |
 
-Tasks 1–5 have landed, so **conforming distributed refinement works and survives
-redistribution**: the closure kernel and its inverse are pure local functions in
+Tasks 1–6 have landed, so **conforming refinement is feature-complete**: the
+closure kernel and its inverse are pure local functions in
 `src/Tessera_RefineClosure.hpp`, both `refineLocal()` and the distributed
-`refine()` run un-close → mask translation → red split → close, and
-`migrate()` / `loadBalance()` keep closure siblings co-resident and weight a red
-parent's children as one unit. There is no abort stub left in the refine path.
-What remains is I/O and marking (Task 6), the dedicated suite and default flip
-(Task 7) — and then the single verification pass (Task 8). **Nothing has been
-executed yet.**
+`refine()` run un-close → mask translation → red split → close, `migrate()` /
+`loadBalance()` keep closure siblings co-resident and weight a red parent's
+children as one unit, the closure bookkeeping round-trips through HDF5, and
+`markByQuality` drives the whole thing through the mask translation. There is no
+abort stub left anywhere. What remains is the dedicated suite and the default
+flip (Task 7) — and then the single verification pass (Task 8). **Nothing has
+been executed yet.**
 
 ---
 
@@ -259,8 +260,10 @@ re-exported as `MeshT::closure_parent_field` / `closure_parent_verts_field`.
 > plus `detail::copyUserFieldsN<UserBegin, N>` and switched both face-field copy
 > sites in `Tessera_Refine.hpp` / `Tessera_RefineParallel.hpp` to it. The
 > tuple-suffix-derived `detail::copyUserFields<UserBegin>` remains, correct for
-> vertices and edges. **The HDF5 writer/reader still derives its face field set
-> from the tuple suffix — Task 6 must audit it against `numFaceUserFields<>()`.**
+> vertices and edges. Task 6 discharged the same hazard in the I/O path: the HDF5
+> writer and reader bound their face user-field loops (and the `n_user_f_fields`
+> attribute) with `detail::forEachUserFieldN<UserBegin, numFaceUserFields<>()>`
+> and write the closure members as their own datasets.
 
 > **Consequence — the closure members must be explicitly initialized.** A Cabana
 > `AoSoA`'s backing View is *zero*-initialized, so an untouched `ClosureParent`
@@ -270,8 +273,9 @@ re-exported as `MeshT::closure_parent_field` / `closure_parent_verts_field`.
 > `HangingNode2to1` mode) and calls it from `buildTriangleMesh()` in
 > `Tessera_MeshBuilder.hpp`. `distribute()` / `migrate()` / `haloExchange()` are
 > generic over the whole face tuple and carry the members through unchanged, so they
-> need nothing. **The HDF5 reader materializes faces too — Task 6 must call it
-> there.** `unclose()` guards the failure mode anyway: it aborts if two restored red
+> need nothing. Task 4 found that `distribute()` *does* (it builds a fresh face
+> AoSoA), and Task 6 the same for the HDF5 reader; both now call it.
+> `unclose()` guards the failure mode anyway: it aborts if two restored red
 > faces share a gid, which is exactly what an uninitialized field produces.
 
 **Memory.** Only the *visible* face array carries the two fields, in `Conforming`
@@ -394,8 +398,8 @@ the design under-specified, both now settled in the code:
 | `Level` semantics | Face `Level` remains the **red** level. A closure child carries its parent's level, so in `Conforming` mode `Level` no longer maps 1:1 to triangle size. Edge level stays `min` of incident face levels. Document in `docs/design.md`. |
 | `migrate()` / `loadBalance()` | **Done, Task 5.** The visible (closed) mesh migrates. Un-close is local *per child*, so siblings need not stay co-resident for correctness — but two ranks each holding a child of the same parent would each restore the parent, duplicating it. `migrate()` round S constrains `dest` so all closure siblings follow the lowest-gid sibling's destination (purely local — siblings are co-resident on entry); `ownedFaceWeights()` weights a child `1/nsiblings`. |
 | Halo rebuild | Unchanged in mechanism. On a conforming mesh every edge has exactly 2 incident faces, so the 1-ring closure invariant is cleaner, not harder. |
-| I/O | The two closure fields must round-trip through HDF5/XDMF, else a read-back mesh cannot be un-closed. Task 6. |
-| `markByQuality` | Returns a mask over **visible** owned faces; step 0b translates it. `CurvatureCriterion`'s "exactly two incident faces" coordinator assumption becomes *true* in conforming mode rather than silently skipped — a correctness improvement. |
+| I/O | **Done, Task 6.** Format version 2: the two closure members are their own `/faces/closure_parent` + `/faces/closure_parent_verts` datasets (persistent gids, no dense translation), the face user-field loops are bounded by `numFaceUserFields<>()` instead of the tuple suffix, and a `refinement_mode` root attribute distinguishes the two file shapes. The reader also runs the collective `repairClosureCohesion()` — its fresh block partition splits sibling groups, which `migrate()`'s local round S cannot see. |
+| `markByQuality` | **Done, Task 6 — no library change needed.** Returns a mask over **visible** owned faces; step 0b translates it. `CurvatureCriterion`'s "exactly two incident faces" coordinator assumption becomes *true* in conforming mode rather than silently skipped — a correctness improvement, measured directly by `checkConforming()` (which counts exactly the edges that guard would skip). |
 | `MeshGeometry` / `VertexStencil` | No change; they read the visible mesh and are already generation-guarded. Conforming topology makes the k=1 stencil consistent at former T-junctions. |
 | `RefinePolicy` | Untouched. The closure interpolates nothing. |
 | Profiling | Level-2 `refine_unclose` / `refine_close` and level-3 `refine_closure_patterns` — added, Task 4. |
@@ -894,32 +898,107 @@ differ, and only in `Conforming` mode. `migrate()`/`loadBalance()` now return
 
 ---
 
-### Task 6 — I/O, marking, example, docs
+### Task 6 — I/O, marking, example, docs — **DONE**
 
 **Goal.** The feature is usable and documented end to end.
 
-- Persist `ClosureParent` / `ClosureParentVerts` in the HDF5 writer/reader. Audit the
-  writer's face field set against `numFaceUserFields<>()` (it still derives it from
-  the tuple suffix, which over-counts by two in `Conforming` mode), and call
-  `initClosureFaceMembers<MeshT>()` on the reader's freshly-materialized face AoSoA —
-  a zero-filled `ClosureParent` reads as face gid 0.
-- Confirm `markByQuality` (both criteria) drives `Conforming` refine correctly through
-  the mask translation; confirm `CurvatureCriterion`'s coordinator now sees two
-  incident faces at former T-junction edges.
-- `examples/02_mesh_pipeline`: add `--refine-mode {hanging,conforming}` (two mesh
-  type instantiations). Mirror the new argument into the README example table.
-- Rewrite the `docs/design.md` *Adaptive refinement* section for both modes; remove
-  the **non-conforming** entry from README *Known Issues*; add the compressed
-  closure-encoding idea to README *Future Optimizations*.
+**What landed.**
 
-**Acceptance.** `io` regression test extended: write → read → un-close a conforming
-mesh and recover the red layer bit-for-bit. Both `markquality` tests gain a
-conforming variant. README/`docs/design.md` in sync; `format-check` clean.
+- `src/Tessera_IoCommon.hpp` — `detail::forEachUserFieldN<UserBegin, N, AoSoA>`,
+  an explicit-count user-field loop; `forEachUserField` now delegates to it with
+  `N = tuple size − UserBegin`. Needed because the face user pack is not the face
+  tuple's suffix in `Conforming` mode.
+- `src/Tessera_HDF5Writer.hpp` / `src/Tessera_HDF5Reader.hpp` — **format version
+  2.** Both face user-field loops (and `n_user_f_fields`) are now bounded by
+  `numFaceUserFields<MeshT::face_user_fields>()`; the two closure members are
+  written as their own `/faces/closure_parent` (u64) and
+  `/faces/closure_parent_verts` (u64 × 3) datasets; a new root attribute
+  `refinement_mode` (0/1) is written in both modes and validated on read; the
+  reader calls `initClosureFaceMembers<MeshT>()` on its freshly-materialized face
+  block and then fills the two members from the datasets.
+- `src/Tessera_MeshMigrate.hpp` — `repairClosureCohesion( mesh, dest )`, the
+  **collective** counterpart of `migrate()`'s local round S (below).
+- `examples/02_mesh_pipeline` — `--refine-mode {hanging,conforming}` (default
+  `conforming`), dispatching to two instantiations of the same `run()`; the mode
+  tag is part of the frame stem so the two can be compared frame by frame.
+- `tests/test_io.cpp` — `runConforming()` case; `tests/test_markquality_conforming.cpp`
+  (new, `regression`, SERIAL + HIP, ranks 1–5); README + `docs/design.md` updated.
 
-**Report back.** Whether the reader needed a format-version bump, and how a
-hanging-node-written file and a conforming-written file are told apart on read; the
-*computed* on-disk size delta per face (`+4 × sizeof(GlobalId)`) — Task 8 reports the
-actual file sizes.
+**The one thing the design missed: the reader breaks sibling co-residency.**
+Task 5 established that a split sibling group means two ranks each un-close the
+same parent, and put the repair in `migrate()` — deliberately **local**, on the
+stated grounds that "siblings are co-resident on entry". `readMesh()` is the one
+caller for which that premise is false: it hands every rank a *fresh contiguous
+block of dense face indices*, deliberately unrelated to the writer's partition,
+so a group straddling a block boundary arrives already split and round S — which
+only ever sees one rank's holdings — cannot detect it. Hence
+`repairClosureCohesion()`: one `allToAllV` round trip keyed on the parent gid
+(`parent % size`), the coordinator picking the destination of the lowest-gid
+sibling, i.e. the *same* globally-agreed rule round S applies, so running one
+after the other is idempotent and neither introduces a partition dependence.
+It lives next to round S rather than inside the reader because it is a property
+of conforming meshes, not of HDF5. Round S stays local and unchanged: paying a
+collective on every `loadBalance()` to handle a case only the reader creates
+would be the wrong trade.
+
+**Closure fields are not user fields, and the distinction is load-bearing.**
+Writing them as `u<n>`/`u<n+1>` would have round-tripped *by accident* — they are
+plain `GlobalId`/`GlobalId[3]` members and the writer and reader derive the field
+set with the same (over-counting) formula, so the two would have agreed. It is
+still wrong: it inflates `n_user_f_fields`, puts closure bookkeeping in the XDMF
+attribute list as if it were solver data, and makes the on-disk schema of a
+conforming file differ from a hanging-node file in a way nothing declares. The
+count fix plus explicit datasets plus the `refinement_mode` attribute makes the
+difference explicit and checkable.
+
+**No dense translation.** Unlike `/edges/verts` and `/faces/verts`, the closure
+datasets hold **persistent** gids — a retired red face gid (which names no live
+entity in the file at all) and three vertex gids — so they need neither the
+dense-index map nor the ghost fetch. A parent's corners are always corners of the
+parent's own children, hence of faces the writing rank holds.
+
+**`markByQuality` needed no library change.** A criterion returns a mask over
+*visible* owned faces and `refine()`'s step 0b translates it; neither criterion
+reads anything mode-dependent. `CurvatureCriterion`'s `inc.size() != 2` skip is
+the interesting part: on a conforming mesh there are no such edges, so the
+coordinator's assumption becomes true rather than usually-true. The test measures
+that directly rather than by proxy — `checkConforming()` counts exactly the edges
+that guard would skip, through the same `edgeCoordRank` routing.
+
+**Acceptance.** All written and compiled, **not run** (handoff contract).
+
+- `io` (`regression`, SERIAL + HIP, ranks 1–5) gained `runConforming()`: two
+  adaptive conforming rounds, then write → read → **red-layer identity**. The
+  red layer is compared as a rank-count-independent checksum (count + BXOR + SUM
+  over a per-red-face hash of gid, the three corner gids *in order*, and level) —
+  order kept rather than sorted so a winding change fails too. Plus
+  `checkSiblingCoresidency` (what pins `repairClosureCohesion`),
+  `checkConforming`, owned Euler `== 2`, `check21BalanceRed`,
+  `checkOwnershipPartition`, `owned1RingLocal`, unchanged topology and
+  user-field checksums (the latter doubling as the `UserBegin`-shift canary),
+  and finally **one more conforming `refine()` on the read-back mesh** — the
+  check that the recovered red layer is not just equal but usable. Non-vacuity:
+  the round-trip fails if no closure children were emitted before the write.
+- `markquality_conforming` (new, `regression`, SERIAL + HIP, ranks 1–5): one
+  fixture (subdiv-2 icosphere, vertex gid 0 pushed out 3×, so the spike ring is
+  both long-edged and steeply folded) drives both criteria for two rounds of
+  mark → refine → migrate → halo, asserting the full conforming sweep each
+  round. `EdgeLengthCriterion`'s threshold (1.0) sits in a wide empty gap;
+  `CurvatureCriterion`'s is derived from the replicated reference's own dihedral
+  distribution (midpoint of the largest gap), the rule `markquality_curv` uses.
+  Non-vacuity, all hard failures: the mask must be a proper non-empty subset
+  every round, closure children must be emitted, and the same criterion on a
+  `HangingNode2to1` control must leave T-junctions behind.
+
+**Report back.** *(delivered — see above. Short version: yes, the reader needed a
+format-version bump, 1 → 2, because the new `refinement_mode` root attribute is
+written unconditionally and a v1 file has none; that attribute is also how the
+two file shapes are told apart, as a hard `abortOnMismatch` against the mesh
+type's own mode rather than a fallback. The computed on-disk delta is
+`+4 × sizeof(GlobalId)` = **32 B per owned face** (`closure_parent` 8 B +
+`closure_parent_verts` 24 B); the `io` test prints that figure against the actual
+`.h5` size for Task 8. The one design gap was the reader breaking the
+sibling-co-residency premise round S is built on.)*
 
 ---
 
@@ -943,8 +1022,8 @@ counterpart for every mode-sensitive test:
 | `refine` (unit, np1) | yes | `refine_closure` (Task 2) — already covers `refineLocal` conforming |
 | `refine_parallel` (regression) | yes | `refine_conforming` (Task 4) |
 | `migrate_mesh`, `loadbalance` (regression) | yes | `conforming_migrate` (Task 5) — landed |
-| `io` (regression) | yes | `io` conforming case (Task 6) |
-| `markquality_edge`, `markquality_curv` (regression) | yes | conforming variants (Task 6) |
+| `io` (regression) | yes | `io` conforming case (Task 6) — landed |
+| `markquality_edge`, `markquality_curv` (regression) | yes | `markquality_conforming` (Task 6) — landed, covers both criteria |
 | `distribute`, `connectivity`, `keys`, `data_model`, `halo`, `migrate`, `geometry`, `global_reduce` | n/a — no `refine()` call, mode-insensitive | — |
 
 Mode-sensitive tests must be registered in **both** modes, not switched over.
@@ -1259,6 +1338,26 @@ so collect them from the run output rather than re-running:
   (`/opt/rocm-6.4.2/llvm/bin`) binaries. `README.md` Known Issues and
   `docs/design.md`'s *Load balancing* section updated (new *Redistributing a
   conforming mesh* subsection).
+- 2026-07-31 — **Task 6 landed — the feature is complete.** HDF5 **format version
+  2**: `/faces/closure_parent` + `/faces/closure_parent_verts` datasets (persistent
+  gids, no dense translation), a `refinement_mode` root attribute written in both
+  modes and hard-validated on read, and both face user-field loops re-bounded by
+  `numFaceUserFields<>()` via the new `detail::forEachUserFieldN<UserBegin, N>` —
+  the tuple-suffix formula over-counts by two in `Conforming` mode. The reader also
+  calls `initClosureFaceMembers()` on its fresh face block. **The one design gap:
+  `readMesh()` breaks the co-residency premise `migrate()`'s round S is built on** —
+  its fresh dense-index block partition splits sibling groups, which a local pass
+  cannot detect — so `repairClosureCohesion( mesh, dest )` was added next to round S
+  as its collective counterpart (one `allToAllV`, keyed `parent % size`, lowest-gid
+  sibling wins, idempotent with round S). `markByQuality` needed **no** library
+  change: a criterion's mask is over visible faces and step 0b translates it.
+  `examples/02_mesh_pipeline` gained `--refine-mode {hanging,conforming}` (two
+  instantiations, mode tag in the frame stem); `tests/test_io.cpp` gained a
+  conforming red-layer round-trip case and `tests/test_markquality_conforming.cpp`
+  is new (`regression`, SERIAL + HIP, ranks 1–5). README (Known Issues rewritten,
+  compressed-closure-encoding added to Future Optimizations) and `docs/design.md`
+  (both modes, conforming-marking subsection, on-disk format 2) updated. Whole
+  suite compiles clean (SERIAL + HIP); `clang-format` clean on every touched file.
 - 2026-07-31 — Audited every task's Acceptance / Report-back for consistency with the
   no-test rule: dropped the "gate green" claims from Tasks 2–7, moved all
   runtime-measurement report-back items into a deferred-measurements table in Task 8,

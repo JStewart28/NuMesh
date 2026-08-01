@@ -48,7 +48,7 @@ using MeshT = Mesh<double, /*Dim=*/3, VertexFields<>, EdgeFields<>, FaceFields<>
                    MemSpace, ExecSpace>;
 // An optional 8th parameter selects the refinement conformity contract:
 //   ..., ExecSpace, RefinementMode::HangingNode2to1>   // default: 2:1 hanging nodes
-//   ..., ExecSpace, RefinementMode::Conforming>        // no T-junctions (in progress)
+//   ..., ExecSpace, RefinementMode::Conforming>        // no T-junctions
 // See docs/design.md → Adaptive refinement → Refinement modes.
 
 MeshT mesh( MPI_COMM_WORLD );
@@ -84,7 +84,7 @@ writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
 | Example | Directory | Arguments | Description |
 |---|---|---|---|
 | `hello_tessera` | `examples/01_hello_tessera/` | *(none)* | Prints the active Kokkos backend and MPI rank count. Build verification only. |
-| `mesh_pipeline` | `examples/02_mesh_pipeline/` | `--subdiv N` `--axis N` `--balance` `--iters N` `--frac F` `--seed N` `--out STEM` | End-to-end demo: build an icosphere, partition + distribute it, then run `N` iterations of random-percent refinement, writing a new `.h5`/`.xmf` frame after each iteration so the mesh evolution can be stepped through in Paraview. Runs the pipeline once per available Kokkos execution space (Serial, plus the platform default and OpenMP where distinct). Also demonstrates the profiling API (see below): each iteration is one reporting window. |
+| `mesh_pipeline` | `examples/02_mesh_pipeline/` | `--subdiv N` `--axis N` `--balance` `--iters N` `--frac F` `--seed N` `--refine-mode {hanging,conforming}` `--out STEM` | End-to-end demo: build an icosphere, partition + distribute it, then run `N` iterations of random-percent refinement, writing a new `.h5`/`.xmf` frame after each iteration so the mesh evolution can be stepped through in Paraview. Runs the pipeline once per available Kokkos execution space (Serial, plus the platform default and OpenMP where distinct). `--refine-mode` selects the `RefinementMode` the mesh type is instantiated with (default `conforming`); the mode tag is part of the frame stem, so a `hanging` and a `conforming` run of the same `--out` can be compared frame by frame in Paraview. Also demonstrates the profiling API (see below): each iteration is one reporting window. |
 
 ### Profiling
 
@@ -274,6 +274,14 @@ make -j $(nproc)
 
 - Incrementally patch the `HaloExchangePlan` index maps after refinement instead of
   a full `rebuild()` each 2:1-balance iteration.
+- Compress the conforming-mode closure bookkeeping. A closure child currently
+  stores its red parent outright — `ClosureParent` (one `GlobalId`) plus
+  `ClosureParentVerts` (three more), so 4 × 8 B on a ~78 B face core, in memory
+  and on disk. A (parent gid, pattern + child-index byte) pair would halve that
+  and reconstruct the parent's corners from the sibling group instead; the cost
+  is that un-close stops being local per child, which is what makes the current
+  encoding cheap in `migrate()`. Worth doing only if face memory becomes the
+  binding constraint.
 
 ---
 
@@ -287,23 +295,22 @@ make -j $(nproc)
   freshly-refined-but-not-migrated mesh is a no-op on an empty plan, not a synced
   ghost layer. Factoring the rebuild into a standalone `rebuildHalo()` that `refine()`
   also calls is a tracked follow-up.
-- **Adaptive `refine()` is non-conforming (bounded hanging nodes).** A partial
-  refine mask leaves T-junctions bounded to a 2:1 level jump; the owned-only Euler
-  number equals 2 only for a uniform (conforming) refine. A fully conforming
-  triangulation is **in progress**: `Mesh`'s optional 8th template parameter
-  `RefinementMode` selects it, and both `refineLocal()` and the distributed
-  `refine()` now implement `RefinementMode::Conforming` — a transient
-  red–green–blue closure over the same 2:1-balanced red layer, under which the
-  owned-only Euler number is 2 for an arbitrary adaptive mask. `migrate()` /
-  `loadBalance()` handle a closed mesh (closure siblings are kept co-resident by
-  a local `dest` fixup, and a red parent's children weigh one unit). Still
-  outstanding: HDF5 round-trip of the closure bookkeeping fields, `markByQuality`
-  in conforming mode, and the dedicated conforming test suite. **None of the
-  conforming code has been executed yet** — the whole feature is verified in one
-  pass at the end of the plan. `RefinementMode::HangingNode2to1` (the current
-  default, and the mode every existing test and example uses) is unaffected. See
-  [tasks/conforming-refinement.md](tasks/conforming-refinement.md) for the design
-  and remaining tasks.
+- **Conforming refinement is written but has not been executed.** The whole
+  `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
+  `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented
+  and compiles clean (SERIAL + HIP), and its tests are written and registered,
+  but **nothing has been run yet**: the feature is verified in a single pass at
+  the end of the plan. Until then treat conforming mode as unproven.
+  `RefinementMode::HangingNode2to1` — still the `Mesh` template default, and the
+  mode every pre-existing test and the gate exercise — is unaffected. Note that
+  under that mode a partial refine mask leaves T-junctions bounded to a 2:1
+  level jump, so the owned-only Euler number equals 2 only for a uniform
+  refine; that is the *contract* of the mode, not a defect, and choosing
+  `RefinementMode::Conforming` is how a consumer that needs a conforming
+  triangulation opts out of it. See
+  [tasks/conforming-refinement.md](tasks/conforming-refinement.md) for the
+  design and the remaining tasks, and `docs/design.md` → *Adaptive refinement*
+  for the two modes.
 - **`buildVertexStencil(mesh, 2)` (k=2) is incomplete within one hop of a partition
   boundary.** Tessera's halo is **1-deep**, which fully covers a k=1 stencil but not a
   k=2 one: for an owned vertex whose 2-ring reaches beyond the ghost layer, the missing

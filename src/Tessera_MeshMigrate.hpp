@@ -163,6 +163,112 @@ struct MigrateStats
     long long siblingGroups = 0;
 };
 
+//! Rewrite `dest` (indexed by owned face local index) so that every closure
+//! sibling group ends up on ONE rank, when the group may already be SPLIT
+//! across ranks on entry. Returns the number of entries overridden, summed
+//! globally; a no-op returning 0 in HangingNode2to1 mode.
+//!
+//! This is the collective counterpart of migrate()'s round S, and exists for
+//! exactly one caller shape: something that hands a conforming mesh a partition
+//! it did not derive from the mesh's own layout. readMesh() is that caller —
+//! its fresh dense-index block partition cuts wherever the block boundaries
+//! fall, so it can (and routinely does) land two children of one retired parent
+//! on different ranks. Round S cannot see that: it is deliberately local, and a
+//! rank holding one child of a split group has no way to know the group extends
+//! elsewhere.
+//!
+//! One allToAllV round trip, keyed on the parent gid (parent % size), matching
+//! the gid-coordinator idiom the rest of the library uses. The winner is the
+//! destination of the LOWEST-GID sibling — the same globally-agreed rule round S
+//! applies — so running this and then round S is idempotent, and the choice
+//! introduces no partition dependence.
+template <class MeshT>
+long long repairClosureCohesion( const MeshT& mesh, std::vector<Rank>& dest )
+{
+    if constexpr ( MeshT::refinement_mode != RefinementMode::Conforming )
+    {
+        (void)mesh;
+        (void)dest;
+        return 0;
+    }
+    else
+    {
+        MPI_Comm comm = mesh.comm();
+        const int size = mesh.commSize();
+        const int nof = static_cast<int>( mesh.numOwnedFaces() );
+
+        Cabana::AoSoA<typename MeshT::face_member_types, Kokkos::HostSpace> hf(
+            "hf_cohesion", mesh.numFaces() );
+        Cabana::deep_copy( hf, mesh.faces() );
+        auto f_gid = Cabana::slice<FaceField::Gid>( hf );
+        auto f_parent = Cabana::slice<MeshT::closure_parent_field>( hf );
+
+        // (parent gid, child gid, that child's proposed destination).
+        struct ChildMsg
+        {
+            GlobalId parent;
+            GlobalId child;
+            Rank dest;
+        };
+        std::vector<std::vector<ChildMsg>> toCoord( size );
+        // Local face index of each message, parallel to toCoord, so the reply
+        // (grouped by source rank, in send order) maps straight back.
+        std::vector<std::vector<int>> sentLocal( size );
+        for ( int f = 0; f < nof; ++f )
+        {
+            const GlobalId p = f_parent( f );
+            if ( p == invalid_gid )
+                continue;
+            const int c = static_cast<int>( p % static_cast<GlobalId>( size ) );
+            toCoord[c].push_back( ChildMsg{ p, f_gid( f ), dest[f] } );
+            sentLocal[c].push_back( f );
+        }
+        auto got = allToAllV( comm, toCoord );
+
+        // Coordinator: per parent, the destination of the lowest-gid child.
+        std::map<GlobalId, std::pair<GlobalId, Rank>> leader;
+        for ( const auto& m : got.data )
+        {
+            auto it = leader.find( m.parent );
+            if ( it == leader.end() )
+                leader.emplace( m.parent, std::make_pair( m.child, m.dest ) );
+            else if ( m.child < it->second.first )
+                it->second = { m.child, m.dest };
+        }
+
+        // Reply to every advertisement in received order, per source rank.
+        std::vector<std::vector<Rank>> reply( size );
+        for ( int s = 0; s < size; ++s )
+        {
+            const ChildMsg* p = got.from( s );
+            const int c = got.count( s );
+            for ( int k = 0; k < c; ++k )
+                reply[s].push_back( leader.at( p[k].parent ).second );
+        }
+        auto back = allToAllV( comm, reply );
+
+        long long fixups = 0;
+        for ( int s = 0; s < size; ++s )
+        {
+            const Rank* p = back.from( s );
+            const int c = back.count( s );
+            for ( int k = 0; k < c; ++k )
+            {
+                const int f = sentLocal[s][k];
+                if ( dest[f] != p[k] )
+                {
+                    dest[f] = p[k];
+                    ++fixups;
+                }
+            }
+        }
+
+        long long global = 0;
+        MPI_Allreduce( &fixups, &global, 1, MPI_LONG_LONG, MPI_SUM, comm );
+        return global;
+    }
+}
+
 //! Migrate owned faces to `dest` (indexed by owned face local index), moving their
 //! vertices/edges + whole field pack, recomputing lowest-rank ownership, and
 //! rebuilding the 1-deep halo. See the header comment for the algorithm.
