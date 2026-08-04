@@ -1373,7 +1373,10 @@ resume Task 8.**
 First execution (2026-08-04, D0): **78 test instances pass**, including all of
 Tasks 1 and 2 (`refinement_mode`, `refine_closure`) and the whole pre-existing
 suite at np1–4 — so risk points 1, 6 and 8 are clear. Three failures:
-`refine_splitedges` hangs at np≥2; `refine_conforming` fails adaptive rounds 2
+`refine_splitedges` hangs at np≥2 (**fixed, D1** — a rank-0-guarded
+`MPI_Allreduce` hidden in a `printf` argument, plus a missing between-rounds
+re-halo; `refine_splitedges` is now green SERIAL + HIP at np1–5);
+`refine_conforming` fails adaptive rounds 2
 and 3 at np1 (**risk point 9 confirmed exactly as predicted** — round 2's
 `euler=-136` equals round 1's hanging-node control, i.e. the mesh reverts to
 hanging-node behaviour from the second round on); and `refine_conforming` aborts

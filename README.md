@@ -296,6 +296,27 @@ make -j $(nproc)
   freshly-refined-but-not-migrated mesh is a no-op on an empty plan, not a synced
   ghost layer. Factoring the rebuild into a standalone `rebuildHalo()` that `refine()`
   also calls is a tracked follow-up.
+
+  **Calling `refine()` a second time without re-haloing in between throws** at
+  ranks >= 2 — `std::out_of_range: unordered_map::at`, from the vertex-gid ->
+  local-index lookup in Phase 3a. `refine()` needs the *positions* of both
+  endpoints of every midpoint the rank owns in order to interpolate it, and
+  across a partition boundary such an endpoint is a ghost that the previous
+  `refine()` dropped. Until the standalone `rebuildHalo()` lands, a multi-round
+  driver must re-halo between rounds; the idiom is an identity `migrate()`
+  (`dest[f] == rank`) followed by `haloExchange()`:
+
+  ```cpp
+  refine( mesh, halo, mask );
+  std::vector<Tessera::Rank> dest( mesh.numOwnedFaces(),
+                                   static_cast<Tessera::Rank>( rank ) );
+  migrate( mesh, halo, dest );        // Step-7 halo rebuild rides along
+  haloExchange( mesh, halo );
+  ```
+
+  Note this permutes the local face ordering, and hence which gid each of the
+  next round's children is assigned, so a *gid-derived* refinement mask selects a
+  different (equally valid) face set than it would without the re-halo.
 - **Conforming refinement is written but has not been executed, and it is now
   the `Mesh` default.** The whole `RefinementMode::Conforming` path — closure
   kernel, distributed `refine()`, `migrate()`/`loadBalance()`, HDF5 round-trip,

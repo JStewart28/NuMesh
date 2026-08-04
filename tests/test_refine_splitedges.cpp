@@ -329,6 +329,7 @@ int run( int rank, int size, const char* tag )
                        MPI_SUM, MPI_COMM_WORLD );
 
         if ( rank == 0 )
+        {
             std::printf( "  [%s] round1 %s (refining=%lld splitEdges=%lld "
                          "keptOnlyDiscovered=%lld phase2a: %lld total vs %lld "
                          "refining-only, x%.2f)\n",
@@ -338,6 +339,8 @@ int run( int rank, int size, const char* tag )
                          advRef > 0 ? static_cast<double>( advTot ) /
                                           static_cast<double>( advRef )
                                     : 0.0 );
+            std::fflush( stdout );
+        }
     }
 
     // ---- rounds 2-4: globally-decided soundness + completeness --------------
@@ -383,18 +386,36 @@ int run( int rank, int size, const char* tag )
                            MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD );
             MPI_Allreduce( &myMids, &midTot, 1, MPI_LONG_LONG, MPI_SUM,
                            MPI_COMM_WORLD );
+            // Collective: every rank must call it, so it cannot live inside
+            // the rank-0 print below.
+            const long long gFaces = TesseraTest::globalOwnedFaces( mesh );
 
             if ( rank == 0 )
+            {
                 std::printf( "  [%s] round%d %s (it=%d faces=%lld "
                              "localMidsSum=%lld phase2a: %lld vs %lld, "
                              "x%.2f)\n",
                              tag, round + 1, glob == 0 ? "ok" : "FAIL",
-                             res.iterations,
-                             TesseraTest::globalOwnedFaces( mesh ), midTot,
-                             advTot, advRef,
+                             res.iterations, gFaces, midTot, advTot, advRef,
                              advRef > 0 ? static_cast<double>( advTot ) /
                                               static_cast<double>( advRef )
                                         : 0.0 );
+                std::fflush( stdout );
+            }
+
+            // Re-halo before the next round. refine() drops every ghost and
+            // clears the halo plans (README Known Issues), but its own Phase 3a
+            // reads the POSITIONS of both endpoints of every midpoint this rank
+            // owns — and across a partition boundary such an endpoint is a
+            // ghost. Refining twice without rebuilding in between therefore
+            // throws from the endpoint lookup at np >= 2. The identity migrate
+            // is the documented rebuild idiom (Step 7 couples the general halo
+            // rebuild to migrate()); dest == self, so ownership, the owned-face
+            // snapshot taken next round, and the reference sets are unchanged.
+            std::vector<Rank> dest( mesh.numOwnedFaces(),
+                                    static_cast<Rank>( rank ) );
+            migrate( mesh, halo, dest );
+            haloExchange( mesh, halo );
         }
     }
 
@@ -415,6 +436,7 @@ int main( int argc, char* argv[] )
             std::printf( "test_refine_splitedges: distributed split-edge "
                          "discovery (size %d)\n",
                          size );
+        std::fflush( stdout );
 
         fails += run<Kokkos::Serial>( rank, size, "Serial" );
         if ( !std::is_same<Kokkos::DefaultExecutionSpace,

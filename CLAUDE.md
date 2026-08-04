@@ -39,7 +39,7 @@ Current task logs:
 | Task | File | Status |
 |------|------|--------|
 | Milestone 1 — distributed triangle mesh | [tasks/milestone1_mesh.md](tasks/milestone1_mesh.md) | Complete (Steps 0–10b done; regression gate 70/70, unit 28/28) |
-| Conforming refinement | [tasks/conforming-refinement.md](tasks/conforming-refinement.md) (design) + [tasks/conforming-refinement-debug.md](tasks/conforming-refinement-debug.md) (Task 8 sub-tasks D1–D8) | In progress — Tasks 1–7 done, **Task 8 (verification) under way**. First run 2026-08-04: 78 test instances pass; `refine_splitedges` hangs at np≥2, `refine_conforming` fails rounds 2–3 (risk point 9 confirmed), nine tests not yet executed. **Read the debug file to resume.** |
+| Conforming refinement | [tasks/conforming-refinement.md](tasks/conforming-refinement.md) (design) + [tasks/conforming-refinement-debug.md](tasks/conforming-refinement-debug.md) (Task 8 sub-tasks D1–D8) | In progress — Tasks 1–7 done, **Task 8 (verification) under way**. First run 2026-08-04: 78 test instances pass; D1 done (`refine_splitedges` now green SERIAL+HIP np1–5), `refine_conforming` fails rounds 2–3 (risk point 9 confirmed) and aborts at np≥2, nine tests not yet executed. **Read the debug file to resume.** |
 
 ---
 

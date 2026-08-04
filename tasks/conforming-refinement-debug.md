@@ -30,7 +30,7 @@
 | # | Task | Status |
 |---|------|--------|
 | D0 | Triage sweep — run the suite, collect first failures | **Done** (2026-08-04) |
-| D1 | Fix the `refine_splitedges` np≥2 hang | Not started |
+| D1 | Fix the `refine_splitedges` np≥2 hang | **Done** (2026-08-04) |
 | D2 | Fix risk point 9 — the persistent split-edge map | Not started |
 | D3 | Fix the `refine_conforming` np≥2 `unordered_map::at` abort | Not started |
 | D4 | Re-sweep: get the remaining nine never-executed tests to a first verdict | Not started |
@@ -39,8 +39,9 @@
 | D7 | `conforming_quality` — calibrate the provisional bounds | Not started |
 | D8 | Full gate at ranks 1–5, both tiers, `format-check`; close out Task 8 | Not started |
 
-**Open failures.** D1, D2, D3 confirmed reproducing (evidence below). D4–D7 are
-unknown — those tests have **never been executed**.
+**Open failures.** D2 and D3 confirmed reproducing (evidence below). D4–D7 are
+unknown — those tests have **never been executed**. D1 is fixed:
+`refine_splitedges` is green SERIAL and HIP at np1–5.
 
 ---
 
@@ -183,10 +184,10 @@ probe. `conforming_determinism`'s idempotence case is, and it has not run yet.
 
 ## D1 — Fix the `refine_splitedges` np≥2 hang
 
-**Status:** Not started. **Do this first** — it is the only test in the D0
-failure set that blocks the sweep from progressing (trap 1 makes one hang cost
-the rest of the run), and it isolates Phase 2, which everything downstream
-depends on.
+**Status: DONE (2026-08-04).** `refine_splitedges` passes SERIAL and HIP at
+np1–5. Two independent test-side defects, the second only visible once the first
+was fixed. **The second one very likely explains D3 as well — read *What
+landed* before starting D3.**
 
 **Reproduce.**
 
@@ -232,9 +233,111 @@ later `MPI_Allreduce`) deadlocks at np≥2 and is invisible at np1.
    SERIAL np1 passes, the cause is different and belongs to risk point 6, not
    here.
 
-**Acceptance.** `refine_splitedges` passes SERIAL and HIP at np1–5.
+**Acceptance.** `refine_splitedges` passes SERIAL and HIP at np1–5. **Met.**
 
-**What landed.** *(fill in)*
+**What landed.**
+
+The leading hypothesis above was right that the bug was in the test rather than
+in the library, and right about the mechanism — *a collective inside a
+rank-conditional branch* — but the audit in step 1 of the procedure misses it,
+because the collective is not a bare `MPI_*` call: it is hidden in an **argument
+to the `printf`**.
+
+**Defect 1 — the hang.** `tests/test_refine_splitedges.cpp`, the rounds-2-4
+loop:
+
+```cpp
+if ( rank == 0 )
+    std::printf( "  [%s] round%d %s (it=%d faces=%lld ...",
+                 ..., TesseraTest::globalOwnedFaces( mesh ), ... );
+                 //   ^^^^^^^^^^^^^^^^ MPI_Allreduce, rank 0 only
+```
+
+`globalOwnedFaces()` (`tests/MeshInvariants.hpp:222`) is an `MPI_Allreduce`.
+Rank 0 entered it at the end of round 1 and every other rank walked on into
+round 2's `refine()`, whose first collective is Phase 1's `allToAllV` — a
+deadlock. np1 cannot see it. Fixed by hoisting the call to a `const long long
+gFaces` above the `if`, evaluated by every rank.
+
+Localised by tracing: temporary per-rank `fprintf(stderr)` markers around every
+phase of the test, run with `TESSERA_PROBE=1`. The decisive clue was that
+rank 0's *round-1 print itself* never appeared while rank 1 had already printed
+`round2 refine enter` — i.e. rank 0 was stuck **inside** the print, not before
+or after it.
+
+A scan of every `if ( rank == 0 )` block in `tests/` and `examples/` for a
+collective (including ones reached through a helper) found **this as the only
+occurrence**, so no sibling fix was needed.
+
+**Defect 2 — a `std::out_of_range` abort, unmasked by the fix.** With the
+deadlock gone, np2-5 got further and aborted in round 2 with
+`unordered_map::at` on a non-zero rank — *the same exception as D3, in
+`HangingNode2to1` mode, in a test with no closure at all.*
+
+Root cause: `refine()` drops every ghost and clears the halo plans
+(`src/Tessera_RefineParallel.hpp:926`), but its own Phase 3a needs the
+**positions of both endpoints** of every midpoint the rank owns, in order to
+interpolate that midpoint (`gid2lv.at( a )`, line 533). Midpoint ownership is
+"lowest incident refining-face owner", so a rank can own the midpoint of an edge
+one of whose endpoints it holds only as a *ghost* — and after the previous
+`refine()` that ghost is gone. Refining twice with no rebuild in between
+therefore throws at np >= 2. This is the already-documented README *Known
+Issue* ("a distributed mesh must be re-haloed after `refine()`"), one step
+sharper than it was recorded: the consequence is not just an inert
+`haloExchange()`, it is a **throw from inside the next `refine()`**.
+
+Fixed in the test, not the library, because the library's contract is already
+the documented one and two other tests already follow it
+(`test_conforming_determinism.cpp:289` and `test_conforming_quality.cpp:324`
+both re-halo between rounds with exactly this idiom):
+
+```cpp
+std::vector<Rank> dest( mesh.numOwnedFaces(), static_cast<Rank>( rank ) );
+migrate( mesh, halo, dest );   // identity: the Step-7 halo rebuild rides along
+haloExchange( mesh, halo );
+```
+
+placed at the *end* of the round body — after every check and the print — so the
+invariants still measure exactly what `refine()` produced, with no ghosts
+present.
+
+**Side effect, benign, worth knowing.** The identity `migrate()` permutes the
+local face ordering, so round 2's children are assigned gids in a different
+order, so a **gid-derived mask picks a different face set** in later rounds.
+Visible as round 3's `localMidsSum` moving 219 -> 218 at np1. Nothing regressed:
+the mesh is the same size (`faces=` is identical round-for-round at every rank
+count) and all of this test's checks are reference-free coordinator-decided
+ground truth, so they hold under any such permutation. But do **not** treat a
+gid-masked test's per-round counts as rank-count invariants — that is
+`conforming_determinism`'s job, and it uses a *geometric* mask for exactly this
+reason.
+
+**Result, np1-5 x {SERIAL, HIP}, all `exit=0`** (job `f3QHvwB5yGRu`).
+Non-vacuity holds and strengthens with rank count — round 1's
+`keptOnlyDiscovered` is 0 / 6 / 13 / 24 / 27 at np 1 / 2 / 3 / 4 / 5, so the
+kept-side cross-boundary discovery that Task 3 exists to provide is genuinely
+exercised. Global face counts are identical at every rank count
+(458 / 731 / 950 / 1124 over the four rounds). Phase-2a message volume, for the
+Task-8 measurement table: **x6.96, x5.03, x10.01, x16.38** total-vs-refining-only
+over rounds 1-4 (rank-count independent).
+
+**Also landed.** README *Known Issues*: the re-halo entry now states the
+second-`refine()` throw, gives the identity-`migrate()` idiom as a code block,
+and notes the gid-permutation side effect. The per-round `printf`s in this test
+now `fflush( stdout )` so a later hang cannot swallow them (harness trap 2).
+
+**Steer for D3 — read this before debugging D3 separately.** D3 is an
+`unordered_map::at` abort on a non-zero rank at np>=2 in `refine_conforming`.
+Defect 2 above is the *same exception, same rank-count threshold, same
+round-2 onset*, and `test_refine_conforming.cpp`'s round loop (line 180) has
+**no re-halo between rounds** either. So the first thing to try for D3 is adding
+the identity-`migrate()` + `haloExchange()` idiom to that loop — it may well be
+the whole of D3, and it is not a closure bug. Two more loops need the same
+check when their turn comes: `test_conforming_determinism.cpp:516-517` refines
+twice back-to-back with nothing in between, and `test_markquality_edge.cpp:361`.
+D3's note that "the fix is to make the map complete (D2), not to soften the
+`at()`" still stands for `midGid.at()` — but the map that is actually throwing
+here is `gid2lv`, which is a different map and a different problem.
 
 ---
 
@@ -502,6 +605,29 @@ making the closure transient is that the bound is fixed.
 
 *(append-only)*
 
+- **2026-08-04 — D1.** `refine_splitedges` green SERIAL+HIP np1-5 (job
+  `f3QHvwB5yGRu`). Two test-side defects, the second hidden behind the first.
+  (1) The hang: `TesseraTest::globalOwnedFaces( mesh )` — an `MPI_Allreduce` —
+  was an *argument to a `printf` guarded by `if ( rank == 0 )`*, so rank 0
+  deadlocked against everyone else's round-2 `refine()`. Hoisted above the
+  branch. A sweep of every rank-0 block in `tests/` and `examples/` found no
+  other instance. (2) Unmasked by that fix, an `std::out_of_range:
+  unordered_map::at` in round 2 — **the same exception as D3, but in
+  `HangingNode2to1` mode with no closure involved**: `refine()` drops all ghosts
+  and clears the halo, yet Phase 3a needs both endpoint *positions* of every
+  midpoint the rank owns, and across a partition boundary one of those endpoints
+  is a ghost. So `refine()` twice with no rebuild in between throws at np>=2.
+  Fixed test-side with the documented identity-`migrate()` + `haloExchange()`
+  re-halo idiom (already used by `conforming_determinism` and
+  `conforming_quality`); README's Known Issue sharpened to say the consequence
+  is a throw, not just an inert `haloExchange()`. **This is very likely all or
+  most of D3** — `test_refine_conforming.cpp`'s round loop lacks the same
+  re-halo. Side effect: the identity migrate permutes face ordering and hence
+  child gid assignment, so gid-derived masks select different faces in later
+  rounds (round 3 `localMidsSum` 219 -> 218 at np1) — benign, but gid-masked
+  per-round counts are not rank-count invariants. Non-vacuity strengthens with
+  rank count (`keptOnlyDiscovered` 0/6/13/24/27 at np1-5); phase2a ratios
+  x6.96/x5.03/x10.01/x16.38 for the Task-8 table.
 - **2026-08-04 — D0.** Added `scripts/tuolumne/run_conforming_tests.flux` (both
   tiers × {SERIAL, HIP} × np1–4, 100 s per-test timeout, 1 pdebug node, 20 min).
   First execution of any Task 1–7 code. Job `f3QH9jz6D1aw` reached 86/165 before
