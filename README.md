@@ -47,8 +47,8 @@ using namespace Tessera;
 using MeshT = Mesh<double, /*Dim=*/3, VertexFields<>, EdgeFields<>, FaceFields<>,
                    MemSpace, ExecSpace>;
 // An optional 8th parameter selects the refinement conformity contract:
-//   ..., ExecSpace, RefinementMode::HangingNode2to1>   // default: 2:1 hanging nodes
-//   ..., ExecSpace, RefinementMode::Conforming>        // no T-junctions
+//   ..., ExecSpace, RefinementMode::Conforming>        // default: no T-junctions
+//   ..., ExecSpace, RefinementMode::HangingNode2to1>   // opt-in: 2:1 hanging nodes
 // See docs/design.md → Adaptive refinement → Refinement modes.
 
 MeshT mesh( MPI_COMM_WORLD );
@@ -66,8 +66,9 @@ auto vort = mesh.vertexSlice<Tessera::VertexField::Vorticity>();   // typed Caba
 // ... fill/evolve owned vertices ...
 haloExchange( mesh, halo );                         // refresh ghosts (whole field pack)
 
-refine( mesh, halo, face_refine_mask );             // conforming 2:1 split refinement;
-                                                     // clears `halo` as a side effect
+refine( mesh, halo, face_refine_mask );             // 2:1-balanced red split, plus the
+                                                     // conforming closure in the default
+                                                     // mode; clears `halo` as a side effect
 
 loadBalance( mesh, halo );           // internal Zoltan2 rebalance + halo rebuild (optional)
 // or, external (e.g. Canopy-driven):
@@ -295,22 +296,32 @@ make -j $(nproc)
   freshly-refined-but-not-migrated mesh is a no-op on an empty plan, not a synced
   ghost layer. Factoring the rebuild into a standalone `rebuildHalo()` that `refine()`
   also calls is a tracked follow-up.
-- **Conforming refinement is written but has not been executed.** The whole
-  `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
-  `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented
-  and compiles clean (SERIAL + HIP), and its tests are written and registered,
-  but **nothing has been run yet**: the feature is verified in a single pass at
-  the end of the plan. Until then treat conforming mode as unproven.
-  `RefinementMode::HangingNode2to1` — still the `Mesh` template default, and the
-  mode every pre-existing test and the gate exercise — is unaffected. Note that
-  under that mode a partial refine mask leaves T-junctions bounded to a 2:1
-  level jump, so the owned-only Euler number equals 2 only for a uniform
-  refine; that is the *contract* of the mode, not a defect, and choosing
-  `RefinementMode::Conforming` is how a consumer that needs a conforming
-  triangulation opts out of it. See
+- **Conforming refinement is written but has not been executed, and it is now
+  the `Mesh` default.** The whole `RefinementMode::Conforming` path — closure
+  kernel, distributed `refine()`, `migrate()`/`loadBalance()`, HDF5 round-trip,
+  `markByQuality` — is implemented, registered across the suite, and compiles
+  clean (SERIAL + HIP), but **nothing has been run yet**: the feature is
+  verified in a single pass at the end of the plan. Until that pass completes,
+  treat conforming mode as unproven — and note that because it is the default,
+  a `Mesh<...>` spelled with seven template arguments now gets it. A consumer
+  that wants the previous behavior meanwhile should spell
+  `RefinementMode::HangingNode2to1` explicitly, which every pre-existing test in
+  the gate now does. Reverting the default is the documented escape hatch if the
+  verification pass cannot make conforming green. Under `HangingNode2to1` a
+  partial refine mask leaves T-junctions bounded to a 2:1 level jump, so the
+  owned-only Euler number equals 2 only for a uniform refine; that is the
+  *contract* of the mode, not a defect. See
   [tasks/conforming-refinement.md](tasks/conforming-refinement.md) for the
   design and the remaining tasks, and `docs/design.md` → *Adaptive refinement*
   for the two modes.
+- **`conforming_quality` is registered `unit`, not in the gate, and its bounds
+  are provisional.** It asserts that the minimum triangle angle, the maximum
+  radius ratio, and the closure-face fraction stay inside fixed bounds over
+  eight adaptive rounds — the guarantee that justifies making the closure
+  transient. The bounds (20°, 4.0, 0.50) are derived from the closure patterns'
+  geometry plus margin, not from measurement, since nothing has run. The
+  verification pass calibrates them from the test's per-round printout and
+  promotes it to `regression` at ranks 1–5 only if it proves stable.
 - **`buildVertexStencil(mesh, 2)` (k=2) is incomplete within one hop of a partition
   boundary.** Tessera's halo is **1-deep**, which fully covers a k=1 stencil but not a
   k=2 one: for an owned vertex whose 2-ring reaches beyond the ghost layer, the missing

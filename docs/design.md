@@ -175,14 +175,25 @@ is unchanged:
 enum class RefinementMode { HangingNode2to1, Conforming };
 
 using MeshT = Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
-                   MemSpace, ExecSpace, RefinementMode::Conforming>;
-//                                      ^ optional; default HangingNode2to1
+                   MemSpace, ExecSpace, RefinementMode::HangingNode2to1>;
+//                                      ^ optional; default Conforming
 ```
 
 | Mode | Contract |
 |---|---|
-| `HangingNode2to1` *(current default)* | 2:1-bounded hanging nodes — the behavior described in the rest of this section. A partial mask leaves T-junctions; owned-only Euler `V−E+F = 2` holds only for a uniform refine. |
-| `Conforming` | The same 2:1-balanced **red layer**, plus a *transient* red–green–blue **closure** pass that retriangulates every kept face carrying hanging nodes, so the visible mesh has no T-junctions for an arbitrary adaptive mask. The closure creates no new vertices (it reconnects midpoints the neighbouring red splits already made) and is recomputed from scratch each `refine()` call, which bounds the triangle similarity classes. |
+| `Conforming` *(default)* | The same 2:1-balanced **red layer**, plus a *transient* red–green–blue **closure** pass that retriangulates every kept face carrying hanging nodes, so the visible mesh has no T-junctions for an arbitrary adaptive mask. The closure creates no new vertices (it reconnects midpoints the neighbouring red splits already made) and is recomputed from scratch each `refine()` call, which bounds the triangle similarity classes. |
+| `HangingNode2to1` | 2:1-bounded hanging nodes — the behavior described in the rest of this section. A partial mask leaves T-junctions; owned-only Euler `V−E+F = 2` holds only for a uniform refine. Cheaper: no closure faces, no closure bookkeeping, no un-close pass. |
+
+**Why `Conforming` is the default.** A hanging node makes every surface operator
+assembled over its neighbourhood silently wrong: the vertex's incident-face set,
+its edge 1-ring, and its `vertexFaces()` row are all self-consistent, but they
+describe a half-disc rather than a disc, so `applyStencil` and
+`reduceVertexFromFaces` never see the kept face the node geometrically touches
+(and `CurvatureCriterion`'s edge coordinator skips exactly those edges). Silence
+is what makes it the wrong default: a consumer gets a plausible answer rather
+than an error. `HangingNode2to1` remains fully supported and is the right choice
+for cell-centred work that never assembles a vertex neighbourhood — it is opt-in
+rather than absent.
 
 Compile time rather than a runtime flag, because the closure bookkeeping face
 members then exist **only** in `Conforming` mode — a hanging-node mesh pays zero
@@ -205,8 +216,9 @@ share one body in each driver and branch with `if constexpr`), `migrate()` /
 since a criterion produces a mask over *visible* faces and `refine()` translates
 it. In `Conforming` mode a face's `Level` remains the **red** level — a closure
 child carries its parent's level — so `Level` no longer maps 1:1 to triangle
-size. The default is still `HangingNode2to1` and **none of the conforming path
-has been executed yet**; see
+size. **None of the conforming path has been executed yet**: it is written,
+registered, and compiles clean on both backends, and it is verified in a single
+pass at the end of the plan. See
 [tasks/conforming-refinement.md](../tasks/conforming-refinement.md), which holds
 the full design and the remaining tasks.
 

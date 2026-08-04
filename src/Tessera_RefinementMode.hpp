@@ -47,8 +47,11 @@ namespace Tessera
 // tasks/conforming-refinement.md for the full design.
 enum class RefinementMode
 {
-    HangingNode2to1, //!< 2:1-bounded hanging nodes (today's behavior).
-    Conforming       //!< Red-green-blue transient closure; no hanging nodes.
+    HangingNode2to1, //!< 2:1-bounded hanging nodes; opt-in, cheaper.
+    Conforming //!< Red-green-blue transient closure; no hanging nodes. The
+               //!< Mesh default: a hanging node breaks a surface operator
+               //!< SILENTLY, so the safe contract is the one you get by
+               //!< default and the cheap one is the one you ask for.
 };
 
 } // namespace Tessera

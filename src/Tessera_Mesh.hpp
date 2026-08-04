@@ -58,8 +58,12 @@ namespace Tessera
 //   ExecutionSpace  - Kokkos execution space for kernels.
 //   Mode            - Which conformity contract refine()/refineLocal() obey
 //                     (Tessera_RefinementMode.hpp). Appended LAST so every
-//                     existing seven-argument Mesh<...> spelling is unchanged.
-//                     In RefinementMode::Conforming the face member list carries
+//                     existing seven-argument Mesh<...> spelling still compiles.
+//                     DEFAULTS TO Conforming: a mesh with no hanging nodes is
+//                     what a surface operator (applyStencil,
+//                     reduceVertexFromFaces) needs to be consistent, so it is
+//                     the safe default and HangingNode2to1 is the opt-in
+//                     cheaper mode. In Conforming the face member list carries
 //                     two extra closure-bookkeeping members after the user pack;
 //                     FaceField::UserBegin and userFaceField<M>() are identical
 //                     in both modes.
@@ -69,7 +73,7 @@ template <class Scalar, int Dim = 3, class VertexUserFields = VertexFields<>,
           class FaceUserFields = FaceFields<>,
           class MemorySpace = Kokkos::DefaultExecutionSpace::memory_space,
           class ExecutionSpace = Kokkos::DefaultExecutionSpace,
-          RefinementMode Mode = RefinementMode::HangingNode2to1>
+          RefinementMode Mode = RefinementMode::Conforming>
 class Mesh
 {
   public:

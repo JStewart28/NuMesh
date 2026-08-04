@@ -30,19 +30,31 @@
 | 4 | Wire closure into distributed `refine()` | **Done** |
 | 5 | `migrate()` / `loadBalance()` / halo rebuild on a closed mesh | **Done** |
 | 6 | I/O round-trip, `markByQuality`, example + docs | **Done** |
-| 7 | Dedicated conforming test suite; flip the default to `Conforming` | Not started |
+| 7 | Dedicated conforming test suite; flip the default to `Conforming` | **Done** |
 | 8 | **Run the full suite and fix everything it finds** (the only task that runs tests) | Not started |
 
-Tasks 1–6 have landed, so **conforming refinement is feature-complete**: the
-closure kernel and its inverse are pure local functions in
+Tasks 1–7 have landed, so **conforming refinement is feature-complete, covered,
+and the default**: the closure kernel and its inverse are pure local functions in
 `src/Tessera_RefineClosure.hpp`, both `refineLocal()` and the distributed
 `refine()` run un-close → mask translation → red split → close, `migrate()` /
 `loadBalance()` keep closure siblings co-resident and weight a red parent's
-children as one unit, the closure bookkeeping round-trips through HDF5, and
-`markByQuality` drives the whole thing through the mask translation. There is no
-abort stub left anywhere. What remains is the dedicated suite and the default
-flip (Task 7) — and then the single verification pass (Task 8). **Nothing has
-been executed yet.**
+children as one unit, the closure bookkeeping round-trips through HDF5,
+`markByQuality` drives the whole thing through the mask translation, every
+mode-sensitive test is registered in both modes, and `Mesh`'s `Mode` parameter
+defaults to `Conforming`. There is no abort stub left anywhere. What remains is
+the single verification pass (Task 8). **Nothing has been executed yet.**
+
+**Two findings from Task 7's analysis that Task 8 should triage first** — both
+are recorded in full under *Task 8 → risk points* below, because both were found
+by reading the code while writing tests against it, not by running anything:
+
+1. **The split-edge map the closure consumes is this-round-only, but the level
+   jumps it must close are persistent.** This looks like a defect in the Task-4
+   wiring that every multi-round conforming test will trip. Risk point 9.
+2. **Rank-count independence of anything gid-keyed is not achievable**, because
+   new vertex and face gids come from an `MPI_Exscan` over ranks. Only
+   position-canonical comparisons are rank-count independent, which is how
+   `conforming_determinism` is written. Risk point 10.
 
 ---
 
@@ -102,14 +114,18 @@ Compile-time was chosen over a runtime flag so the closure bookkeeping fields ex
 in the face AoSoA **only** in `Conforming` mode — a hanging-node mesh pays zero
 memory. `refine()` dispatches on `MeshT::refinement_mode` with `if constexpr`.
 
-**The default is `Conforming`** (per Decision 2 in the record below). Because the
-existing tests and examples assert hanging-node behavior, the default flip is
-sequenced **last among the implementation tasks** (Task 7): Tasks 1–6 ship with the
-default still `HangingNode2to1`, and Task 7 pins the legacy tests to
-`HangingNode2to1` explicitly, then flips the default. Since no task before Task 8
-runs tests, the flip lands *before* conforming has ever been executed — Task 8
-verifies both modes together, and reverting the flip is Task 8's documented escape
-hatch if conforming cannot be made green (Decision 5).
+**The default is `Conforming`** (Decision 3), as of Task 7. The rationale for
+which way round the default goes: a hanging node breaks a surface operator
+*silently* — the vertex's incident-face set, edge 1-ring and `vertexFaces()` row
+are all self-consistent, they simply describe a half-disc — so the mode that
+gives a plausible wrong answer is the one a consumer should have to ask for.
+Because the pre-existing tests and examples assert hanging-node behavior, the
+flip was sequenced last among the implementation tasks: Tasks 1–6 shipped with
+the default still `HangingNode2to1`, and Task 7 pinned every test that calls
+`refine()` to `HangingNode2to1` explicitly *before* flipping. Since no task
+before Task 8 runs tests, the flip landed *before* conforming had ever been
+executed — Task 8 verifies both modes together, and reverting the flip is Task
+8's documented escape hatch if conforming cannot be made green (Decision 5).
 
 ---
 
@@ -218,6 +234,26 @@ guarantee, verified by `checkMidpointAgreement`), and `(A,B,C)` is rotation-deri
 as above. Nothing partition-local — local index, owner rank, map iteration order,
 `v[0]` — enters the comparison. `ClosureStats` counts both branches so a test can
 assert the tie-break actually fires in both directions rather than being vacuous.
+
+**What "partition independent" does and does not cover (Task 7 finding).** The
+tie-break makes the closure a function of *(red layer, split-edge map)* alone —
+no local index, no owner rank, no iteration order — so the same red mesh with the
+same midpoint gids closes identically no matter which rank owns the face. That is
+the property the design needed and it is real. It is **not** the same as
+rank-count independence, because the midpoint gids themselves are not: Phase 2c
+sorts each rank's owned midpoint keys and then `MPI_Exscan`s, so at np1 the
+midpoints are numbered in global `EdgeKey` order while at np > 1 they are grouped
+by owner rank first. Two midpoints of the same kept face can therefore compare in
+one order at np1 and the other at np3, flipping the diagonal. The consequence
+propagates: corner gids of later rounds are earlier rounds' midpoint gids, so
+**nothing gid-keyed is comparable across rank counts** after the first refine.
+What *is* rank-count independent, and what `conforming_determinism` therefore
+compares, is everything positional: the split-edge set, the red layer, the `|S|`
+histogram, the closure-vertex set, and V/E/F. Whether the visible layer is too —
+i.e. whether the tie-break happens to be stable across rank counts on these
+meshes — is asserted *and* measured directly (a count of blue parents whose
+diagonal differs from a serial reference), so Task 8 gets the answer rather than
+just a checksum mismatch. See risk point 10.
 
 ### Data model — closure bookkeeping
 
@@ -1002,115 +1038,175 @@ sibling-co-residency premise round S is built on.)*
 
 ---
 
-### Task 7 — Dedicated conforming test suite; flip the default
+### Task 7 — Dedicated conforming test suite; flip the default — **DONE**
 
 **Goal.** Conforming refinement has first-class test coverage of its own — not just
 the per-feature tests Tasks 2–6 added along the way — and `Conforming` becomes the
 default.
 
-This is the largest task. Do it in the order below and **commit at each of the three
-checkpoints** so a session that runs long leaves the repo in a reviewable state.
+Landed as three commits, one per checkpoint.
 
-#### Checkpoint A — mode-parity registration
+#### Checkpoint A — mode-parity registration (landed)
 
 Pinning the legacy tests to `HangingNode2to1` (needed for the flip) would otherwise
-*remove* conforming coverage from those paths. So pin **and** register a conforming
-counterpart for every mode-sensitive test:
+*remove* conforming coverage from those paths. So each was pinned **and** its
+conforming counterpart confirmed present — all of which Tasks 2–6 had already
+written, so Checkpoint A added no new test, only explicit mode spellings:
 
-| Existing test | Pin to hanging-node | Conforming counterpart |
+| Existing test | Pinned | Conforming counterpart |
 |---|---|---|
-| `refine` (unit, np1) | yes | `refine_closure` (Task 2) — already covers `refineLocal` conforming |
+| `refine` (unit, np1) — 3 mesh types | yes | `refine_closure` (Task 2) — covers `refineLocal` conforming |
 | `refine_parallel` (regression) | yes | `refine_conforming` (Task 4) |
-| `migrate_mesh`, `loadbalance` (regression) | yes | `conforming_migrate` (Task 5) — landed |
-| `io` (regression) | yes | `io` conforming case (Task 6) — landed |
-| `markquality_edge`, `markquality_curv` (regression) | yes | `markquality_conforming` (Task 6) — landed, covers both criteria |
-| `distribute`, `connectivity`, `keys`, `data_model`, `halo`, `migrate`, `geometry`, `global_reduce` | n/a — no `refine()` call, mode-insensitive | — |
+| `refine_splitedges` (regression) | yes | `refine_conforming` (see below) |
+| `migrate_mesh`, `loadbalance` (regression) | yes | `conforming_migrate` (Task 5) |
+| `io` (regression) | yes | `io`'s `runConforming()` case (Task 6) |
+| `markquality_edge`, `markquality_curv` (regression) | yes | `markquality_conforming` (Task 6) |
+| `staleslice_guard` (unit, np1) | yes | its own new conforming case (Checkpoint B) |
+| `distribute`, `connectivity`, `keys`, `data_model`, `halo`, `migrate`, `geometry`, `global_reduce`, `stencil_topology`, `apply_stencil`, `reduce_faces` | n/a — no `refine()` call | — |
 
-Mode-sensitive tests must be registered in **both** modes, not switched over.
+**`refine_splitedges` was pinned although the table in the original plan did not
+list it**, and the reason is worth recording: it isolates `refine()`'s **Phase 2**,
+which both modes share, and its whole reference construction rests on "the edges of
+my owned faces" naming a single set. That is true only when the visible layer *is*
+the red layer. In `Conforming` mode `RefineResult::midpoints` is keyed by the red
+layer while `mesh.faces()` shows the closure, so both the round-1 partition-free
+reference and the multi-round coordinator ground truth would have to un-close
+first — a different test. The composition is what `refine_conforming` covers.
 
-#### Checkpoint B — new conforming-specific tests
+**Nothing resisted pinning**, and no test needed a behavioral edit: every site was a
+one-line change from the seven-argument `Mesh<...>` spelling to an eight-argument one
+naming `RefinementMode::HangingNode2to1`, plus a comment saying which conforming test
+covers the same ground. The mode-insensitive tests were left on the default
+deliberately, so they now run in `Conforming` mode and act as a free check that the
+wider face tuple does not disturb construction, distribution, halo, geometry, or the
+stencil/reduction operators.
 
-These test properties that only exist in conforming mode and that no earlier task
-covers. All are new files.
+#### Checkpoint B — new conforming-specific tests (landed)
 
 1. **`conforming_operators`** — `regression`, SERIAL + HIP, ranks 1–5.
-   **The payoff test: the reason the downstream solver needs this feature.**
-   Pipeline: `buildIcosphere` → `distribute` → adaptive conforming `refine` →
-   `migrate` → `haloExchange`, then
-   - identify the **closure vertices** (former hanging nodes: vertices that are the
-     midpoint of some closure parent's edge) and assert the set is non-empty at every
-     rank count — otherwise the test is vacuous and must fail loudly;
-   - `buildVertexStencil(mesh, 1)`: each closure vertex's `k=1` CSR row equals the
-     true edge-derived 1-ring, and every locally-held face incident to it contains it.
-     This is exactly what is inconsistent on a hanging-node mesh;
-   - `applyStencil` with the analytic field `f(p) = p_x` and uniform weights:
-     `out(i)` matches a reference computed independently from haloed positions, **to
-     the same tolerance at closure vertices as at interior vertices** (assert the two
-     max-error figures separately so a closure-specific regression cannot hide in an
-     aggregate);
-   - `reduceVertexFromFaces` with the one-third-area op: global owned-vertex sum
-     equals the global owned-face `faceArea` sum (partition-independent identity),
-     and each closure vertex's accumulated area is the true one-third sum over its
-     full incident-face set.
+   `tests/test_conforming_operators.cpp`. The payoff test.
+   `buildIcosphere(2)` → `distribute` → two adaptive conforming rounds →
+   `migrate` → `haloExchange`, then, at the **closure vertices** specifically:
+   the 1-ring is a closed fan; `buildVertexStencil(mesh, 1)`'s `k=1` row equals an
+   independently *face-derived* 1-ring and the `vertexFaces()` row equals the set of
+   local faces containing the vertex; `applyStencil` with `f(p) = p_x` and uniform
+   weights matches a position-derived reference; `reduceVertexFromFaces` with the
+   one-third-area op reproduces the global area identity *and*, per closure vertex,
+   the true one-third sum over its full incident-face set.
+
+   **How the closure-vertex set is identified**, and why it needs no new library
+   support: a closure child stores its retired parent's three corners outright, so a
+   corner of a child that is **not** one of `ClosureParentVerts` is by construction a
+   midpoint of a parent edge — i.e. exactly the hanging node the closure absorbed.
+   The scan runs over **all locally held faces, owned and ghost**, because an owned
+   vertex's incident faces may be owned by a neighbour; the closure members travel
+   with the ghosts through the face halo, which `conforming_migrate` already
+   exercises. **How it fails loudly if the set is empty:** the global count of owned
+   closure vertices is reduced and a non-positive value is a hard `++fails`, not a
+   warning — a mask too weak to create a hanging node would otherwise make every
+   check below it vacuously true.
+
+   The two `applyStencil` max errors (closure vs interior) and the two area errors
+   are asserted **separately at the same tolerance**, so a closure-specific
+   regression cannot hide behind the far more numerous interior vertices, and both
+   are printed.
+
+   The **closed-fan** check is the local form of conformity and is what a
+   hanging-node mesh fails: every edge incident to an owned vertex must be shared by
+   exactly two of that vertex's incident faces. At a hanging node the fan is an open
+   half-disc and its two boundary edges have one incident face each.
 
 2. **`conforming_determinism`** — `regression`, SERIAL + HIP, ranks 1–5.
-   Closure output must not depend on decomposition or on how many times it is applied:
-   - **Rank-count independence:** a rank-count-independent topology checksum over the
-     visible mesh (sorted owned face corner-gid triples, plus V/E/F counts) is
-     identical at ranks 1, 2, 3, 4, 5 for the same geometrically-defined mask. This is
-     the test that pins the **blue-diagonal lower-gid tie-break** — a
-     partition-dependent tie-break passes everywhere else and fails only here.
-   - **Closure idempotence:** conforming `refine` with an **empty** mask on an
-     already-closed mesh reproduces the visible topology bit-for-bit (un-close →
-     no red split → re-close is the identity).
-   - **Cross-mode equivalence under a uniform mask:** with every face marked there are
-     no kept faces, so `|S| = 0` everywhere and no closure children are emitted —
-     the two modes must produce **identical topology** (gids, corner gids, levels;
-     compare topology, not tuples, since the conforming face has two extra fields).
-     A mismatch here means the closure fired when it should have been inert.
+   `tests/test_conforming_determinism.cpp`. Three cases:
+   - **Rank-count independence** against a reference *the same run* recomputes on
+     `MPI_COMM_SELF` — every rank redundantly refines the whole mesh alone — under a
+     **geometric** mask (centroid above a z threshold), which selects the same faces
+     at any partition where a gid mask would not. The comparison is by **quantised
+     position**, for the reason given under *Blue tie-break* above; the breakdown
+     (V/E/F, `|S|` histogram, red layer, visible layer, closure-vertex set) is
+     printed component by component, plus a direct count of blue parents whose
+     chosen diagonal differs from the reference. The diagonal is read off the mesh
+     without assuming which branch fired: among a three-child group the internal edge
+     with exactly one endpoint in the parent's corner set *is* the diagonal.
+   - **Closure idempotence** — an empty-mask `refine()` on an already-closed mesh is
+     un-close → no red split → re-close, and must reproduce the visible layer. The
+     comparison excludes each face's own gid (the re-closure allocates a fresh block
+     above the global max, so child gids legitimately move) and covers the sorted
+     corner gids, level, parent gid and parent corners, plus the red layer by gid and
+     the V/E/F counts. **This is the sharpest probe of risk point 9** and, on the code
+     as it stands, is expected to expose it.
+   - **Cross-mode equivalence under a uniform mask** — strengthened past
+     `refine_conforming`'s count comparison to full topology: identical face gids,
+     corner gids and levels, and identical vertex/edge gid checksums, over two
+     rounds. Valid across *modes* (they share the red engine and its exscans) even
+     though it is not valid across rank counts.
 
-3. **`conforming_quality`** — shape quality over depth, the transient-closure
-   guarantee. Adaptive refine for **≥8 rounds**, tracking global min triangle angle
-   and max aspect ratio per round; assert both stay within a fixed bound independent
-   of round count, and record the measured bounds in the test output. Also assert the
-   closure-face fraction stays bounded (closure is an O(level-jump-boundary) set, not
-   O(F)).
-   Lands as `regression` at ranks 1–5 **if stable**; `unit` otherwise — and if it is
-   `unit`, record why in README *Known Issues* and report it. Never promote a failing
-   test to the gate.
+3. **`conforming_quality`** — **`unit`**, SERIAL + HIP, ranks 1–5.
+   `tests/test_conforming_quality.cpp`. Eight adaptive rounds over a shrinking
+   geodesic cap (half-angle `0.35 × 0.6^k`, chosen so the marked set neither dies out
+   nor engulfs the sphere as the faces halve), tracking per round the global minimum
+   triangle angle, the global maximum radius ratio `Q = abc(a+b+c)/(16A²)` (1 for
+   equilateral), and the closure-face fraction — each asserted against a **fixed**
+   bound every round, since a bound that had to grow with the round count would mean
+   the closure is not transient after all. Conformity, red-layer 2:1 balance,
+   sibling co-residency and Euler are re-checked each round too, so the quality
+   figures are not measured on a mesh that has quietly stopped being conforming.
 
-4. **`staleslice_guard` extension** — the conforming refine path un-closes and
-   re-closes, changing local counts, so a slice or `MeshGeometry`/`VertexStencil`
-   handle held across it must abort. Add the conforming case to the existing
-   SERIAL-only np1 test rather than a new file.
+   **Provisional bounds and their derivation** (marked provisional in the source, in
+   the CMake registration, and in README *Known Issues*): on an exactly equilateral
+   parent the patterns give min angle 60° (`|S|` = 0), 30° (green — a median cut
+   gives 30/60/90), 30° (blue — the 30-30-120 sliver off the midline is the worst of
+   the three children), 60° (red-closure); the corresponding worst `Q` are 1.37 for
+   the 30-60-90 green child and 2.16 for the 30-30-120 blue child. Icosphere red
+   faces are near- but not exactly equilateral, so the realised worst case sits
+   below those. The registered bounds — **min angle ≥ 20°, `Q` ≤ 4.0, closure
+   fraction ≤ 0.50** — allow roughly a further third of shape loss for that
+   distortion. They are *derived, not measured*: this is why the test is `unit` and
+   not in the gate.
 
-#### Checkpoint C — flip the default and sync docs
+4. **`staleslice_guard` extension** (landed in the existing SERIAL-only np1 test).
+   The conforming refine path un-closes and re-closes, so it reallocates the face
+   AoSoA and changes the local face count **even when nothing refines**. A face
+   slice, a `MeshGeometry`, and a `VertexStencil` held across it must each abort when
+   copied; all three are checked, since each reaches the guard by a different route
+   (a bare slice; the position `GenerationHandle` inside the geometry accessor; the
+   CSR `GenerationHandle` inside the stencil).
 
-- Flip the `Mesh` template default to `RefinementMode::Conforming`.
-- Final sweep of `README.md`, `docs/design.md`, and `CLAUDE.md` for the new default.
-- Rewrite this file's *Status* table and design sections to describe the shipped
-  state.
+#### Checkpoint C — flip the default and sync docs (landed)
 
-**Acceptance.** Both modes are registered and covered across the suite (the parity
-table above is complete), the three new tests are written and registered at their
-intended tiers/ranks, the `Mesh` default is `Conforming`, docs are in sync, and
-`format-check` is clean.
+- `Mesh`'s `Mode` parameter now defaults to `RefinementMode::Conforming`.
+  **The flip broke nothing at compile time** — the whole suite, both backends, and
+  the example built clean with no further edits, which is the payoff of Checkpoint A
+  going first and of `FaceField::UserBegin` having been held fixed in Task 1.
+- `src/Tessera_RefinementMode.hpp` — the enumerator comments now say which mode is
+  the default and why (a hanging node breaks an operator *silently*).
+- `docs/design.md` — *Refinement modes* table reordered with `Conforming` first, the
+  code sketch inverted, a new *Why `Conforming` is the default* paragraph, and the
+  stale "the default is still `HangingNode2to1`" sentence corrected.
+- `README.md` — the API sketch's mode comment inverted, the `refine()` line
+  clarified, *Known Issues* rewritten to say the default is now `Conforming` and
+  still unproven (with reverting named as the escape hatch), and a new entry for
+  `conforming_quality`'s provisional bounds.
+- `CLAUDE.md` — task-log row updated to Tasks 1–7 done, Task 8 next.
 
-`conforming_quality`'s angle / aspect-ratio bounds cannot be chosen from measurements
-yet — no test has run. **Register it as `unit` with the bounds you believe are
-correct and a comment marking them provisional.** Task 8 measures the real values and
-decides whether it is stable enough to promote to `regression`. Do not guess a bound
-and register it in the gate.
+**Acceptance.** Both modes are registered and covered across the suite; the three
+new tests are written and registered at their intended tiers and ranks; the `Mesh`
+default is `Conforming`; docs are in sync; the whole suite (SERIAL + HIP) and the
+example compile clean; `clang-format` is clean on every touched file under **both**
+the v21 (`/usr/bin`) and v19 (`/opt/rocm-6.4.2/llvm/bin`) binaries on this machine.
+No test was run (handoff contract).
 
-Have all three tests **print** their measurements (closure-vertex counts per rank
-count, closure-vertex vs interior-vertex `applyStencil` max error, per-round min angle
-/ max aspect ratio / closure-face fraction) so Task 8's run yields the numbers
-directly.
-
-**Report back.** Which legacy tests needed explicit pinning and whether any resisted
-it; how `conforming_operators` identifies the closure-vertex set, and how it fails
-loudly if that set is empty; the provisional quality bounds and the reasoning behind
-them; anything the default flip broke at compile time.
+**Report back.** *(delivered — see above, plus risk points 9 and 10 which this task
+contributed to Task 8. Short version: no legacy test resisted pinning and none
+needed a behavioral edit; `refine_splitedges` needed pinning although the plan's
+table omitted it; the closure-vertex set is identified from
+`ClosureParentVerts` — a child corner that is not a parent corner — over owned and
+ghost faces, with an empty set a hard failure; the quality bounds are 20° / 4.0 /
+0.50, derived from the patterns' ideal-parent geometry plus about a third of margin
+for icosphere distortion; and the default flip broke nothing at compile time. The
+two findings from reading the code while writing tests against it are risk points 9
+and 10 below — the first is a probable defect, the second a scoping correction the
+design needed.)*
 
 ---
 
@@ -1139,8 +1235,11 @@ ctest -L unit --output-on-failure                            # unit tier
 Fix in **dependency order**, not failure-count order — a Task 1 field-index bug will
 manifest as a dozen unrelated failures downstream:
 build errors → `refinement_mode`/`refine_closure` (units) → `refine_splitedges` →
-`refine_conforming` → `conforming_migrate` → `io` → `markquality` → the Task 7
-conforming suite → the legacy hanging-node tests.
+`refine_conforming` → **`conforming_determinism`'s idempotence case (risk point 9 —
+the minimal reproducer; fix this before chasing anything downstream of it)** →
+`conforming_migrate` → `io` → `markquality` → `conforming_operators` →
+`conforming_determinism`'s other two cases → `conforming_quality` →
+`staleslice_guard` → the legacy hanging-node tests.
 
 **Triage first at these known risk points** (each is a place the design admits a
 plausible defect):
@@ -1173,6 +1272,72 @@ plausible defect):
    handle the tests expect to survive may now abort. Distinguish a real stale-handle
    bug from an over-eager bump.
 
+9. **THE SPLIT-EDGE MAP IS THIS-ROUND-ONLY, BUT THE LEVEL JUMPS IT MUST CLOSE ARE
+   PERSISTENT.** *(Found in Task 7 by reading the code, not by running it. Triage
+   this first — it is the one item here that looks like an outright defect rather
+   than a place a defect could hide, and it would surface as a dozen apparently
+   unrelated conformity failures.)*
+
+   Step 3b′ calls `closeFaces( newRed, midGid, … )`, and `midGid` is built entirely
+   inside Phase 2 from **this** round's refinements: the coordinator drops every
+   edge with `!anyRefining`. But a kept face needs closing whenever its edge is
+   bisected **in the red layer**, which is a persistent condition. Concretely:
+
+   - Round 1 refines A; its neighbour B is kept, so B's edge `(a,b)` is bisected at
+     `m` and B is closed into two green children. Correct.
+   - Round 2 refines something else. Un-close restores B as a red face with corners
+     `(a,b,c)` at level 0, while A's four children sit at level 1. The red layer
+     still has a hanging node at `m` on B's edge — the 2:1 fixpoint permits it, so
+     B is not forced to refine. But `(a,b)` is advertised in Phase 2a only by B,
+     with `refining = 0`; A's children advertise `(a,m)` and `(m,b)`, which are
+     different keys. So `(a,b)` has no refining incidence, is dropped, and `midGid`
+     does not contain it. `closeFaces()` computes `|S| = 0` for B and passes it
+     through **unclosed** — the mesh reverts to having a T-junction.
+
+   So conformity should hold after the *first* conforming round and be lost on the
+   second and later ones, for every face that was closed earlier and neither it nor
+   its refined neighbour refines again. Expected symptom: `refine_conforming` round 1
+   green, rounds 2–3 failing `checkConforming` and `checkOwnedEuler`; the same in
+   `markquality_conforming`, `conforming_migrate`, `conforming_operators` and
+   `conforming_quality`; and the **minimal reproducer** is
+   `conforming_determinism`'s idempotence case, where an *empty* mask makes `midGid`
+   empty outright and the visible layer collapses to the bare red layer in one step.
+
+   **Proposed fix, for Task 8 to weigh** (not applied in Task 7 — it is a design
+   change and the contract reserves fixes for the verification pass). The persistent
+   split-edge map is recoverable **locally, with no communication and no new field**,
+   from the closure bookkeeping that is already stored: for a parent `P` with corners
+   `(a,b,c)` and its children, a parent edge is split **iff it does not appear as an
+   edge of any child** — check the four patterns: green replaces `(a,b)` by
+   `(a,m),(m,b)` while `(b,c)` and `(c,a)` survive as child edges; blue removes two;
+   red-closure removes all three; `|S| = 0` removes none. The midpoint of a split
+   parent edge `(x,y)` is then the unique child corner `m` outside `{a,b,c}` with
+   both `(x,m)` and `(m,y)` present as child edges. So `unclose()` can return an
+   `EdgeKey → GlobalId` map alongside the red layer, and step 3b′ closes against
+   `midGid` **unioned with** it. Two things to get right: the recovered map must be
+   consulted for kept faces only (a face refined this round has its edges replaced
+   anyway), and `countClosureChildren()` in step 3c must be given the same union, or
+   the gid exscan will under-allocate. Whether the union can also be reached through
+   Phase 2 — e.g. by having the coordinator treat a red edge with a *single*
+   incidence as split — is worth considering, but it needs the midpoint gid, which
+   only the finer side knows and which the local reconstruction above already has.
+
+10. **Rank-count independence is narrower than the design assumed.** New vertex and
+    face gids come from an `MPI_Exscan` over ranks, so which gid a midpoint gets
+    depends on the partition, and after one round nothing gid-keyed is comparable
+    across rank counts — see *What "partition independent" does and does not cover*
+    above. `conforming_determinism` therefore compares by quantised **position** and
+    reports its breakdown per component. If it fails only on the visible layer while
+    the red layer, the `|S|` histogram, the closure-vertex set and V/E/F all agree,
+    and `blueDiagMismatch > 0`, the cause is the blue tie-break comparing gids that
+    the exscan ordered differently — **not** a partition-local read, and not a bug in
+    the sense risk point 2 means. That is a genuine design choice to make: leave it
+    (documenting that the visible layer is rank-count dependent up to blue
+    diagonals), or replace the tie-break with a rank-count-stable rule. Note that no
+    *gid*-based rule can be rank-count stable, for the recursive reason above; only a
+    geometric one (e.g. the shorter diagonal) could, at the cost of floating-point
+    fragility on symmetric quads. Record the decision here either way.
+
 **Rules while fixing.**
 
 - **A failing test is never silently excluded from the gate.** If something cannot be
@@ -1202,7 +1367,7 @@ unit` fully green, `format-check` clean, and the *Open failures* list empty.
 **Open failures.** *(none recorded yet — Task 8 has not run)*
 
 **Report back.** The full failure list as first observed and the root cause of each;
-which of the eight risk points above actually fired; the new regression/unit totals;
+which of the ten risk points above actually fired; the new regression/unit totals;
 any test relabelled to `unit` and why; whether the `Conforming` default survived; any
 design section this task had to rewrite.
 
@@ -1216,7 +1381,7 @@ so collect them from the run output rather than re-running:
 | Task 4 | Closure-face fraction vs mask fraction, and the `|S|`-pattern histogram, per rank count |
 | Task 5 | How many `dest` entries the sibling-cohesion fixup moved (both the adversarial `dest` and Zoltan2's); pre/post `loadBalance` max face count and max weighted load vs ideal |
 | Task 6 | Actual on-disk size delta for a conforming vs hanging-node file |
-| Task 7 | Closure-vertex count per rank count (non-vacuity); closure-vertex vs interior-vertex `applyStencil` max error; per-round min angle / max aspect ratio / closure-face fraction over ≥8 rounds |
+| Task 7 | `conforming_operators`: closure-vertex count per rank count (non-vacuity), closed-fan and 1-ring mismatch counts split closure/interior, closure-vertex vs interior-vertex `applyStencil` max error, the same split for the accumulated-area error, and the vertex-area vs face-area totals. `conforming_determinism`: the per-component agreement breakdown (counts / `\|S\|` histogram / red layer / visible layer / closure vertices) against the `MPI_COMM_SELF` reference at each rank count, plus `blueDiagMismatch` and `parentMissing` — the numbers risk point 10 turns on. `conforming_quality`: per-round marked count, F, min angle, max radius ratio, closure count and fraction over 8 rounds, and the worst-of-all-rounds figures against the provisional bounds |
 
 ---
 
@@ -1239,6 +1404,21 @@ so collect them from the run output rather than re-running:
   been executed — not after it is gate-green, as Decision 3 stated. Task 8 verifies
   both modes together, and reverting the default is Task 8's escape hatch. The choice
   of `Conforming` as the default (Decision 3 proper) is unchanged.
+- **2026-08-04 — Decision 6: the closure's determinism claim is scoped to
+  *partition* independence, not *rank-count* independence.** New gids come from an
+  `MPI_Exscan` over ranks, so the midpoint-gid assignment — and therefore, after one
+  round, every corner gid — is a function of the partition. The blue tie-break reads
+  only globally-agreed values, which is what makes the closure independent of *which
+  rank owns a face*; it does not make it independent of *how many ranks there are*.
+  `conforming_determinism` compares by quantised position accordingly and measures
+  the blue-diagonal agreement separately. Whether to keep the gid tie-break or
+  replace it with a rank-count-stable rule is left to Task 8 (risk point 10).
+- **2026-08-04 — Decision 7: Task 7 flagged the persistent-split-edge defect rather
+  than fixing it.** The analysis in risk point 9 was produced while writing tests
+  against the code, but the fix changes the un-close contract and cannot be validated
+  without running the suite, which the handoff contract reserves for Task 8. The
+  finding, its expected symptoms, and a proposed local fix are recorded in full so
+  Task 8 does not have to rediscover them.
 - **2026-07-31 — Decision 4: transient red–green–blue closure**, not
   newest-vertex bisection and not red-only propagation. Red-only propagation
   degenerates to uniform refinement; bisection replaces the red engine wholesale
@@ -1364,3 +1544,31 @@ so collect them from the run output rather than re-running:
   required the tests to *print* those measurements, made `conforming_quality` land as
   `unit` with provisional bounds for Task 8 to calibrate, and added the default-flip
   escape hatch (Decision 5).
+- 2026-08-04 — **Task 7 landed — the suite and the default flip.** Three commits.
+  *(A)* Every test that calls `refine()` now names `RefinementMode::HangingNode2to1`
+  explicitly, with a note pointing at its conforming counterpart; `refine_splitedges`
+  needed pinning although the plan's parity table omitted it, because it isolates the
+  shared Phase 2 and its reference construction assumes visible == red. Nothing
+  resisted, and no test needed a behavioral edit. *(B)* Three new tests:
+  `conforming_operators` (`regression`, SERIAL + HIP, ranks 1–5 — the payoff test:
+  closed 1-ring fan, stencil topology against a face-derived reference, `applyStencil`
+  and `reduceVertexFromFaces` errors asserted separately at closure vs interior
+  vertices, with an empty closure-vertex set a hard failure), `conforming_determinism`
+  (`regression`, ranks 1–5 — rank-count independence against an `MPI_COMM_SELF`
+  reference compared by quantised position, closure idempotence, cross-mode
+  equivalence), and `conforming_quality` (**`unit`**, ranks 1–5 — min angle, radius
+  ratio and closure fraction over 8 rounds against provisional 20° / 4.0 / 0.50
+  bounds), plus a conforming case in `staleslice_guard` covering a face slice, a
+  `MeshGeometry` and a `VertexStencil` held across a conforming `refine()`. *(C)*
+  `Mesh`'s `Mode` defaults to `Conforming`; **the flip broke nothing at compile
+  time**; `README.md`, `docs/design.md`, `src/Tessera_RefinementMode.hpp` and
+  `CLAUDE.md` synced. Whole suite compiles clean (SERIAL + HIP); `clang-format` clean
+  on every touched file under both the v21 (`/usr/bin`) and v19
+  (`/opt/rocm-6.4.2/llvm/bin`) binaries. **Two findings recorded for Task 8, both
+  from reading the code while writing tests against it, neither fixed here:** risk
+  point 9 — the split-edge map the closure consumes is this-round-only while the
+  level jumps it must close are persistent, so conformity should be lost from the
+  second round on (with `conforming_determinism`'s idempotence case as the minimal
+  reproducer, and a local no-communication fix proposed); and risk point 10 — nothing
+  gid-keyed is rank-count independent, because gids come from an `MPI_Exscan`, which
+  narrows the closure's determinism claim (Decisions 6 and 7).
