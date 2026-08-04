@@ -32,17 +32,33 @@
 | D0 | Triage sweep — run the suite, collect first failures | **Done** (2026-08-04) |
 | D1 | Fix the `refine_splitedges` np≥2 hang | **Done** (2026-08-04) |
 | D2 | Fix risk point 9 — the persistent split-edge map | **Done** (2026-08-04) |
-| D3 | Fix the `refine_conforming` np≥2 `unordered_map::at` abort | Not started |
-| D4 | Re-sweep: get the remaining nine never-executed tests to a first verdict | Not started |
+| D3 | Fix the `refine_conforming` np≥2 `unordered_map::at` abort | **Done** (2026-08-04) |
+| D4 | Re-sweep: get the remaining nine never-executed tests to a first verdict | **Mostly done by D3's gate run** — see D4 |
 | D5 | Downstream conforming tests (`conforming_migrate`, `io`, `markquality_conforming`) | Not started |
 | D6 | `conforming_operators` and `conforming_determinism` | Not started |
 | D7 | `conforming_quality` — calibrate the provisional bounds | Not started |
 | D8 | Full gate at ranks 1–5, both tiers, `format-check`; close out Task 8 | Not started |
 
-**Open failures.** D3 confirmed reproducing (evidence below). D4–D7 are
-unknown — those tests have **never been executed**. D1 and D2 are fixed:
-`refine_splitedges` is green SERIAL and HIP at np1–5, and `refine_conforming` is
-green SERIAL and HIP at **np1** (all three adaptive rounds `euler=2`).
+**Open failures**, as measured by D3's full gate run (job `f3QJgiXFh3Ef`, 130
+instances, reached #172 of 177 before its 20-minute window):
+
+| Test | Verdict | Owner |
+|---|---|---|
+| `conforming_migrate` | np1 pass; **np2–5 abort** `unordered_map::at` | D5 |
+| `conforming_operators` | np1 pass; **np2–5 abort** `unordered_map::at` | D6 |
+| `conforming_determinism` | **np1 fails** `closure-idempotence`; np2–5 abort | D6 |
+| `conforming_quality`, `markquality_conforming` | not yet reached | D5 / D7 |
+
+All three aborts are **pre-existing and not caused by D3** — verified by rebuilding
+with D3's library change stashed and re-probing at np2: byte-identical abort and the
+identical np1 idempotence failure. They are almost certainly D1's re-halo defect
+again (all three refine repeatedly; `test_conforming_determinism.cpp:516-517`
+refines twice back-to-back with nothing in between).
+
+**Everything else in the gate passes at ranks 1–5 on both backends**, including
+`refine`, `refine_parallel`, `refine_splitedges`, `refine_conforming`,
+`refine_closure`, `migrate_mesh`, `distribute`, `halo`, `loadbalance`, `io`,
+`markquality_edge` and `markquality_curv`. D1, D2 and D3 are fixed.
 
 ---
 
@@ -512,7 +528,12 @@ mode's tests cannot see them because they assert non-conformity anyway.
 
 ## D3 — Fix the `refine_conforming` np≥2 `unordered_map::at` abort
 
-**Status:** Not started. **D2 did not fix it and did not change it** — re-probed
+**Status: DONE (2026-08-04).** `refine_conforming` passes SERIAL and HIP at np1–5.
+Two defects: D1's steer was right about the abort, and fixing it exposed a second,
+**pre-existing library** defect in how `refine()` assigns edge gids. **Read *What
+landed*.**
+
+**Status when D3 started:** **D2 did not fix it and did not change it** — re-probed
 after D2 at np2 and np3, still `std::out_of_range: unordered_map::at`, still on a
 non-zero rank, still before any output flushes. So it is *not* the missing
 persistent split edge; **start from D1's steer instead** (the missing re-halo in
@@ -550,15 +571,95 @@ produce. That is exactly what Task 3 built the extended Phase 2 to cover, so
 check whether the failing lookup is on a rank that should have received the gid
 in round 2c.
 
-**Acceptance.** `refine_conforming` passes SERIAL and HIP at np1–5.
+**Acceptance.** `refine_conforming` passes SERIAL and HIP at np1–5. **Met**, at
+both tiers' expense of nothing: no test was relabelled, and one assertion got
+*stronger* (below).
 
-**What landed.** *(fill in)*
+**What landed.**
+
+**Defect 1 — the abort was exactly D1's re-halo defect.** `gid2lv.at()` at
+`src/Tessera_RefineParallel.hpp:611` (Phase 3a) needs the *positions* of both
+endpoints of every midpoint the rank owns; midpoint ownership is "lowest incident
+refining-face owner", so a rank can own the midpoint of an edge one of whose
+endpoints it holds only as a ghost — and `refine()` has already dropped every ghost.
+`test_refine_conforming.cpp`'s round loop had no rebuild between rounds, so round 2
+threw at np ≥ 2. Fixed test-side with the documented identity-`migrate()` +
+`haloExchange()` idiom, applied to **both** the conforming mesh and the
+hanging-node control, placed after every check and the print so the invariants still
+measure exactly what `refine()` produced. `midGid` was never involved — D3's
+original "candidate sites" paragraph pointed at the wrong map, as D1 suspected.
+
+**Defect 2 — `refine()` minted edge gids from a local exscan.** Unmasked by
+defect 1's fix: `empty-mask` then failed at **np3, np4 and np5** on the topology
+**checksum** alone — every count, `euler`, conformity, closure-inertness and
+`closureInverse` held. Diagnosis, and the reason this is worth reading: only the
+**edge** gids moved, and by an exactly explicable amount. Step 3f gid'd edges from an
+`MPI_Exscan` over `nLocalE` — each rank's *local* edge count, which includes the
+boundary edges it holds but does not own (edge owner = min incident face owner, so
+the duplicate always sits on the higher rank). Every non-last rank holding such a
+duplicate therefore opens a **gap** in the owned gid space, shifting every later
+rank's block up: 23 / 44 / 76 gids pushed above the global max at np3 / np4 / np5,
+exactly the boundary-edge count of ranks 1..n-2. np1 and np2 pass structurally —
+at np2 every duplicate lands on the last rank, where it does no harm.
+
+Worse than the gaps: the two sides of a boundary edge got **different gids for the
+same edge** (each from its own rank's block). The old step-3f comment stated this as
+if it were fine ("boundary edges carry distinct gids per rank but are matched by
+EdgeKey"). It is not fine — `distribute()`, `MeshBuilder`, `migrate()`'s gid-keyed
+`eById`/`eOwner` maps and the HDF5 writer/reader all treat an edge gid as a *global*
+identifier, and vertex and face gids already are one. Edges were the only kind whose
+gids were locally minted.
+
+Fixed in the library, **for free**: each `EdgeKey` is routed to exactly one
+coordinator, so the coordinator numbers its own distinct keys densely from an
+`MPI_Exscan` over its key count and returns the gid in the reply of the round trip
+step 3e already performs for ownership and level. One extra field on `EdgeOwnMsg`,
+no extra message round. Refined edge gids are now dense in `[0, globalEdges)` and
+identical on every rank holding the edge. Recorded as **Decision 10** in
+`tasks/conforming-refinement.md`, and `docs/design.md`'s refine section now
+describes the coordinator as assigning the gids.
+
+**One assertion got stronger, deliberately.** The gid half of `empty-mask` was a
+global **XOR** of owned gids (`topologyChecksum`), which is permutation-invariant and
+cancels: at np4 and np5 it was **passing while the gid set was in fact wrong** —
+shifting a contiguous, even-sized block by a fixed amount can cancel in XOR. It now
+also compares the globally gathered, sorted owned-gid **set** per kind, and on
+failure prints which kind and which gids were lost/gained. `case_empty` also reports
+*which* condition failed (a named bit per condition) instead of only bumping a
+count; that is what turned this from "np3 fails somehow" into a one-line diagnosis.
+Had the weak checksum not been strengthened, defect 2 would have shipped hidden at
+two of the five gate rank counts.
+
+**Result** (final probe job `f3QJwCBao2jR`; gate job `f3QJgiXFh3Ef`):
+`refine_conforming` `exit=0` at np1–5 × {SERIAL, HIP}, all three adaptive rounds
+`euler=2`, plus empty-mask and uniform-mask. Non-vacuity intact — the
+hanging-node control still fails conformity every round with growing defect counts
+(414 → 1031 → 1474 at np1). The adaptive-round numbers are **byte-identical before
+and after the edge-gid change** at every rank count, which is the cleanest evidence
+that the change moved gids only and not a single refinement decision.
+
+**No regressions.** The full gate (`regression` × {SERIAL, HIP} × ranks 1–5) was
+run rather than spot-checks, because the edge-gid change is in the path *both* modes
+share: 130 instances, everything green through test #172 except the three
+never-before-executed conforming tests recorded under *Open failures*, whose
+failures were shown to be pre-existing by rebuilding with the change stashed.
+`loadbalance`, `io`, `markquality_edge` and `markquality_curv` — all of which
+consume edge gids — pass at ranks 1–5 on both backends for the first time.
 
 ---
 
 ## D4 — Re-sweep and get a first verdict on the nine never-executed tests
 
-**Status:** Not started.
+**Status: mostly done, as a side effect of D3's gate run** (job `f3QJgiXFh3Ef`).
+Seven of the nine now have a verdict: `loadbalance`, `io`, `markquality_edge` and
+`markquality_curv` **pass** at ranks 1–5 on both backends; `conforming_migrate`,
+`conforming_operators` and `conforming_determinism` fail as tabulated under *Open
+failures*. Still unexecuted: **`conforming_quality` and `markquality_conforming`**
+(the gate window ended at instance #172 of 177, and `conforming_quality` is `unit`,
+so it is not in the gate at all — run `ctest -L unit` for it).
+
+Remaining D4 work is therefore just those two, plus splitting the confirmed
+failures across D5/D6, which the table above already does.
 
 Nine registrations have **never been executed**: `conforming_migrate`,
 `loadbalance`, `io`, `markquality_edge`, `markquality_curv`,
@@ -707,6 +808,42 @@ making the closure transient is that the bound is fixed.
 
 *(append-only)*
 
+- **2026-08-04 — D3.** `refine_conforming` green SERIAL+HIP at **np1–5** (probe
+  `f3QJwCBao2jR`, gate `f3QJgiXFh3Ef`). Two defects. (1) The abort was exactly D1's
+  re-halo defect — `gid2lv.at()` in Phase 3a needs both endpoint *positions* of every
+  midpoint the rank owns and one is a ghost `refine()` already dropped; the round loop
+  had no rebuild between rounds. Fixed with the identity-`migrate()` +
+  `haloExchange()` idiom on both the conforming mesh and the control. `midGid` was
+  never involved. (2) *Unmasked by that fix, pre-existing, library:* `refine()` gid'd
+  its re-derived edges from an `MPI_Exscan` over each rank's **local** edge count,
+  which includes the boundary duplicates a rank holds but does not own. Two
+  consequences — the owned gid space gained a gap per duplicate on any non-last rank
+  (an **empty-mask** refine changed the global owned edge-gid set at np3/4/5, by
+  exactly 23/44/76 gids; np2 escapes because with two ranks every duplicate lands on
+  the last rank), and the two sides of a boundary edge carried **different gids for
+  the same edge** — which `distribute()`, `MeshBuilder`, `migrate()`'s gid-keyed edge
+  maps and the HDF5 writer/reader all assume they do not, and which vertex and face
+  gids already satisfied. Edges were the only kind gid'd locally. Fixed with **no
+  extra message round**: each `EdgeKey` reaches exactly one coordinator, so the
+  coordinator numbers its keys densely from an exscan over its key count and returns
+  the gid in step 3e's existing ownership/level reply (Decision 10). **Trap worth
+  remembering:** the check that should have caught this was a global **XOR** of owned
+  gids, and XOR *cancels* — it was passing at np4 and np5 while the gid set was
+  wrong, because shifting a contiguous even-sized block by a fixed amount is
+  XOR-invisible. It now compares the gathered sorted gid **set** per kind and names
+  the failing condition and the lost/gained gids; without that strengthening defect 2
+  would have shipped hidden at two of the five gate rank counts. *A permutation- and
+  cancellation-invariant checksum is not a set comparison — do not trust an XOR to
+  detect a structured shift.* Adaptive-round numbers are byte-identical before and
+  after the edge-gid change at every rank count (it moved gids, not decisions).
+  Regression evidence is the **full gate** rather than spot-checks (both modes share
+  the changed path): 130 instances green through #172 except the three
+  never-before-executed conforming tests, which were proven pre-existing by
+  rebuilding with the change stashed. D4 is now largely answered — `loadbalance`,
+  `io`, `markquality_edge`, `markquality_curv` pass at ranks 1–5 both backends;
+  `conforming_migrate` / `conforming_operators` / `conforming_determinism` abort at
+  np≥2 (plus a np1 idempotence failure) and are D5/D6; only `conforming_quality` and
+  `markquality_conforming` remain unexecuted.
 - **2026-08-04 — D2.** `refine_conforming` green SERIAL+HIP at **np1** — all three
   adaptive rounds `euler=2` (jobs `f3QJLhrfQLKh`, `f3QJMiKVuhm9`). Risk point 9 was
   real and was **three coupled library defects**, all in the red engine's handling of

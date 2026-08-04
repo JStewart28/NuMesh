@@ -54,8 +54,10 @@
 
 #include <mpi.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <type_traits>
 #include <vector>
 
@@ -113,6 +115,51 @@ inline ClosureTotals reduceClosure( const ClosureStats& s )
     t.blueLo1 = g[6];
     t.blueLo2 = g[7];
     return t;
+}
+
+//! Every owned gid of one entity kind, gathered and sorted globally. Used to
+//! report WHICH gids a checksum mismatch is about, not merely that there is one.
+inline std::vector<GlobalId>
+globalSortedGids( const std::vector<GlobalId>& mine, int size )
+{
+    int n = static_cast<int>( mine.size() );
+    std::vector<int> counts( size, 0 );
+    MPI_Allgather( &n, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD );
+    std::vector<int> displs( size, 0 );
+    int total = 0;
+    for ( int r = 0; r < size; ++r )
+    {
+        displs[r] = total;
+        total += counts[r];
+    }
+    std::vector<GlobalId> all( total );
+    MPI_Allgatherv( mine.data(), n, MPI_UINT64_T, all.data(), counts.data(),
+                    displs.data(), MPI_UINT64_T, MPI_COMM_WORLD );
+    std::sort( all.begin(), all.end() );
+    return all;
+}
+
+//! Print the first few gids present in `b` but not `a` and vice versa.
+inline void reportGidDelta( const char* tag, const char* kind,
+                            const std::vector<GlobalId>& a,
+                            const std::vector<GlobalId>& b )
+{
+    if ( a == b )
+        return;
+    auto diff = [&]( const std::vector<GlobalId>& x,
+                     const std::vector<GlobalId>& y, const char* label )
+    {
+        std::vector<GlobalId> d;
+        std::set_difference( x.begin(), x.end(), y.begin(), y.end(),
+                             std::back_inserter( d ) );
+        std::printf( "  [%s] %s %s (%zu):", tag, kind, label, d.size() );
+        for ( std::size_t i = 0; i < d.size() && i < 12; ++i )
+            std::printf( " %llu", static_cast<unsigned long long>( d[i] ) );
+        std::printf( "\n" );
+    };
+    diff( a, b, "lost" );
+    diff( b, a, "gained" );
+    std::fflush( stdout );
 }
 
 //! The three mode-agnostic conformity criteria, as one global figure each.
@@ -233,6 +280,27 @@ int case_adaptive( int rank, int size, const char* tag )
                          ct.pattern[2], ct.pattern[3], ct.blueLo1, ct.blueLo2,
                          cc.euler, cc.badIncidence, cc.interiorVerts );
         }
+
+        // refine() drops every ghost and clears the halo plans, but its own
+        // Phase 3a needs the positions of BOTH endpoints of every midpoint the
+        // rank owns -- and across a partition boundary one of those endpoints
+        // is a ghost. So a second refine() with no rebuild in between throws at
+        // np >= 2. Re-halo with the documented identity-migrate idiom (Step 7
+        // couples the general halo rebuild to migrate()); dest == self, so
+        // ownership is unchanged. Placed AFTER every check and the print, so
+        // the invariants above still measure exactly what refine() produced.
+        {
+            std::vector<Rank> dest( mesh.numOwnedFaces(),
+                                    static_cast<Rank>( rank ) );
+            migrate( mesh, halo, dest );
+            haloExchange( mesh, halo );
+        }
+        {
+            std::vector<Rank> dest( ctrl.numOwnedFaces(),
+                                    static_cast<Rank>( rank ) );
+            migrate( ctrl, ctrlHalo, dest );
+            haloExchange( ctrl, ctrlHalo );
+        }
     }
 
     if ( totalClosure <= 0 )
@@ -266,39 +334,94 @@ int case_empty( int rank, int size, const char* tag )
     const long long F0 = TesseraTest::globalOwnedFaces( mesh );
     unsigned long long cv0, ce0, cf0;
     TesseraTest::topologyChecksum( mesh, cv0, ce0, cf0 );
+    const std::vector<GlobalId> gv0 = globalSortedGids(
+        TesseraTest::ownedGids( mesh.vertices(), 0, mesh.numOwnedVertices() ),
+        size );
+    const std::vector<GlobalId> ge0 = globalSortedGids(
+        TesseraTest::ownedGids( mesh.edges(), 0, mesh.numOwnedEdges() ), size );
+    const std::vector<GlobalId> gf0 = globalSortedGids(
+        TesseraTest::ownedGids( mesh.faces(), 0, mesh.numOwnedFaces() ), size );
 
     std::vector<char> mask( mesh.numOwnedFaces(), 0 );
     auto res = refine( mesh, halo, mask );
 
-    int local = TesseraTest::checkConforming( mesh );
-    local += TesseraTest::checkClosureInverse( mesh, res.midpoints );
-    if ( globalFails( local ) != 0 )
-        ++fails;
+    // Every condition gets its own bit, OR-reduced over ranks, so a failure
+    // names itself instead of only incrementing a count.
+    enum Why
+    {
+        kConforming = 1 << 0,
+        kInverse = 1 << 1,
+        kCounts = 1 << 2,
+        kChecksum = 1 << 3,
+        kClosureInert = 1 << 4,
+        kEuler = 1 << 5,
+        kMidpoints = 1 << 6
+    };
+    int why = 0;
+    if ( TesseraTest::checkConforming( mesh ) != 0 )
+        why |= kConforming;
+    if ( TesseraTest::checkClosureInverse( mesh, res.midpoints ) != 0 )
+        why |= kInverse;
 
     const ClosureTotals ct = reduceClosure( res.closure );
     unsigned long long cv1, ce1, cf1;
     TesseraTest::topologyChecksum( mesh, cv1, ce1, cf1 );
 
-    if ( TesseraTest::globalOwnedVertices( mesh ) != V0 ||
-         TesseraTest::globalOwnedEdges( mesh ) != E0 ||
-         TesseraTest::globalOwnedFaces( mesh ) != F0 )
-        ++fails; // an empty mask must not change any count
-    if ( cv1 != cv0 || ce1 != ce0 || cf1 != cf0 )
-        ++fails; // ... nor any gid
+    const long long V1 = TesseraTest::globalOwnedVertices( mesh );
+    const long long E1 = TesseraTest::globalOwnedEdges( mesh );
+    const long long F1 = TesseraTest::globalOwnedFaces( mesh );
+    const long long euler = TesseraTest::checkOwnedEuler( mesh );
+
+    if ( V1 != V0 || E1 != E0 || F1 != F0 )
+        why |= kCounts; // an empty mask must not change any count
+    const std::vector<GlobalId> gv1 = globalSortedGids(
+        TesseraTest::ownedGids( mesh.vertices(), 0, mesh.numOwnedVertices() ),
+        size );
+    const std::vector<GlobalId> ge1 = globalSortedGids(
+        TesseraTest::ownedGids( mesh.edges(), 0, mesh.numOwnedEdges() ), size );
+    const std::vector<GlobalId> gf1 = globalSortedGids(
+        TesseraTest::ownedGids( mesh.faces(), 0, mesh.numOwnedFaces() ), size );
+    if ( cv1 != cv0 || ce1 != ce0 || cf1 != cf0 || gv1 != gv0 || ge1 != ge0 ||
+         gf1 != gf0 )
+        why |= kChecksum; // ... nor any gid
     if ( ct.closureChildren != 0 || ct.pattern[1] || ct.pattern[2] ||
          ct.pattern[3] )
-        ++fails; // nothing was split, so nothing may be closed
-    if ( TesseraTest::checkOwnedEuler( mesh ) != 2 )
-        ++fails;
+        why |= kClosureInert; // nothing was split, so nothing may be closed
+    if ( euler != 2 )
+        why |= kEuler;
     if ( !res.midpoints.empty() )
-        ++fails; // no edge was bisected
+        why |= kMidpoints; // no edge was bisected
+
+    int gWhy = 0;
+    MPI_Allreduce( &why, &gWhy, 1, MPI_INT, MPI_BOR, MPI_COMM_WORLD );
+    if ( gWhy != 0 )
+        ++fails;
 
     (void)size;
     if ( rank == 0 )
-        std::printf( "  [%s] empty-mask %s (V=%lld E=%lld F=%lld "
-                     "closureChildren=%lld)\n",
-                     tag, fails == 0 ? "ok" : "FAIL", V0, E0, F0,
-                     ct.closureChildren );
+    {
+        std::printf( "  [%s] empty-mask %s (V=%lld->%lld E=%lld->%lld "
+                     "F=%lld->%lld euler=%lld closureChildren=%lld"
+                     " |S| hist=[%lld,%lld,%lld,%lld])\n",
+                     tag, gWhy == 0 ? "ok" : "FAIL", V0, V1, E0, E1, F0, F1,
+                     euler, ct.closureChildren, ct.pattern[0], ct.pattern[1],
+                     ct.pattern[2], ct.pattern[3] );
+        if ( gWhy != 0 )
+        {
+            static const char* names[7] = {
+                "conforming",      "closureInverse", "counts",   "checksum",
+                "closureNotInert", "euler",          "midpoints" };
+            std::printf( "  [%s] empty-mask failed:", tag );
+            for ( int b = 0; b < 7; ++b )
+                if ( gWhy & ( 1 << b ) )
+                    std::printf( " %s", names[b] );
+            std::printf( "\n" );
+            reportGidDelta( tag, "vertex", gv0, gv1 );
+            reportGidDelta( tag, "edge", ge0, ge1 );
+            reportGidDelta( tag, "face", gf0, gf1 );
+        }
+        std::fflush( stdout );
+    }
     return fails;
 }
 

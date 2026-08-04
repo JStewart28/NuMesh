@@ -175,12 +175,18 @@ struct KeyGid
     GlobalId gid;
 };
 //! (edge, incident child-face owner, incident child-face level) for edge
-//! ownership + level in the refined mesh.
+//! ownership + level in the refined mesh. On the coordinator's REPLY the `gid`
+//! field additionally carries the edge's globally-assigned gid (step 3e): the
+//! coordinator sees each EdgeKey exactly once, so it can number its keys densely
+//! from an MPI_Exscan over its own distinct-key count and hand the SAME gid to
+//! every rank that advertised the key. On the outbound advertisement `gid` is
+//! unused (set to invalid_gid).
 struct EdgeOwnMsg
 {
     EdgeKey key;
     Rank owner;
     Level level;
+    GlobalId gid;
 };
 
 //! Implementation of refine() for BOTH refinement modes. Called through the
@@ -771,8 +777,22 @@ RefineResult refineImpl( MeshT& mesh,
             }
         const int nLocalE = static_cast<int>( ep.size() );
 
-        // 3e. edge ownership + level via coordinator (min incident face owner /
-        //     level). Every edge is owned by exactly one rank globally.
+        // 3e. edge ownership + level + GID via coordinator (min incident face
+        //     owner / level). Every edge is owned by exactly one rank globally.
+        //
+        //     The gid is assigned HERE, by the coordinator, rather than from a
+        //     local exscan. Each EdgeKey is routed to exactly one coordinator,
+        //     so a coordinator can number its own distinct keys densely from an
+        //     MPI_Exscan over its key count and reply with that gid to every
+        //     rank that advertised the key. That makes the refined edge gids
+        //     (a) dense in [0, globalEdges) and (b) IDENTICAL on both sides of a
+        //     partition boundary -- which is what every other component
+        //     (distribute(), MeshBuilder, migrate()'s gid-keyed edge maps, the
+        //     HDF5 writer/reader) already assumes an edge gid to be, and which
+        //     vertex and face gids already satisfy. Assigning from a local
+        //     exscan over nLocalE instead left gaps in the owned gid space
+        //     wherever a non-last rank held a boundary duplicate, and gave the
+        //     two sides of a boundary edge different gids for the same edge.
         std::vector<std::vector<detail::EdgeOwnMsg>> toEC( size );
         for ( int e = 0; e < nLocalE; ++e )
         {
@@ -781,20 +801,38 @@ RefineResult refineImpl( MeshT& mesh,
             if ( efLocal[e][1] >= 0 )
                 lv0 = std::min( lv0, newVis[efLocal[e][1]].level );
             toEC[detail::edgeCoordRank( key, size )].push_back(
-                { key, static_cast<Rank>( R ), lv0 } );
+                { key, static_cast<Rank>( R ), lv0, invalid_gid } );
         }
         auto ecGot = allToAllV( comm, toEC );
-        std::map<EdgeKey, std::pair<Rank, Level>> edgeAgg;
+        struct EdgeInfo
+        {
+            Rank owner;
+            Level level;
+            GlobalId gid;
+        };
+        std::map<EdgeKey, EdgeInfo> edgeAgg;
         for ( const auto& m : ecGot.data )
         {
             auto it = edgeAgg.find( m.key );
             if ( it == edgeAgg.end() )
-                edgeAgg[m.key] = { m.owner, m.level };
+                edgeAgg[m.key] = { m.owner, m.level, invalid_gid };
             else
             {
-                it->second.first = std::min( it->second.first, m.owner );
-                it->second.second = std::min( it->second.second, m.level );
+                it->second.owner = std::min( it->second.owner, m.owner );
+                it->second.level = std::min( it->second.level, m.level );
             }
+        }
+        // Dense global numbering of this coordinator's keys. std::map iteration
+        // order is deterministic, so the numbering is reproducible.
+        {
+            long long myKeys = static_cast<long long>( edgeAgg.size() );
+            long long eBase = 0;
+            MPI_Exscan( &myKeys, &eBase, 1, MPI_LONG_LONG, MPI_SUM, comm );
+            if ( R == 0 )
+                eBase = 0;
+            long long n = 0;
+            for ( auto& kv : edgeAgg )
+                kv.second.gid = static_cast<GlobalId>( eBase + n++ );
         }
         // Reply to each participant, grouped by source rank via from()/count().
         std::vector<std::vector<detail::EdgeOwnMsg>> ecReply( size );
@@ -805,24 +843,25 @@ RefineResult refineImpl( MeshT& mesh,
             for ( int i = 0; i < cnt; ++i )
             {
                 const auto& agg = edgeAgg[p[i].key];
-                ecReply[s].push_back( { p[i].key, agg.first, agg.second } );
+                ecReply[s].push_back(
+                    { p[i].key, agg.owner, agg.level, agg.gid } );
             }
         }
         auto ecRes = allToAllV( comm, ecReply );
-        std::map<EdgeKey, std::pair<Rank, Level>> edgeOwner;
+        std::map<EdgeKey, EdgeInfo> edgeOwner;
         for ( const auto& m : ecRes.data )
-            edgeOwner[m.key] = { m.owner, m.level };
+            edgeOwner[m.key] = { m.owner, m.level, m.gid };
 
-        // 3f. order edges owned-first, assign globally-unique gids (exscan over
-        //     local edge count; boundary edges carry distinct gids per rank but
-        //     are matched by EdgeKey and counted once via the owner field).
+        // 3f. order edges owned-first (local layout only -- the gids themselves
+        //     come from the coordinator, so a boundary edge carries the same gid
+        //     on every rank that holds it).
         std::vector<int> order; // local edge indices, owned first
         order.reserve( nLocalE );
         std::vector<char> isOwned( nLocalE, 0 );
         for ( int e = 0; e < nLocalE; ++e )
         {
             const EdgeKey key = keyOf( ep[e][0], ep[e][1] );
-            if ( edgeOwner[key].first == R )
+            if ( edgeOwner[key].owner == R )
             {
                 isOwned[e] = 1;
                 order.push_back( e );
@@ -833,17 +872,12 @@ RefineResult refineImpl( MeshT& mesh,
             if ( !isOwned[e] )
                 order.push_back( e );
 
-        long long localE = nLocalE;
-        long long eBase = 0;
-        MPI_Exscan( &localE, &eBase, 1, MPI_LONG_LONG, MPI_SUM, comm );
-        if ( R == 0 )
-            eBase = 0;
         std::vector<GlobalId> edgeGid( nLocalE );
         std::vector<int> newIndexOf( nLocalE );
         for ( int li = 0; li < nLocalE; ++li )
         {
             const int e = order[li];
-            edgeGid[e] = static_cast<GlobalId>( eBase + li );
+            edgeGid[e] = edgeOwner[keyOf( ep[e][0], ep[e][1] )].gid;
             newIndexOf[e] = li;
         }
 
@@ -863,8 +897,8 @@ RefineResult refineImpl( MeshT& mesh,
                 const int li = newIndexOf[e];
                 const EdgeKey key = keyOf( ep[e][0], ep[e][1] );
                 gid( li ) = edgeGid[e];
-                own( li ) = edgeOwner[key].first;
-                lev( li ) = edgeOwner[key].second;
+                own( li ) = edgeOwner[key].owner;
+                lev( li ) = edgeOwner[key].level;
                 verts( li, 0 ) = ep[e][0];
                 verts( li, 1 ) = ep[e][1];
                 // Incident faces: local visible-face gids; the cross-rank second

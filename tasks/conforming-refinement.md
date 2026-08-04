@@ -1537,6 +1537,22 @@ so collect them from the run output rather than re-running:
   the crack changed a failing number into a differently-failing number). The fix is
   `Conforming`-only because it needs the persistent map, which only the closure
   bookkeeping can supply. Recorded under *Known limits* for the other mode.
+- **2026-08-04 — Decision 10: refined edge gids are assigned by the edge
+  coordinator, not by a local exscan.** `refine()` re-derives its edge list from the
+  new visible faces, and used to gid it from an `MPI_Exscan` over each rank's
+  **local** edge count — which includes the boundary edges a rank holds but does not
+  own. Two consequences, both wrong: the owned gid space had gaps wherever a
+  non-last rank held such a duplicate (so an *empty-mask* refine changed the global
+  owned edge-gid set at np ≥ 3 — np2 escaped only because with two ranks every
+  duplicate lands on the last one), and the two sides of a boundary edge carried
+  **different gids for the same edge**, contradicting what `distribute()`, the mesh
+  builder, `migrate()`'s gid-keyed edge maps and the HDF5 writer/reader all assume.
+  Each `EdgeKey` reaches exactly one coordinator, so the coordinator can number its
+  own keys densely from an exscan over its key count and return the gid in the reply
+  of the round trip that already establishes ownership and level — **no extra
+  message round**, and edges now match vertices and faces in having globally
+  consistent gids. The numbering is hash-scattered rather than rank-contiguous;
+  nothing depends on edge-gid locality. Found by Task 8 D3.
 - **2026-07-31 — Decision 4: transient red–green–blue closure**, not
   newest-vertex bisection and not red-only propagation. Red-only propagation
   degenerates to uniform refinement; bisection replaces the red engine wholesale

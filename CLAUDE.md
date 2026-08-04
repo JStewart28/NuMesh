@@ -39,7 +39,7 @@ Current task logs:
 | Task | File | Status |
 |------|------|--------|
 | Milestone 1 — distributed triangle mesh | [tasks/milestone1_mesh.md](tasks/milestone1_mesh.md) | Complete (Steps 0–10b done; regression gate 70/70, unit 28/28) |
-| Conforming refinement | [tasks/conforming-refinement.md](tasks/conforming-refinement.md) (design) + [tasks/conforming-refinement-debug.md](tasks/conforming-refinement-debug.md) (Task 8 sub-tasks D1–D8) | In progress — Tasks 1–7 done, **Task 8 (verification) under way**. D0–D2 done: 78 test instances pass, `refine_splitedges` green SERIAL+HIP np1–5, `refine_conforming` green SERIAL+HIP at np1 (risk point 9 fixed). Open: D3 (`refine_conforming` aborts at np≥2), nine tests not yet executed. **Read the debug file to resume.** |
+| Conforming refinement | [tasks/conforming-refinement.md](tasks/conforming-refinement.md) (design) + [tasks/conforming-refinement-debug.md](tasks/conforming-refinement-debug.md) (Task 8 sub-tasks D1–D8) | In progress — Tasks 1–7 done, **Task 8 (verification) under way**. D0–D3 done: `refine_splitedges` and `refine_conforming` both green SERIAL+HIP at np1–5, and the full gate is green (130 instances) except three conforming tests. Open: D5/D6 (`conforming_migrate`, `conforming_operators`, `conforming_determinism` abort at np≥2 — pre-existing), plus `conforming_quality` and `markquality_conforming` still unexecuted. **Read the debug file to resume.** |
 
 ---
 

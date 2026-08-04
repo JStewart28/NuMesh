@@ -256,7 +256,19 @@ allocated in a global block via `MPI_Exscan` over the pre-refinement global vert
 count, and the owner **sends** the gid to co-sharers, so a shared edge's midpoint is
 bit-identical on every side with no reliance on matching local order; (3) edge
 ownership (lowest incident child-face owner) so owned counts stay a global
-partition.
+partition, **and the refined edge gids themselves**.
+
+Edge gids are assigned by that third coordinator phase rather than from a local
+scan. A coordinator sees each `EdgeKey` exactly once, so it numbers its own keys
+densely from an `MPI_Exscan` over its key count and replies with that gid to every
+rank that advertised the key. Refined edge gids are therefore dense in
+`[0, globalEdges)` and **identical on both sides of a partition boundary** — the
+same property `distribute()`, the mesh builder, `migrate()`'s gid-keyed edge maps
+and the HDF5 writer/reader all already assume of an edge gid, and the one vertex
+and face gids already had. (Assigning them instead from a local exscan over each
+rank's *local* edge count, as the code did before Task 8 D3, left gaps in the owned
+gid space wherever a non-last rank held a boundary duplicate, and gave the two
+sides of a boundary edge different gids for the same edge.)
 
 Phase 2 advertises the edges of **every** owned face — refining *and* kept — each
 tagged with a `refining` flag. An edge is split iff some incident face refines;
