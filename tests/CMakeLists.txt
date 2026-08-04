@@ -254,7 +254,10 @@ tessera_add_test(
 
 # Stale-handle generation guard: a slice held across a count-changing op and
 # then copied (as it would be when captured into a KOKKOS_LAMBDA) must abort;
-# a slice held across haloExchange() (topology-preserving) must not. This
+# a slice held across haloExchange() (topology-preserving) must not. Also
+# covers the CONFORMING refine path, which un-closes and re-closes and so
+# changes the local face count even when nothing refines -- a face slice, a
+# MeshGeometry, and a VertexStencil held across it must all abort. This
 # exercises host-side generation bookkeeping, not device kernels, so it is
 # registered SERIAL-only (no HIP duplicate, unlike the other unit tests).
 tessera_add_test(
@@ -555,6 +558,85 @@ tessera_add_test(
     TIER     regression
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_markquality_curv.cpp
+)
+
+# Surface OPERATORS on a conforming mesh (Task 7 of
+# tasks/conforming-refinement.md) -- the payoff test for the whole feature. A
+# hanging node's neighbourhood is self-consistent but is a HALF-disc, so every
+# operator assembled over it silently misses the kept face it touches. This
+# identifies the closure vertices (former hanging nodes) from the
+# ClosureParent/ClosureParentVerts bookkeeping and checks, at those vertices
+# specifically: the 1-ring is a closed fan, buildVertexStencil's k=1 row equals
+# the independently face-derived 1-ring, applyStencil matches an analytic
+# reference to the SAME tolerance as at interior vertices (asserted separately),
+# and reduceVertexFromFaces accumulates the true one-third area over the FULL
+# incident-face set. Fails loudly if no closure vertex exists.
+tessera_add_test(
+    NAME     conforming_operators
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_conforming_operators.cpp
+)
+tessera_add_test(
+    NAME     conforming_operators
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_conforming_operators.cpp
+)
+
+# DETERMINISM of the conforming closure (Task 7 of
+# tasks/conforming-refinement.md). Three senses: (a) rank-count independence,
+# against a reference the same run recomputes on MPI_COMM_SELF and compares by
+# quantised POSITION (new gids come from an MPI_Exscan, so nothing gid-keyed is
+# comparable across rank counts) -- this is what pins the blue-diagonal
+# tie-break, and it prints a per-component breakdown plus a direct count of blue
+# parents whose diagonal differs; (b) closure idempotence -- an empty-mask
+# refine on an already-closed mesh is un-close -> re-close and must reproduce
+# the visible topology; (c) cross-mode equivalence under a uniform mask, where
+# there are no kept faces so the closure must be inert and the two modes must
+# agree on face gids, corner gids, and levels -- not merely on counts.
+tessera_add_test(
+    NAME     conforming_determinism
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_conforming_determinism.cpp
+)
+tessera_add_test(
+    NAME     conforming_determinism
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_conforming_determinism.cpp
+)
+
+# Triangle SHAPE QUALITY over refinement depth (Task 7 of
+# tasks/conforming-refinement.md): the guarantee that justifies making the
+# closure transient. Eight adaptive rounds over a shrinking geodesic cap,
+# tracking global min angle, max radius ratio, and closure-face fraction per
+# round, each asserted against a FIXED bound -- fixed being the point, since a
+# persistent closure would degrade without bound.
+#
+# TIER unit, DELIBERATELY NOT IN THE GATE: its bounds are provisional, derived
+# from the pattern geometry rather than from measurement, because no test in
+# Tasks 1-7 has been executed. Task 8 calibrates them against the printed
+# per-round data and promotes this to `regression` at ranks 1-5 only if it
+# proves stable. Never promote a failing test to the gate.
+tessera_add_test(
+    NAME     conforming_quality
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_conforming_quality.cpp
+)
+tessera_add_test(
+    NAME     conforming_quality
+    BACKEND  HIP
+    TIER     unit
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_conforming_quality.cpp
 )
 
 # markByQuality() driving CONFORMING refinement (Task 6 of

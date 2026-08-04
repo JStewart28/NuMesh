@@ -22,6 +22,16 @@
 // Mesh::generation() -- a slice taken before it must survive being copied
 // again afterward with no abort.
 //
+// Case 3: the CONFORMING refine path (tasks/conforming-refinement.md, Task 7).
+// It is a distinct hazard from the hanging-node path, not the same one twice:
+// conforming refine() un-closes the transient closure layer and re-closes it,
+// so it changes the local face count -- and reallocates the face AoSoA -- even
+// when nothing at all is refined. A face slice, a MeshGeometry, or a
+// VertexStencil held across it is stale and every one of them must abort when
+// copied. All three are checked, since each reaches the guard by a different
+// route (a bare slice; the position GenerationHandle inside the geometry
+// accessor; the CSR GenerationHandle inside the stencil).
+//
 // Host-only (Kokkos::Serial / Kokkos::HostSpace) regardless of the build's
 // default execution space: the bug under test is host-side generation
 // bookkeeping, not device kernels, so this test is registered SERIAL-only.
@@ -35,13 +45,21 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 using namespace Tessera;
 
-using MeshT = Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
-                   Kokkos::HostSpace, Kokkos::Serial>;
+using MeshT =
+    Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
+         Kokkos::HostSpace, Kokkos::Serial, RefinementMode::HangingNode2to1>;
+
+//! Case 3's mesh: same in every respect but the refinement mode.
+using ConfMeshT =
+    Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
+         Kokkos::HostSpace, Kokkos::Serial, RefinementMode::Conforming>;
 
 // Runs `f` in a forked child process; returns true iff the child exited
 // cleanly (code 0), false if it was signaled or exited nonzero.
@@ -114,6 +132,76 @@ int main( int argc, char* argv[] )
         // is itself a (very loud) test failure.
         auto still_fresh = fresh;
         (void)still_fresh;
+
+        // ---- Case 3: conforming refine() invalidates every handle ---------
+        ConfMeshT cmesh( MPI_COMM_WORLD );
+        buildIcosphere( cmesh, 1 );
+        MeshHalo<Kokkos::HostSpace> chalo;
+        {
+            auto faceOwner = facePartitionByAxis( cmesh );
+            distribute( cmesh, chalo, faceOwner );
+        }
+        haloExchange( cmesh, chalo );
+
+        auto stale_face = cmesh.template faceSlice<FaceField::Gid>();
+        auto stale_geom = buildMeshGeometry( cmesh );
+        auto stale_stencil = buildVertexStencil( cmesh, 1 );
+        const std::size_t cgen_before = cmesh.generation();
+
+        // A PARTIAL mask, so the closure really runs: the kept faces adjacent
+        // to a refined one are retriangulated and the visible face count is not
+        // simply 4x the refined count.
+        {
+            auto fg = cmesh.template faceSlice<FaceField::Gid>();
+            std::vector<char> mask( cmesh.numOwnedFaces(), 0 );
+            for ( std::size_t f = 0; f < mask.size(); ++f )
+                mask[f] = ( fg( f ) % 3 == 0 ) ? 1 : 0;
+            refine( cmesh, chalo, mask );
+        }
+
+        if ( cmesh.generation() == cgen_before )
+        {
+            std::fprintf(
+                stderr,
+                "FAIL: conforming refine() did not bump generation()\n" );
+            ++fails;
+        }
+
+        if ( runInChild(
+                 [&]()
+                 {
+                     auto c = stale_face;
+                     (void)c;
+                 } ) )
+        {
+            std::fprintf( stderr, "FAIL: a face slice held across a conforming "
+                                  "refine() did not trip the guard\n" );
+            ++fails;
+        }
+        if ( runInChild(
+                 [&]()
+                 {
+                     auto c = stale_geom;
+                     (void)c;
+                 } ) )
+        {
+            std::fprintf( stderr, "FAIL: a MeshGeometry held across a "
+                                  "conforming refine() did not trip the "
+                                  "guard\n" );
+            ++fails;
+        }
+        if ( runInChild(
+                 [&]()
+                 {
+                     auto c = stale_stencil.csr;
+                     (void)c;
+                 } ) )
+        {
+            std::fprintf( stderr, "FAIL: a VertexStencil held across a "
+                                  "conforming refine() did not trip the "
+                                  "guard\n" );
+            ++fails;
+        }
 
         int rank = 0;
         MPI_Comm_rank( MPI_COMM_WORLD, &rank );
