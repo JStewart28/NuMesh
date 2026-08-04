@@ -1364,7 +1364,23 @@ plausible defect):
 at the gate definition (label `regression` × {SERIAL, HIP} × ranks 1–5), `ctest -L
 unit` fully green, `format-check` clean, and the *Open failures* list empty.
 
-**Open failures.** *(none recorded yet — Task 8 has not run)*
+**Open failures.** Task 8 is being worked in
+[tasks/conforming-refinement-debug.md](conforming-refinement-debug.md), which
+breaks it into ordered sub-tasks D1–D8 and carries the live failure list, the
+build/run recipe, and the harness traps. **Read that file, not this section, to
+resume Task 8.**
+
+First execution (2026-08-04, D0): **78 test instances pass**, including all of
+Tasks 1 and 2 (`refinement_mode`, `refine_closure`) and the whole pre-existing
+suite at np1–4 — so risk points 1, 6 and 8 are clear. Three failures:
+`refine_splitedges` hangs at np≥2; `refine_conforming` fails adaptive rounds 2
+and 3 at np1 (**risk point 9 confirmed exactly as predicted** — round 2's
+`euler=-136` equals round 1's hanging-node control, i.e. the mesh reverts to
+hanging-node behaviour from the second round on); and `refine_conforming` aborts
+at np2 with `std::out_of_range: unordered_map::at`. Nine registrations
+(`conforming_migrate`, `loadbalance`, `io`, `markquality_edge`,
+`markquality_curv`, `conforming_operators`, `conforming_determinism`,
+`conforming_quality`, `markquality_conforming`) have not yet been executed.
 
 **Report back.** The full failure list as first observed and the root cause of each;
 which of the ten risk points above actually fired; the new regression/unit totals;
