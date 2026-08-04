@@ -569,7 +569,15 @@ void refineLocalConforming( MeshT& mesh, const std::vector<char>& refineFace,
     // ---- step 1: red 1->4 split of the red layer ---------------------------
     // A midpoint is deduplicated by the bisected edge's EdgeKey and, since
     // vertex gid == local index here, its gid is its new local index.
-    std::map<EdgeKey, GlobalId> midpointOf;
+    //
+    // Seeded with the PERSISTENT split-edge map unclose() recovered (step 0c of
+    // refineImpl(), and see there for why it is needed): a red edge an earlier
+    // call already bisected keeps its midpoint, so a coarse face refining now
+    // reuses that vertex rather than minting a coincident second one, and a kept
+    // face still carrying that hanging node is closed again below. Seeded entries
+    // name existing vertices (gid < nv), so they consume no new local index and
+    // the numbering below is unaffected.
+    std::map<EdgeKey, GlobalId> midpointOf = un.splitEdges;
     std::vector<std::array<int, 2>> midEnd; // new vertex -> (endpoint a, b)
     auto midpoint = [&]( GlobalId a, GlobalId b ) -> GlobalId
     {
@@ -632,7 +640,8 @@ void refineLocalConforming( MeshT& mesh, const std::vector<char>& refineFace,
 
     // ---- step 3b: close every kept red face with a bisected edge -----------
     const CloseResult cl =
-        closeFaces( newRed, midpointOf, nextRedGid, freshChild );
+        closeFaces( newRed, midpointOf, nextRedGid, freshChild,
+                    static_cast<GlobalId>( nv ) );
     const std::vector<VisibleFace>& newVis = cl.visible;
     const int newNv = nv + static_cast<int>( midEnd.size() );
     const int newNf = static_cast<int>( newVis.size() );

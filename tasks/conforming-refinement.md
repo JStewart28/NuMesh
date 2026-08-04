@@ -31,7 +31,7 @@
 | 5 | `migrate()` / `loadBalance()` / halo rebuild on a closed mesh | **Done** |
 | 6 | I/O round-trip, `markByQuality`, example + docs | **Done** |
 | 7 | Dedicated conforming test suite; flip the default to `Conforming` | **Done** |
-| 8 | **Run the full suite and fix everything it finds** (the only task that runs tests) | Not started |
+| 8 | **Run the full suite and fix everything it finds** (the only task that runs tests) | **In progress** — sub-tasks D0–D8 in [conforming-refinement-debug.md](conforming-refinement-debug.md); D0, D1, D2 done |
 
 Tasks 1–7 have landed, so **conforming refinement is feature-complete, covered,
 and the default**: the closure kernel and its inverse are pure local functions in
@@ -42,7 +42,8 @@ children as one unit, the closure bookkeeping round-trips through HDF5,
 `markByQuality` drives the whole thing through the mask translation, every
 mode-sensitive test is registered in both modes, and `Mesh`'s `Mode` parameter
 defaults to `Conforming`. There is no abort stub left anywhere. What remains is
-the single verification pass (Task 8). **Nothing has been executed yet.**
+the single verification pass (Task 8), now **under way** — its sub-tasks, verdicts
+and evidence live in [conforming-refinement-debug.md](conforming-refinement-debug.md).
 
 **Two findings from Task 7's analysis that Task 8 should triage first** — both
 are recorded in full under *Task 8 → risk points* below, because both were found
@@ -51,6 +52,8 @@ by reading the code while writing tests against it, not by running anything:
 1. **The split-edge map the closure consumes is this-round-only, but the level
    jumps it must close are persistent.** This looks like a defect in the Task-4
    wiring that every multi-round conforming test will trip. Risk point 9.
+   **Confirmed and fixed — Task 8 D2** (Decisions 8 and 9); the fix also closed a
+   latent midpoint-duplication and 2:1-propagation gap around hanging nodes.
 2. **Rank-count independence of anything gid-keyed is not achievable**, because
    new vertex and face gids come from an `MPI_Exscan` over ranks. Only
    position-canonical comparisons are rank-count independent, which is how
@@ -354,16 +357,25 @@ Conforming refine( mesh, halo, mask ):
        caller's visible-face mask. The caller's mask is indexed by VISIBLE owned
        faces; phases 1-3 want it indexed by RED owned faces.
 
-  1. 2:1 mark-propagation fixpoint          [unchanged]
+  0c. RECOVER THE PERSISTENT SPLIT-EDGE MAP (new, local, no comm — Task 8 D2)
+       Also from the closure bookkeeping: for each closed red parent, which of
+       its edges is bisected in the red layer and at which midpoint. Being
+       bisected outlives the round that caused it; phase 2 only ever learns
+       THIS round's bisections. See the Phase 2 extension below.
+
+  1. 2:1 mark-propagation fixpoint          [EXTENDED: keyed on half-edges]
   2. midpoint-gid assignment                [EXTENDED, see below]
-  3. red face list: kept + 4 children each  [unchanged]
+  3. red face list: kept + 4 children each  [unchanged; a split of an already-
+                                             bisected edge REUSES its midpoint]
 
   3b. CLOSE (new, local, no comm)
-       For each KEPT red face, look up its 3 edges in the split-edge map from
-       phase 2; apply the |S| pattern above; emit the closure children with
-       ClosureParent / ClosureParentVerts set. Red children of a REFINED face
-       are never closed (their edges are all newly created, so |S| = 0 for them
-       by construction — assert this).
+       For each KEPT red face, look up its 3 edges in the split-edge map — this
+       round's from phase 2 UNIONED with 0c's; apply the |S| pattern above; emit
+       the closure children with ClosureParent / ClosureParentVerts set. A red
+       child of a REFINED face has |S| = 0 unless one of its two inherited
+       boundary half-edges is bisected this round, which is possible exactly
+       when its parent's edge carried a reused midpoint — assert that narrower
+       form (closeFaces()'s `firstNewVertexGid`).
 
   3c. face gid allocation                   [EXTENDED: must cover closure children]
   3d..3i. edges / keys / CSR / ownership    [unchanged, driven by the final face list]
@@ -400,7 +412,54 @@ refining participants, and the set of split edges is unchanged (an edge with no
 refining incidence is dropped), so `myMid` — the owned-midpoint list each rank
 exscans over — is the same list in the same order as before. Vertex gids, counts,
 and positions are therefore untouched; only the *distribution* of already-decided
-gids got wider.
+gids got wider. *(True of Task 3. The Task-8 D2 extension below does change the
+`Conforming` assignment — deliberately, since minting a second midpoint for an
+already-bisected edge is the defect it fixes. `HangingNode2to1` is still
+bit-identical: its persistent map is always empty.)*
+
+**Persistent split edges — the map is a property of the red layer, not of a round.
+(Landed, Task 8 D2; this is the fix for risk point 9.)** Phase 2 above answers
+"which edges did *this round* bisect". Step 3b needs "which edges are bisected",
+full stop: a kept face closed in round 1 is still the coarse side of that hanging
+node in round 2, and the coordinator drops its edge (no refining incidence), so
+the closure re-emits it unclosed and the mesh stops being conforming from round 2
+on. Three coupled changes, all driven by step 0c's recovered map and none of them
+adding a message round or a stored field:
+
+- **Recovery (`recoverSplitEdges()`, `UncloseResult::splitEdges`).** For a closed
+  parent `(a,b,c)`, a parent edge is split **iff it is not an edge of any child**,
+  and the midpoint of a split `(x,y)` is the unique child corner `m ∉ {a,b,c}` for
+  which `(x,m)` and `(m,y)` are each an edge of **exactly one** child. The
+  one-child qualifier is load-bearing: an edge shared by two children is a
+  *diagonal* of the parent's fan, and without it the blue pattern is ambiguous —
+  in the `q0 < q1` blue both `(q0,B)` and `(q0,C)` exist, so `q0` would answer for
+  `(B,C)` as well as for `(A,B)`. Fan-boundary edges appear exactly once. Purely
+  local (a face is owned by one rank), so no communication and no new field. It
+  aborts if the recovery is not unique, which is precisely the signature of a
+  closure family split across ranks.
+- **Union into phase 2's map.** Consulted by step 3b for kept faces and by step 3
+  for refining ones — a coarse face refining across a hanging node must **reuse**
+  the existing midpoint, not mint a coincident second vertex, which would crack
+  the mesh. The recovered entries need no agreement step: a bisected edge has
+  exactly one incident coarse face, hence exactly one rank that can consult it.
+- **Half-edge keying at the coordinator (`forEachSubEdge()`).** A hanging node
+  means the coarse face still spans `(x,y)` while the fine faces opposite carry
+  `(x,m)` and `(m,y)`, so keying on `(x,y)` leaves *both* sides with a single
+  incidence and every coordinator rule that needs two — phase 1's 2:1
+  propagation, phase 2's split decision — silently skips the pair. Advertising the
+  two halves instead makes the coarse face meet its true neighbours. **This is
+  what makes "at most one midpoint per red edge", the precondition of the closure
+  patterns, actually hold across a hanging node**; before D2 the level jump there
+  was unbounded (and still is in `HangingNode2to1` mode, which keeps no record to
+  recover from — see *Known limits*). One level of expansion suffices exactly
+  because the bound then holds inductively.
+  A half is advertised in phase 2 with `refining = 0` **regardless of the face's
+  own mark**: a refining coarse face bisects the whole edge, at the midpoint it
+  already has, and bisects neither half. Advertising a half as refining makes the
+  coordinator mint a midpoint for it — a spurious refinement that cascades into a
+  red edge carrying two midpoints and no applicable pattern, which is exactly the
+  `closeFaces()` "bisected more than once" abort seen in round 3 while D2 was
+  being brought up.
 
 **A closure child may reference a non-local vertex.** The midpoint gid arrives, the
 midpoint *position* does not. This is not new: `refine()` already leaves an
@@ -493,6 +552,17 @@ hanging-node tests stay in the gate.
   fields are reset by `refine()`" rule).
 - Edge user fields continue to be reset by `refine()`.
 - Coarsening / edge collapse remains out of scope.
+- **`HangingNode2to1` mode does not track hanging nodes across rounds** (found while
+  fixing risk point 9; see Decisions 8 and 9). Two consequences, both pre-existing
+  and both invisible to that mode's own tests, which assert non-conformity anyway:
+  the 2:1 mark propagation cannot see across a hanging node (the coordinator's rule
+  needs two incident faces and a hanging node leaves one on each side), so a
+  sequence of adaptive rounds can drive an unbounded level jump there; and a coarse
+  face refining across a hanging node mints a second midpoint coincident with the
+  existing one instead of reusing it. Fixing either needs the persistent split-edge
+  map, which only the closure bookkeeping can supply locally — a `HangingNode2to1`
+  rank has no record of it and would need a new field or a new message round. The
+  `Conforming` mode does not inherit either limit.
 
 ---
 
@@ -1273,10 +1343,18 @@ plausible defect):
    bug from an over-eager bump.
 
 9. **THE SPLIT-EDGE MAP IS THIS-ROUND-ONLY, BUT THE LEVEL JUMPS IT MUST CLOSE ARE
-   PERSISTENT.** *(Found in Task 7 by reading the code, not by running it. Triage
-   this first — it is the one item here that looks like an outright defect rather
-   than a place a defect could hide, and it would surface as a dozen apparently
-   unrelated conformity failures.)*
+   PERSISTENT.** — **RESOLVED, Task 8 D2 (2026-08-04).** Confirmed at np1 exactly as
+   predicted below, then fixed. The recovery is in `recoverSplitEdges()` /
+   `UncloseResult::splitEdges`; see *Persistent split edges* under the distributed
+   algorithm for what landed and Decisions 8 and 9 for what was chosen and why.
+   Three notes for anyone reading the prediction below against the code:
+   the uniqueness rule needed a **one-child** qualifier on the two half-edges (the
+   rule as written below is ambiguous for the blue pattern); the union turned out to
+   be needed for *refining* faces too, not "kept faces only", because a coarse face
+   refining across a hanging node must reuse the existing midpoint; and the map's
+   real reach is wider than the closure — keying phases 1 and 2 on half-edges is what
+   makes the 2:1 bound hold across a hanging node at all. *(Original Task-7
+   analysis preserved below.)*
 
    Step 3b′ calls `closeFaces( newRed, midGid, … )`, and `midGid` is built entirely
    inside Phase 2 from **this** round's refinements: the coordinator drops every
@@ -1438,6 +1516,27 @@ so collect them from the run output rather than re-running:
   without running the suite, which the handoff contract reserves for Task 8. The
   finding, its expected symptoms, and a proposed local fix are recorded in full so
   Task 8 does not have to rediscover them.
+- **2026-08-04 — Decision 8: the persistent split-edge map is recovered locally
+  from the closure children, not published by the Phase-2 coordinator.** Risk point
+  9's two candidate fixes were (a) reconstruct the map from the closure bookkeeping
+  already stored, (b) have the coordinator treat a red edge with a *single*
+  incidence as split. (a) was chosen and (b) is strictly worse, as Task 7 suspected:
+  the midpoint gid is known only to the coarse side, which is exactly the side that
+  reconstructs it in (a), so (b) would need (a)'s machinery *plus* a message round.
+  (a) also needs no new stored field, and it is the same one-rank-per-edge locality
+  that makes the closure itself communication-free.
+  The map's *third* consumer decided the shape: once it exists, phase 1 and phase 2
+  can key the coordinator on the two half-edges of a bisected edge, which is what
+  finally bounds the level jump across a hanging node. That was not part of either
+  candidate — Task 7's analysis treated risk point 9 as purely a closure-input bug.
+- **2026-08-04 — Decision 9: `refine()` reuses an existing midpoint when a coarse
+  face refines across a hanging node.** Previously the 1→4 split minted a fresh
+  midpoint for the whole edge `(a,b)` while the fine side already had one at the
+  same position, cracking the mesh. This was latent in `HangingNode2to1` too and
+  invisible there (that mode's meshes fail `checkConforming` by construction, so
+  the crack changed a failing number into a differently-failing number). The fix is
+  `Conforming`-only because it needs the persistent map, which only the closure
+  bookkeeping can supply. Recorded under *Known limits* for the other mode.
 - **2026-07-31 — Decision 4: transient red–green–blue closure**, not
   newest-vertex bisection and not red-only propagation. Red-only propagation
   degenerates to uniform refinement; bisection replaces the red engine wholesale

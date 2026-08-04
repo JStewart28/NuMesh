@@ -101,8 +101,17 @@ struct RefineResult
     //! conforming closure pass (Task 4) needs, and it remains exactly what
     //! checkMidpointAgreement consumes (a superset of the old contents, so the
     //! agreement check only gets stronger).
+    //!
+    //! In RefinementMode::Conforming it is widened once more (Task 8 D2) to the
+    //! whole split-edge map of the red layer: edges an EARLIER round bisected and
+    //! that still carry a hanging node are included, recovered locally by
+    //! recoverSplitEdges(). Those entries are consulted by exactly one rank (a
+    //! bisected edge has exactly one incident coarse face), so they trivially
+    //! agree across ranks.
     std::vector<std::pair<EdgeKey, GlobalId>> midpoints;
-    //! Phase-2a edge advertisements this rank sent: 3 per owned face.
+    //! Phase-2a edge advertisements this rank sent: 3 per owned face, plus one
+    //! extra for each of its already-bisected edges, which are advertised as
+    //! their two halves (forEachSubEdge()).
     long long phase2Adverts = 0;
     //! Of those, the ones from refining faces — i.e. the pre-Task-3 Phase-2a
     //! volume. `phase2Adverts - phase2AdvertsRefining` is the added traffic.
@@ -190,10 +199,21 @@ struct EdgeOwnMsg
 //!   0b. TRANSLATE  `mask` from visible-face indexing (what markByQuality and
 //!                  every caller produce) to red-face indexing: a red parent is
 //!                  marked iff ANY of its closure children was.
-//!   3b. CLOSE      every KEPT red face whose edges a neighbour just bisected,
-//!                  using the split-edge map Phase 2 publishes. Red children of
-//!                  a face refined in THIS round always have |S| = 0 (all three
-//!                  of their edges are new), which closeFaces() asserts.
+//!   0c. RECOVER    the PERSISTENT split-edge map, also from the closure
+//!                  bookkeeping. Being bisected is a property of the red layer
+//!                  that outlives the round that caused it, whereas Phase 2 only
+//!                  ever learns THIS round's bisections. Phases 1 and 2 key the
+//!                  coordinator on the two HALF-edges of a persistently split
+//!                  edge (forEachSubEdge()) so the 2:1 propagation and the split
+//!                  decision see the true adjacency across a hanging node, and
+//!                  the map is unioned into Phase 2's so a refining coarse face
+//!                  REUSES the existing midpoint instead of minting a coincident
+//!                  second one.
+//!   3b. CLOSE      every KEPT red face whose edges are bisected in the red
+//!                  layer -- this round's or an earlier one's -- using that
+//!                  union. A red child of a face refined in THIS round may have
+//!                  |S| > 0 only on a boundary edge it inherited whole (that is,
+//!                  around a reused midpoint), which closeFaces() asserts.
 //!   3c. the single face-gid MPI_Exscan additionally covers the closure
 //!                  children -- countClosureChildren() supplies that count from
 //!                  the post-split red topology, before any gid is handed out.
@@ -267,6 +287,11 @@ RefineResult refineImpl( MeshT& mesh,
     std::vector<Level> fL;
     std::vector<int> fSrc;
     std::vector<char> mark;
+    //! step 0c: the PERSISTENT split-edge map -- every red-layer edge this rank
+    //! owns a face on that a FORMER round bisected, with its midpoint gid.
+    //! Recovered locally from the closure bookkeeping by unclose(); empty in
+    //! HangingNode2to1 mode, which keeps no such record.
+    std::map<EdgeKey, GlobalId> persistentSplit;
 
     if constexpr ( kConforming )
     {
@@ -289,6 +314,7 @@ RefineResult refineImpl( MeshT& mesh,
             fSrc[r] = un.sourceVisible[r];
         }
         mark = translateMask( mask, un );
+        persistentSplit = un.splitEdges;
     }
     else
     {
@@ -311,6 +337,37 @@ RefineResult refineImpl( MeshT& mesh,
     //! Number of RED faces this rank owns — what phases 1-3 iterate over.
     const int nRedF = static_cast<int>( fV.size() );
 
+    // Advertise a red-layer edge to the edge coordinator as the edge(s) that
+    // actually carry the adjacency. An edge a FORMER round bisected is a hanging
+    // node: the coarse face still spans (x,y) while the fine faces opposite it
+    // carry (x,m) and (m,y), so keying on (x,y) leaves BOTH sides with a single
+    // incidence and every coordinator rule that needs two — the Phase-1 2:1
+    // propagation, the Phase-2 split decision — silently skips the pair. Sending
+    // the two HALF-edges instead makes the coarse face meet its true neighbours,
+    // which is what keeps the level jump across a hanging node bounded by one and
+    // hence keeps "at most one midpoint per red edge", the precondition of the
+    // closure patterns. One level of expansion suffices exactly because that
+    // bound holds inductively. A no-op in HangingNode2to1 mode (the map is
+    // empty), so that mode's messages are unchanged.
+    //
+    // `fn` receives (key, isHalf). isHalf matters to Phase 2: a refining face
+    // bisects the WHOLE edge (at the midpoint it already has), and does NOT
+    // bisect either half — advertising a half as refining makes the coordinator
+    // mint a midpoint for it, which is a spurious refinement that then cascades
+    // into a red edge carrying two midpoints and no applicable closure pattern.
+    auto forEachSubEdge = [&]( GlobalId x, GlobalId y, auto&& fn )
+    {
+        const EdgeKey key = keyOf( x, y );
+        auto it = persistentSplit.find( key );
+        if ( it == persistentSplit.end() )
+        {
+            fn( key, false );
+            return;
+        }
+        fn( keyOf( x, it->second ), true );
+        fn( keyOf( it->second, y ), true );
+    };
+
     // ---- Phase 1: 2:1 mark-propagation fixpoint -----------------------------
     std::unordered_map<GlobalId, int> gid2of; // owned red face gid -> index
     gid2of.reserve( nRedF * 2 );
@@ -331,13 +388,16 @@ RefineResult refineImpl( MeshT& mesh,
                 std::vector<std::vector<detail::PropMsg>> toCoord( size );
                 for ( int f = 0; f < nRedF; ++f )
                     for ( int k = 0; k < 3; ++k )
-                    {
-                        const EdgeKey key =
-                            keyOf( fV[f][k], fV[f][( k + 1 ) % 3] );
-                        toCoord[detail::edgeCoordRank( key, size )].push_back(
-                            { key, fG[f], static_cast<Rank>( R ), fL[f],
-                              static_cast<unsigned char>( mark[f] ) } );
-                    }
+                        forEachSubEdge(
+                            fV[f][k], fV[f][( k + 1 ) % 3],
+                            [&]( const EdgeKey& key, bool )
+                            {
+                                toCoord[detail::edgeCoordRank( key, size )]
+                                    .push_back( { key, fG[f],
+                                                  static_cast<Rank>( R ), fL[f],
+                                                  static_cast<unsigned char>(
+                                                      mark[f] ) } );
+                            } );
                 auto got = allToAllV( comm, toCoord );
                 for ( const auto& m : got.data )
                     byEdge[m.key].push_back( m );
@@ -395,13 +455,18 @@ RefineResult refineImpl( MeshT& mesh,
         {
             const unsigned char ref = mark[f] ? 1 : 0;
             for ( int k = 0; k < 3; ++k )
-            {
-                const EdgeKey key = keyOf( fV[f][k], fV[f][( k + 1 ) % 3] );
-                toCoord[detail::edgeCoordRank( key, size )].push_back(
-                    { key, static_cast<Rank>( R ), ref } );
-            }
-            result.phase2Adverts += 3;
-            result.phase2AdvertsRefining += ref ? 3 : 0;
+                forEachSubEdge(
+                    fV[f][k], fV[f][( k + 1 ) % 3],
+                    [&]( const EdgeKey& key, bool isHalf )
+                    {
+                        // A half is advertised to LEARN whether the fine side
+                        // bisects it, never to claim this face bisects it.
+                        const unsigned char r = isHalf ? 0 : ref;
+                        toCoord[detail::edgeCoordRank( key, size )].push_back(
+                            { key, static_cast<Rank>( R ), r } );
+                        ++result.phase2Adverts;
+                        result.phase2AdvertsRefining += r ? 1 : 0;
+                    } );
         }
         auto got = allToAllV( comm, toCoord );
 
@@ -495,8 +560,21 @@ RefineResult refineImpl( MeshT& mesh,
         for ( const auto& m : shared.data )
             midGid[m.key] = m.gid;
 
-        // Publish the split-edge map: every edge of an owned face that some
-        // incident face bisected, with its (globally agreed) midpoint gid.
+        // Union the PERSISTENT split-edge map in. "This edge is bisected" is a
+        // property of the red layer, not of one round: a kept face closed in an
+        // earlier round is still the coarse side of a hanging node and must be
+        // closed again, and if it REFINES now its 1->4 split must reuse the
+        // existing midpoint rather than mint a coincident second vertex. Neither
+        // is visible to Phase 2, which only ever learns this round's bisections
+        // (the coordinator drops every edge with no refining incidence). The
+        // recovered entries need no agreement step: a bisected edge has exactly
+        // one incident coarse face, hence exactly one rank that can consult it.
+        // No key can collide -- forEachSubEdge() never advertises one.
+        for ( const auto& kv : persistentSplit )
+            midGid.emplace( kv.first, kv.second );
+
+        // Publish the split-edge map: every edge of an owned face that is
+        // bisected in the red layer, with its (globally agreed) midpoint gid.
         // Consumed by checkMidpointAgreement and, from Task 4, by the closure.
         result.midpoints.reserve( midGid.size() );
         for ( const auto& kv : midGid )
@@ -639,7 +717,8 @@ RefineResult refineImpl( MeshT& mesh,
             {
                 TESSERA_SCOPED_TIMER_VERBOSE(
                     ::Tessera::Profiling::TIMER_REFINE_CLOSURE_PATTERNS );
-                cl = closeFaces( newRed, midGid, childGid, freshChild );
+                cl = closeFaces( newRed, midGid, childGid, freshChild,
+                                 static_cast<GlobalId>( globalV ) );
             }
             result.closure = cl.stats;
             newVis = std::move( cl.visible );

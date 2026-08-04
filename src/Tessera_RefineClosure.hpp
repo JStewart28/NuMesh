@@ -214,21 +214,36 @@ struct CloseResult
 //! \param midpointOf   EdgeKey -> midpoint gid for EVERY edge bisected in the
 //!                     red layer that this rank touches, including edges of KEPT
 //!                     faces bisected by a refining neighbour (that is what the
-//!                     Phase-2 extension in refine() exists to supply).
+//!                     Phase-2 extension in refine() exists to supply) and edges
+//!                     bisected in an EARLIER round and still carrying a hanging
+//!                     node (recoverSplitEdges(), unioned in by refine() step
+//!                     0c). Being bisected is a persistent property of the red
+//!                     layer: a map holding only this round's bisections closes
+//!                     the level jumps created now and leaves every inherited one
+//!                     open, so the mesh stops being conforming from round 2.
 //! \param firstChildGid  first gid to hand out to closure children; they take
 //!                     `countClosureChildren()` consecutive gids from here.
 //! \param freshChild   optional, parallel to `red`: non-zero marks a red face
-//!                     that was just CREATED by this round's 1->4 split. All
-//!                     three edges of such a face are brand new (two half-edges
-//!                     of a parent edge plus one interior edge of the parent), so
-//!                     nothing can have bisected them and |S| must be 0. Pass it
-//!                     to have that invariant checked here, where |S| is computed
-//!                     anyway; pass an empty vector to skip the check.
+//!                     that was just CREATED by this round's 1->4 split. Its
+//!                     interior edges join two vertices created this round, so
+//!                     nothing can have bisected them; its two boundary edges are
+//!                     halves of a parent edge and may be OLD (when the parent
+//!                     edge already carried a hanging node, the split reuses that
+//!                     midpoint rather than making a new one), in which case they
+//!                     can legitimately be bisected this round. Pass it together
+//!                     with `firstNewVertexGid` to have that invariant checked
+//!                     here, where |S| is computed anyway; pass an empty vector
+//!                     to skip the check.
+//! \param firstNewVertexGid  lowest vertex gid created by this round's split.
+//!                     Vertex gids are dense, so a vertex is new iff its gid is
+//!                     at or above this. Only used for the `freshChild` check;
+//!                     invalid_gid (the default) disables it.
 inline CloseResult
 closeFaces( const std::vector<RedFace>& red,
             const std::map<EdgeKey, GlobalId>& midpointOf,
             GlobalId firstChildGid,
-            const std::vector<char>& freshChild = std::vector<char>() )
+            const std::vector<char>& freshChild = std::vector<char>(),
+            GlobalId firstNewVertexGid = invalid_gid )
 {
     CloseResult out;
     out.visible.reserve( red.size() );
@@ -242,13 +257,22 @@ closeFaces( const std::vector<RedFace>& red,
         const int nSplit = faceSplitEdges( p.v, midpointOf, mid );
         ++out.stats.patternCount[nSplit];
 
-        // A red child of a face refined in THIS round cannot have a split edge.
+        // A red child of a face refined in THIS round may only have a split edge
+        // on a boundary edge it INHERITED whole, i.e. one whose two endpoints
+        // both predate this round. Any edge touching a vertex created this round
+        // is brand new and cannot have been bisected.
         if ( nSplit > 0 && r < freshChild.size() && freshChild[r] )
-            Kokkos::abort( "Tessera::closeFaces: a red face freshly created by "
-                           "this round's 1->4 split has a bisected edge (|S| > "
-                           "0). Its three edges are all new, so this cannot "
-                           "happen unless the split-edge map contains an edge "
-                           "that was not present in the pre-split red layer." );
+            for ( int k = 0; k < 3; ++k )
+                if ( mid[k] != invalid_gid &&
+                     ( p.v[k] >= firstNewVertexGid ||
+                       p.v[( k + 1 ) % 3] >= firstNewVertexGid ) )
+                    Kokkos::abort(
+                        "Tessera::closeFaces: a red face freshly created by "
+                        "this round's 1->4 split has a bisected edge that "
+                        "touches a vertex created by this same round. Such an "
+                        "edge is brand new, so this cannot happen unless the "
+                        "split-edge map contains an edge that was not present "
+                        "in the pre-split red layer." );
 
         // 2:1 balance precondition: at most ONE midpoint per parent edge. If a
         // half-edge (v[k], mid[k]) or (mid[k], v[k+1]) is itself bisected the
@@ -373,17 +397,104 @@ struct UncloseResult
     //! Parallel to the visible input: which entry of `red` each visible face
     //! belongs to. This is what translateMask() uses.
     std::vector<int> redOfVisible;
+    //! The PERSISTENT split-edge map, recovered from the closure bookkeeping:
+    //! for every red face that was closed, which of its edges is bisected in the
+    //! red layer and at which midpoint gid. See recoverSplitEdges() for why this
+    //! is exact, and Tessera_RefineParallel.hpp step 0c for why it is needed --
+    //! "this edge is bisected" is a persistent property of the red layer, but
+    //! refine()'s Phase 2 only ever learns the edges bisected in the CURRENT
+    //! round.
+    std::map<EdgeKey, GlobalId> splitEdges;
 };
+
+//! Recover which edges of one closed red parent are bisected, and at which
+//! midpoint, from the parent's closure children alone.
+//!
+//! Two facts make this exact and communication-free:
+//!
+//!   * A parent edge is split IFF it is not an edge of any child. Green replaces
+//!     (a,b) by (a,m),(m,b) and keeps (b,c) and (c,a); blue keeps only the one
+//!     unsplit edge; red-closure keeps none; |S| = 0 emits no children at all.
+//!   * The midpoint of a split parent edge (x,y) is the unique child corner `m`
+//!     outside {a,b,c} for which (x,m) and (m,y) are both edges of exactly ONE
+//!     child. The one-child qualifier is essential: an edge shared by two
+//!     children is a DIAGONAL of the parent's fan, not part of its boundary, and
+//!     without it the blue pattern is ambiguous -- in the q0 < q1 blue, both
+//!     (q0,B) and (q0,C) exist, so q0 would spuriously answer for edge (B,C)
+//!     as well as for (A,B). Boundary edges of the fan appear exactly once.
+//!
+//! Appends into `splitEdges`. Aborts if the recovery is not unique, which means
+//! the child set handed in is not one whole closure family (e.g. siblings split
+//! across ranks -- see repairClosureCohesion()).
+inline void recoverSplitEdges( const GlobalId parentVerts[3],
+                               const std::vector<const VisibleFace*>& children,
+                               std::map<EdgeKey, GlobalId>& splitEdges )
+{
+    std::map<EdgeKey, int> childEdgeCount;
+    std::set<GlobalId> midCandidates;
+    const std::set<GlobalId> corners = { parentVerts[0], parentVerts[1],
+                                         parentVerts[2] };
+    for ( const VisibleFace* c : children )
+        for ( int k = 0; k < 3; ++k )
+        {
+            ++childEdgeCount[makeEdgeKey( c->v[k], c->v[( k + 1 ) % 3] )];
+            if ( corners.count( c->v[k] ) == 0 )
+                midCandidates.insert( c->v[k] );
+        }
+
+    int nSplit = 0;
+    for ( int k = 0; k < 3; ++k )
+    {
+        const GlobalId x = parentVerts[k];
+        const GlobalId y = parentVerts[( k + 1 ) % 3];
+        if ( childEdgeCount.count( makeEdgeKey( x, y ) ) != 0 )
+            continue; // the parent edge survived => it is not bisected
+        ++nSplit;
+
+        GlobalId found = invalid_gid;
+        int nFound = 0;
+        for ( const GlobalId m : midCandidates )
+        {
+            auto h0 = childEdgeCount.find( makeEdgeKey( x, m ) );
+            auto h1 = childEdgeCount.find( makeEdgeKey( m, y ) );
+            if ( h0 != childEdgeCount.end() && h0->second == 1 &&
+                 h1 != childEdgeCount.end() && h1->second == 1 )
+            {
+                found = m;
+                ++nFound;
+            }
+        }
+        if ( nFound != 1 )
+            Kokkos::abort(
+                "Tessera::recoverSplitEdges: could not uniquely recover the "
+                "midpoint of a bisected parent edge from its closure children. "
+                "The children handed in are not one complete closure family -- "
+                "either the sibling set is split across ranks (migrate() must "
+                "keep closure siblings co-resident; see "
+                "repairClosureCohesion()) or a child's ClosureParentVerts do "
+                "not name its actual parent." );
+        splitEdges[makeEdgeKey( x, y )] = found;
+    }
+
+    if ( static_cast<int>( children.size() ) != closureChildCount( nSplit ) )
+        Kokkos::abort( "Tessera::recoverSplitEdges: a closure family's child "
+                       "count does not match the |S| implied by which of its "
+                       "parent's edges survived in the children." );
+}
 
 //! Inverse of closeFaces(): collapse the visible layer back to the red layer.
 //! Removes only faces -- never a vertex -- so the transient closure discards no
 //! vertex state. Purely local per child: a child determines its parent outright.
+//! Also recovers the persistent split-edge map (`splitEdges`) from the closure
+//! bookkeeping -- see recoverSplitEdges().
 inline UncloseResult unclose( const std::vector<VisibleFace>& visible )
 {
     UncloseResult out;
     out.redOfVisible.assign( visible.size(), -1 );
     std::map<GlobalId, int> redOfParent; // retired parent gid -> index in `red`
     std::set<GlobalId> redGids;          // duplicate-gid guard
+    // Closure children grouped by their red index, for the split-edge recovery.
+    std::map<int, std::vector<const VisibleFace*>> childrenOfRed;
 
     for ( std::size_t i = 0; i < visible.size(); ++i )
     {
@@ -430,15 +541,23 @@ inline UncloseResult unclose( const std::vector<VisibleFace>& visible )
             out.red.push_back( rf );
             out.sourceVisible.push_back( static_cast<int>( i ) );
             out.redOfVisible[i] = ri;
+            childrenOfRed[ri].push_back( &f );
         }
         else
         {
             const int ri = it->second;
             out.redOfVisible[i] = ri;
+            childrenOfRed[ri].push_back( &f );
             if ( f.gid < visible[out.sourceVisible[ri]].gid )
                 out.sourceVisible[ri] = static_cast<int>( i );
         }
     }
+
+    // Recover the persistent split-edge map from the closure families. A
+    // passed-through red face has no children and, by construction, |S| = 0.
+    for ( const auto& kv : childrenOfRed )
+        recoverSplitEdges( out.red[kv.first].v, kv.second, out.splitEdges );
+
     return out;
 }
 

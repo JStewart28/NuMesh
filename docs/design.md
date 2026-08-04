@@ -269,8 +269,10 @@ edge's midpoint gid. `RefineResult::midpoints` is therefore a full **split-edge
 map** — every edge of any owned face that was bisected, with its globally agreed
 midpoint gid — which is both what `checkMidpointAgreement` verifies and the input
 the conforming closure needs to retriangulate a kept face. The extra traffic is
-bounded by three messages per *kept* owned face on the first Phase-2 round only;
-no new communication rounds were added. The refined mesh is left holding each rank's owned entities; the 1-deep
+bounded by three messages per *kept* owned face on the first Phase-2 round only
+(plus, in `Conforming` mode, one more per already-bisected edge, which is
+advertised as its two halves — see the closure section); no new communication
+rounds were added. The refined mesh is left holding each rank's owned entities; the 1-deep
 halo is **rebuilt in Step 7** (shared with migration), so `haloExchange()` must not
 run on a freshly-refined mesh until then.
 
@@ -288,15 +290,33 @@ inside `detail::refineImpl()` under `if constexpr`.
 2. **Mask translation.** The caller's mask — and `markByQuality`'s output — is
    indexed by *visible* owned faces; a red parent is marked iff **any** of its
    closure children was.
+2b. **Split-edge recovery.** Being bisected is a property of the red layer that
+   outlives the round that caused it, whereas Phase 2 only ever learns *this*
+   round's bisections (an edge with no refining incidence is dropped at the
+   coordinator). The persistent map is recovered from the same closure bookkeeping,
+   locally and with no extra field: for a closed parent, an edge is split iff no
+   child carries it, and its midpoint is the unique child corner outside the
+   parent's corners whose two half-edges each belong to exactly one child (a
+   half-edge shared by two children is a fan *diagonal*, which is what makes the
+   "exactly one" qualifier necessary rather than cosmetic). Two uses beyond the
+   closure itself: a coarse face refining across a hanging node **reuses** the
+   existing midpoint instead of minting a coincident second vertex, and phases 1
+   and 2 key the coordinator on the two **half-edges** of a bisected edge so the
+   coarse face meets its true neighbours. That last part is what bounds the level
+   jump across a hanging node at all — both coordinator rules require an edge to
+   have two incident faces, and a hanging node otherwise leaves one on each side.
+   `HangingNode2to1` has no such record and so keeps neither property (README →
+   *Known Issues*).
 3. **Close.** After the red 1→4 split, every **kept** red face is retriangulated
    according to how many of its edges (|S| ∈ {0,1,2,3}) the split-edge map says
    were bisected: pass-through, green (2 children), blue (3), or red-closure (4).
    Children inherit the parent's `Level` and face user fields, and the |S| = 3
-   pattern deliberately does *not* promote the face into the red layer. Red
-   children of a face refined in this round always have |S| = 0 — all three of
-   their edges are new — which `closeFaces()` asserts. The blue quad's diagonal
-   is tie-broken on the **lower midpoint gid**, which is globally agreed, so the
-   closure is partition-independent.
+   pattern deliberately does *not* promote the face into the red layer. A red child
+   of a face refined in this round has |S| = 0 unless one of its two inherited
+   boundary half-edges is bisected this round, which is possible exactly when its
+   parent's edge carried a **reused** midpoint; `closeFaces()` asserts that
+   narrower form. The blue quad's diagonal is tie-broken on the **lower midpoint
+   gid**, which is globally agreed, so the closure is partition-independent.
 
 The closure creates **no vertices**, so no `MPI_Exscan`, no interpolation, and no
 `RefinePolicy` involvement. The one widened count is the *face*-gid allocation:

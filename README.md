@@ -317,24 +317,38 @@ make -j $(nproc)
   Note this permutes the local face ordering, and hence which gid each of the
   next round's children is assigned, so a *gid-derived* refinement mask selects a
   different (equally valid) face set than it would without the re-halo.
-- **Conforming refinement is written but has not been executed, and it is now
-  the `Mesh` default.** The whole `RefinementMode::Conforming` path — closure
-  kernel, distributed `refine()`, `migrate()`/`loadBalance()`, HDF5 round-trip,
-  `markByQuality` — is implemented, registered across the suite, and compiles
-  clean (SERIAL + HIP), but **nothing has been run yet**: the feature is
-  verified in a single pass at the end of the plan. Until that pass completes,
-  treat conforming mode as unproven — and note that because it is the default,
-  a `Mesh<...>` spelled with seven template arguments now gets it. A consumer
-  that wants the previous behavior meanwhile should spell
-  `RefinementMode::HangingNode2to1` explicitly, which every pre-existing test in
-  the gate now does. Reverting the default is the documented escape hatch if the
-  verification pass cannot make conforming green. Under `HangingNode2to1` a
-  partial refine mask leaves T-junctions bounded to a 2:1 level jump, so the
-  owned-only Euler number equals 2 only for a uniform refine; that is the
-  *contract* of the mode, not a defect. See
-  [tasks/conforming-refinement.md](tasks/conforming-refinement.md) for the
-  design and the remaining tasks, and `docs/design.md` → *Adaptive refinement*
-  for the two modes.
+- **Conforming refinement is the `Mesh` default and is still being verified.** The
+  whole `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
+  `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented and
+  registered across the suite. Verification is under way in a single dedicated pass:
+  `refine_conforming` is green (SERIAL + HIP) at **one rank** over three successive
+  adaptive rounds, and **not yet at two or more** — it aborts there for the
+  re-halo reason in the entry above. Several conforming tests have not been executed
+  at all yet. Until the pass completes, treat multi-rank conforming mode as unproven
+  — and note that because it is the default, a `Mesh<...>` spelled with seven
+  template arguments gets it. A consumer that wants the previous behaviour should
+  spell `RefinementMode::HangingNode2to1` explicitly, which every pre-existing test
+  in the gate now does. Reverting the default is the documented escape hatch if the
+  pass cannot make conforming green. Under `HangingNode2to1` a partial refine mask
+  leaves T-junctions bounded to a 2:1 level jump, so the owned-only Euler number
+  equals 2 only for a uniform refine; that is the *contract* of the mode, not a
+  defect. Current status and evidence:
+  [tasks/conforming-refinement-debug.md](tasks/conforming-refinement-debug.md);
+  design: [tasks/conforming-refinement.md](tasks/conforming-refinement.md) and
+  `docs/design.md` → *Adaptive refinement*.
+- **`RefinementMode::HangingNode2to1` does not track hanging nodes across refine
+  rounds.** Two consequences, both long-standing and neither visible to that mode's
+  own tests (which assert non-conformity anyway), found while fixing the conforming
+  closure. First, the 2:1 mark propagation cannot see across a hanging node: its
+  coordinator rule needs an edge to have two incident faces, and a hanging node
+  leaves the coarse side holding `(a,b)` while the fine side holds `(a,m)`/`(m,b)`
+  — different keys, one incidence each — so a sequence of *adaptive* rounds can
+  drive a level jump larger than 2:1. Second, when the coarse face itself refines,
+  `refine()` mints a fresh midpoint for `(a,b)` rather than reusing the `m` that is
+  already there, leaving two coincident vertices. A uniform mask hits neither.
+  `RefinementMode::Conforming` fixes both, because it can recover the persistent
+  split-edge map locally from the closure bookkeeping; `HangingNode2to1` keeps no
+  such record and would need a new face field or an extra message round.
 - **`conforming_quality` is registered `unit`, not in the gate, and its bounds
   are provisional.** It asserts that the minimum triangle angle, the maximum
   radius ratio, and the closure-face fraction stay inside fixed bounds over

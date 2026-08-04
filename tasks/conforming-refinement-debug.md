@@ -31,7 +31,7 @@
 |---|------|--------|
 | D0 | Triage sweep — run the suite, collect first failures | **Done** (2026-08-04) |
 | D1 | Fix the `refine_splitedges` np≥2 hang | **Done** (2026-08-04) |
-| D2 | Fix risk point 9 — the persistent split-edge map | Not started |
+| D2 | Fix risk point 9 — the persistent split-edge map | **Done** (2026-08-04) |
 | D3 | Fix the `refine_conforming` np≥2 `unordered_map::at` abort | Not started |
 | D4 | Re-sweep: get the remaining nine never-executed tests to a first verdict | Not started |
 | D5 | Downstream conforming tests (`conforming_migrate`, `io`, `markquality_conforming`) | Not started |
@@ -39,9 +39,10 @@
 | D7 | `conforming_quality` — calibrate the provisional bounds | Not started |
 | D8 | Full gate at ranks 1–5, both tiers, `format-check`; close out Task 8 | Not started |
 
-**Open failures.** D2 and D3 confirmed reproducing (evidence below). D4–D7 are
-unknown — those tests have **never been executed**. D1 is fixed:
-`refine_splitedges` is green SERIAL and HIP at np1–5.
+**Open failures.** D3 confirmed reproducing (evidence below). D4–D7 are
+unknown — those tests have **never been executed**. D1 and D2 are fixed:
+`refine_splitedges` is green SERIAL and HIP at np1–5, and `refine_conforming` is
+green SERIAL and HIP at **np1** (all three adaptive rounds `euler=2`).
 
 ---
 
@@ -145,9 +146,9 @@ distribution, halo, geometry, or the operators (risk point 6 clear on HIP too).
 
 | Test | np1 | np≥2 | Nature |
 |---|---|---|---|
-| `refine_splitedges` (SERIAL) | Pass | **Hang** (100 s timeout) | D1 |
-| `refine_splitedges` (HIP) | *unknown* — poisoned | *unknown* | D1 |
-| `refine_conforming` (SERIAL) | **Fail, rounds 2–3** | **Abort** `std::out_of_range` | D2 / D3 |
+| `refine_splitedges` (SERIAL) | Pass | **Hang** (100 s timeout) | D1 — **fixed** |
+| `refine_splitedges` (HIP) | *unknown* — poisoned | *unknown* | D1 — **fixed**, np1–5 |
+| `refine_conforming` (SERIAL) | **Fail, rounds 2–3** | **Abort** `std::out_of_range` | D2 — **fixed** (np1) / D3 — open (np≥2) |
 
 **Never executed at all** (they sit after `refine_conforming` in ctest order and
 the sweep never reached them): `conforming_migrate`, `loadbalance`, `io`,
@@ -343,10 +344,10 @@ here is `gid2lv`, which is a different map and a different problem.
 
 ## D2 — Fix risk point 9: the split-edge map is this-round-only
 
-**Status:** Not started. **This is the central defect of Task 8.** Do it after
-D1 (so the sweep can run) but before anything downstream of `refine_conforming`
-— every conforming test that composes multiple rounds is failing *because of
-this*, and fixing it will change most of their verdicts at once.
+**Status: DONE (2026-08-04).** `refine_conforming` passes SERIAL and HIP at np1:
+all three adaptive rounds `euler=2`, plus empty-mask and uniform-mask. **The
+central defect of Task 8, and it was three coupled defects, not one — read *What
+landed*.** np≥2 is still D3.
 
 **Reproduce.** `probe.flux` with `"tessera_test_refine_conforming_SERIAL 1"` →
 `exit=1`, rounds 2 and 3 FAIL as quoted under D0.
@@ -408,17 +409,118 @@ proving nothing.
 **Also update.** `tasks/conforming-refinement.md`: rewrite the *Design →
 Distributed algorithm* step 3b description and the *Phase 2 extension*
 paragraph to describe the union, and add a Decision-record entry. Risk point 9
-becomes a resolved finding.
+becomes a resolved finding. **Done.**
 
-**What landed.** *(fill in)*
+**What landed.**
+
+The local reconstruction was the right call and the alternative is strictly worse
+(Decision 8 in `tasks/conforming-refinement.md` records why). But the closure union
+by itself gets round 2 only, and **two further defects had to be fixed for round 3**;
+both were invisible before the union existed, and both are about the *red engine*
+rather than the closure. All three are in the library, none in the tests.
+
+**Defect 1 — the union (risk point 9 proper).** `unclose()` now also returns
+`UncloseResult::splitEdges`, recovered by the new `recoverSplitEdges()` in
+`src/Tessera_RefineClosure.hpp`. `refineImpl()` captures it as `persistentSplit`
+(step 0c) and `emplace`s it into Phase 2's `midGid` before `countClosureChildren()`
+and `closeFaces()`; `refineLocalConforming()` seeds its `midpointOf` with it.
+`RefineResult::midpoints` therefore publishes the union, which is what makes
+`checkClosureInverse` (it re-closes from `res.midpoints`) agree without any test
+change.
+
+**The uniqueness rule in the proposed fix above is wrong as written** — worth
+knowing, because it reads convincingly. "The midpoint of `(x,y)` is the unique child
+corner `m ∉ {a,b,c}` with `(x,m)` and `(m,y)` both present as child edges" is
+ambiguous for **blue**: in the `q0 < q1` diagonal the children are `(A,q0,C)`,
+`(q0,B,q1)`, `(q0,q1,C)`, so for parent edge `(B,C)` both `q1` (correct) and `q0`
+(via `(q0,B)` and `(q0,C)`) satisfy it. The repair is to require each half-edge to
+belong to **exactly one** child: an edge shared by two children is a *diagonal* of
+the parent's fan, and fan-*boundary* edges — which is what the two halves of a split
+parent edge are — appear exactly once. Verified by hand against all four patterns
+including both blue diagonals. `recoverSplitEdges()` aborts if the answer is not
+unique, which is also a cheap detector for a closure family split across ranks.
+
+**Defect 2 — a refining coarse face minted a second, coincident midpoint.** Not
+predicted anywhere, and *pre-existing since Step 6b*. If `(a,b)` is bisected at `m`
+and the coarse face `K` owning `(a,b)` refines, Phase 2 allocates a **fresh**
+midpoint for `(a,b)` — the fine side's `m` is invisible to it, because the fine
+faces carry `(a,m)`/`(m,b)`, which are different keys. Two coincident vertices, and
+the mesh is cracked. Fixed by the same union: `midOf( a, b )` now finds the
+persistent entry, so the split reuses `m` and the red layer becomes *conforming*
+there (edge `(a,m)` gains its second incidence from `K`'s child). Consequence for
+`closeFaces()`: a fresh red child's two inherited boundary half-edges can now be
+**old** edges and so can legitimately be bisected this round, which is why the
+`freshChild` assertion is no longer "|S| must be 0" but "no split edge may touch a
+vertex created this round" — hence the new `firstNewVertexGid` parameter.
+
+**Defect 3 — the 2:1 propagation was blind across a hanging node.** Also
+pre-existing. Both coordinator rules that matter (Phase 1's level comparison, Phase
+2's split decision) require **two** incident faces for an edge key, and a hanging
+node leaves exactly one on each side: `(a,b)` is advertised only by the coarse face,
+`(a,m)` only by one fine face. So a level jump across a hanging node was never
+bounded, and round 3 hit `closeFaces()`'s "an edge of a red face is bisected more
+than once" abort. Fixed with `forEachSubEdge()` in `refineImpl()`: a persistently
+split edge is advertised to the coordinator as its **two half-edges**, in Phase 1
+and Phase 2 both, so the coarse face meets its true neighbours. Visible in the run
+as the fixpoint doing real work for the first time — `it=1/2/3` over rounds 1/2/3,
+where it was `it=1/1/1` before.
+
+**The subtle half of defect 3, which cost the second build.** A half must be
+advertised with `refining = 0` **regardless of the advertising face's own mark**. A
+refining coarse face bisects the *whole* edge, at the midpoint it already has, and
+bisects neither half. Advertising a half as refining makes the coordinator mint a
+midpoint *for the half* — a spurious refinement that propagates and lands as
+exactly the same "bisected more than once" abort one round later. The first attempt
+had this wrong and produced a plausible-looking round 2 (`euler=2`, `F=1494`) that
+aborted in round 3; with it fixed, round 2 is `F=1222`. **A conforming round that
+passes every check can still be over-refining — compare `F` against the
+hanging-node control's growth, not just `euler`.**
+
+**Result, np1, both backends** (jobs `f3QJLhrfQLKh`, `f3QJMiKVuhm9`):
+
+```
+round1 ok (it=1 F=596  euler=2 closure=261/596 =0.438 |S| hist=[335,108,15,0]  blue lo1/lo2=6/9   | control euler=-136 badInc=414  tjunc=138)
+round2 ok (it=2 F=1222 euler=2 closure=557/1222=0.456 |S| hist=[665,194,39,13] blue lo1/lo2=19/20 | control euler=-314 badInc=1031 tjunc=248)
+round3 ok (it=3 F=2386 euler=2 closure=1100/2386=0.461 |S| hist=[1286,392,84,16] blue lo1/lo2=47/37 | control euler=-426 badInc=1474 tjunc=295)
+empty-mask   ok (V=162 E=480 F=320 closureChildren=0)
+uniform-mask ok (V=642 E=1920 F=1280 closureChildren=0 |S| hist=[1280,0,0,0])
+```
+
+Non-vacuity holds and is not weakened: the control still fails conformity every
+round and its defect counts still *grow* (414 → 1031 → 1474). **For D7:** the
+closure fraction is essentially flat across rounds (0.438 / 0.456 / 0.461) and both
+blue diagonals stay populated, which is the first real evidence that the closure
+cost and the shape bound are round-independent — the premise D7 has to confirm.
+
+**No regressions.** 14 spot-checked test instances all `exit=0`, chosen to cover
+everything the change could touch: `refine_closure` (SERIAL+HIP, the
+`refineLocalConforming` path), `refine`, `refinement_mode`, `refine_parallel`,
+`refine_splitedges`, `migrate_mesh`, `halo`, `distribute`, `apply_stencil`,
+`staleslice_guard` at np1–4 across both backends. `HangingNode2to1` is provably
+untouched: `persistentSplit` is always empty there, so `forEachSubEdge()` degrades
+to the old single advertisement and the union is a no-op — its Phase-2a volumes are
+byte-identical (`x6.96 / x5.03 / x10.01 / x16.38`, unchanged from D1).
+
+**Also landed.** `tasks/conforming-refinement.md`: *Persistent split edges* section
+under the distributed algorithm, step 0c/1/3/3b in the pseudocode, Decisions 8 and
+9, risk point 9 marked resolved (with the original analysis preserved), and a new
+*Known limit* recording that defects 2 and 3 remain in `HangingNode2to1` mode —
+they cannot be fixed there without a new field or a new message round, and that
+mode's tests cannot see them because they assert non-conformity anyway.
 
 ---
 
 ## D3 — Fix the `refine_conforming` np≥2 `unordered_map::at` abort
 
-**Status:** Not started. Do after D2 — it may well be the same root cause, since
-a missing persistent split edge is exactly the sort of thing an `at()` on a
-midpoint map throws on. Re-probe before debugging separately.
+**Status:** Not started. **D2 did not fix it and did not change it** — re-probed
+after D2 at np2 and np3, still `std::out_of_range: unordered_map::at`, still on a
+non-zero rank, still before any output flushes. So it is *not* the missing
+persistent split edge; **start from D1's steer instead** (the missing re-halo in
+`test_refine_conforming.cpp`'s round loop, line ~180 — `gid2lv.at()` in Phase 3a
+needs both endpoint positions of every midpoint the rank owns, and one of them is
+a ghost `refine()` already dropped). The "candidate sites" paragraph below was
+written before D1 established that, and `midGid` — the map it points at — is now
+complete, so treat `gid2lv` as the prime suspect rather than `midGid`.
 
 **Reproduce.** `probe.flux` with `"tessera_test_refine_conforming_SERIAL 2"`:
 
@@ -605,6 +707,36 @@ making the closure transient is that the bound is fixed.
 
 *(append-only)*
 
+- **2026-08-04 — D2.** `refine_conforming` green SERIAL+HIP at **np1** — all three
+  adaptive rounds `euler=2` (jobs `f3QJLhrfQLKh`, `f3QJMiKVuhm9`). Risk point 9 was
+  real and was **three coupled library defects**, all in the red engine's handling of
+  a persistent hanging node, only the first of which Task 7 predicted. (1) The
+  closure's split-edge map was this-round-only; `unclose()` now recovers the
+  persistent map locally from the closure children (`recoverSplitEdges()`) and it is
+  unioned into Phase 2's. Task 7's proposed uniqueness rule is **ambiguous for the
+  blue pattern** and needed an "each half-edge belongs to exactly one child"
+  qualifier — fan-boundary edges appear once, diagonals twice. (2) *Pre-existing:*
+  a coarse face refining across a hanging node minted a fresh midpoint coincident
+  with the fine side's, cracking the mesh; the same union makes it reuse the existing
+  one, which also means a fresh red child can now legitimately have |S| > 0 on an
+  inherited half-edge, so `closeFaces()`'s `freshChild` assertion was narrowed via a
+  new `firstNewVertexGid` parameter. (3) *Pre-existing:* both coordinator rules need
+  two incident faces for an edge key and a hanging node leaves one on each side, so
+  the **2:1 propagation was blind across hanging nodes** and round 3 aborted on
+  "bisected more than once"; a persistently split edge is now advertised as its two
+  **half-edges** in Phases 1 and 2 (`forEachSubEdge()`). The fixpoint does real work
+  for the first time: `it=1/2/3` over the three rounds, was `1/1/1`. **Trap worth
+  remembering:** a half must be advertised with `refining = 0` even when the
+  advertising face is refining — otherwise the coordinator mints a midpoint for the
+  half, and the resulting over-refinement still passes every check for one round
+  (`euler=2`, but `F=1494` where the correct answer is `F=1222`) before aborting in
+  the next. *A conforming round that passes every check can still be over-refining;
+  watch `F`, not just `euler`.* Non-vacuity unaffected (control defects still grow
+  414→1031→1474). For D7: closure fraction is flat at 0.438/0.456/0.461 across
+  rounds. No regressions in 14 spot-checked instances; `HangingNode2to1` is provably
+  untouched (empty persistent map ⇒ both changes are no-ops, and its Phase-2a volumes
+  are byte-identical). **D3 is unchanged by all of this** — re-probed, same abort, so
+  follow D1's re-halo steer, not the `midGid` steer.
 - **2026-08-04 — D1.** `refine_splitedges` green SERIAL+HIP np1-5 (job
   `f3QHvwB5yGRu`). Two test-side defects, the second hidden behind the first.
   (1) The hang: `TesseraTest::globalOwnedFaces( mesh )` — an `MPI_Allreduce` —
