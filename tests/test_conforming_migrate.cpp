@@ -196,6 +196,17 @@ void refinedConformingMesh( MeshT& mesh, MeshHalo<Mem>& halo )
         distribute( mesh, halo, faceOwner );
     }
     refine( mesh, halo, gidMask( mesh, 7 ) );
+    // refine() drops every ghost and clears the halo plans, but its own Phase 3a
+    // needs the POSITIONS of both endpoints of every midpoint the rank owns --
+    // and across a partition boundary one of those endpoints is a ghost. So a
+    // second refine() with no rebuild in between throws at size > 1 (README
+    // Known Issues). An identity migrate carries the Step-7 halo rebuild along.
+    {
+        std::vector<Rank> dest( mesh.numOwnedFaces(),
+                                static_cast<Rank>( mesh.rank() ) );
+        migrate( mesh, halo, dest );
+        haloExchange( mesh, halo );
+    }
     refine( mesh, halo, gidMask( mesh, 5 ) );
 }
 
@@ -259,6 +270,7 @@ int case_adversarial_dest( int rank, int size, const char* tag )
                      "destFixups=%lld euler=%lld inv=%lld)\n",
                      tag, fails == 0 ? "ok" : "FAIL", NfG, groups, fixups,
                      euler, glob );
+    std::fflush( stdout );
     return fails;
 }
 
@@ -341,6 +353,7 @@ int case_load_balance( int rank, int size, const char* tag )
                      tag, fails == 0 ? "ok" : "FAIL", NfG, maxFacesBefore,
                      maxFacesAfter, maxWeightBefore, maxWeightAfter,
                      idealWeight, fixups, glob );
+    std::fflush( stdout );
     return fails;
 }
 

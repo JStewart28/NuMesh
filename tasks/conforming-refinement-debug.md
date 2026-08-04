@@ -34,31 +34,31 @@
 | D2 | Fix risk point 9 — the persistent split-edge map | **Done** (2026-08-04) |
 | D3 | Fix the `refine_conforming` np≥2 `unordered_map::at` abort | **Done** (2026-08-04) |
 | D4 | Re-sweep: get the remaining nine never-executed tests to a first verdict | **Done** (2026-08-04) |
-| D5 | Downstream conforming tests (`conforming_migrate`, `io`, `markquality_conforming`) | Not started — **scope reduced to `conforming_migrate` alone** (see D4) |
+| D5 | Downstream conforming tests (`conforming_migrate`, `io`, `markquality_conforming`) | **Done** (2026-08-04) |
 | D6 | `conforming_operators` and `conforming_determinism` | Not started |
 | D7 | `conforming_quality` — calibrate the provisional bounds | Not started |
 | D8 | Full gate at ranks 1–5, both tiers, `format-check`; close out Task 8 | Not started |
 
-**Open failures.** After D4, **every one of the suite's 28 registrations has a
-verdict** and exactly three fail:
+**Open failures.** After D5, **every one of the suite's 28 registrations has a
+verdict** and exactly two fail:
 
 | Test | Verdict | Owner |
 |---|---|---|
-| `conforming_migrate` | np1 pass; **np2–5 abort** `unordered_map::at` | D5 |
 | `conforming_operators` | np1 pass; **np2–5 abort** `unordered_map::at` | D6 |
 | `conforming_determinism` | **np1 fails** `closure-idempotence`; np2–5 abort | D6 |
 
-All three aborts are **pre-existing and not caused by D3** — verified by rebuilding
+Both aborts are **pre-existing and not caused by D3** — verified by rebuilding
 with D3's library change stashed and re-probing at np2: byte-identical abort and the
 identical np1 idempotence failure. They are almost certainly D1's re-halo defect
-again (all three refine repeatedly; `test_conforming_determinism.cpp:516-517`
-refines twice back-to-back with nothing in between).
+again — which is now what `conforming_migrate`'s abort turned out to be for the
+**third** time (D1, D3, D5). `test_conforming_determinism.cpp:516-517` refines
+twice back-to-back with nothing in between, so start there.
 
-**The other 25 registrations pass**, including `refine`, `refine_parallel`,
+**The other 26 registrations pass**, including `refine`, `refine_parallel`,
 `refine_splitedges`, `refine_conforming`, `refine_closure`, `migrate_mesh`,
-`distribute`, `halo`, `loadbalance`, `io`, `markquality_edge`, `markquality_curv`
-and — new in D4 — `conforming_quality` and `markquality_conforming`. D1, D2 and D3
-are fixed.
+`distribute`, `halo`, `loadbalance`, `io`, `markquality_edge`, `markquality_curv`,
+`conforming_quality`, `markquality_conforming` and — new in D5 —
+`conforming_migrate`. D1, D2, D3 and D5 are fixed.
 
 ---
 
@@ -770,7 +770,11 @@ D8's `ctest -L unit` is what confirms them at current HEAD.
 
 ## D5 — Downstream conforming tests: `conforming_migrate` (~~`io`~~, ~~`markquality_conforming`~~)
 
-**Status:** Not started, but **scope reduced to `conforming_migrate` alone.** D4
+**Status: DONE (2026-08-04).** `conforming_migrate` passes SERIAL and HIP at np1–5.
+**One defect, and it was D1's re-halo defect for the third time** — a two-line
+test-side fix, no library change. All four measurements D5 was told to collect are
+below, including the predicted +32 B per face, which lands *exactly*. **Scope was
+reduced to `conforming_migrate` alone** before D5 started. D4
 unblocked this: `io` passes at ranks 1–5 on both backends (D3's gate run) and
 `markquality_conforming` passes at np1–5 on both backends (D4), so **risk point 7 is
 clear in both halves** — the writer/reader agree on the two closure datasets, and the
@@ -804,13 +808,114 @@ and Zoltan2's), pre/post `loadBalance` max face count and max weighted load vs
 ideal, and the actual on-disk size delta for a conforming vs hanging-node file
 (predicted +32 B per owned face).
 
-**What landed.** *(fill in)*
+**What landed.**
+
+**The defect — D1's re-halo defect, third occurrence.** The abort fired *before any
+output*, and the reason is that it was not in either case at all: it was in the
+shared fixture `refinedConformingMesh()`
+([test_conforming_migrate.cpp:198-199](../tests/test_conforming_migrate.cpp#L198-L199)),
+which calls `refine()` **twice back-to-back with nothing in between** — the exact
+shape D1 documented and D3 confirmed. `gid2lv.at()` in Phase 3a needs the
+*positions* of both endpoints of every midpoint the rank owns, and across a
+partition boundary one of those endpoints is a ghost that the first `refine()` has
+already dropped. Fixed with the documented identity-`migrate()` + `haloExchange()`
+idiom between the two rounds. Nothing in the library changed; **the whole of D5 is a
+ten-line test edit** (plus two `fflush( stdout )` calls after the case prints, per
+harness trap 2 — their absence is exactly why the abort looked like it had no
+locus).
+
+Worth stating plainly because D5's brief pointed elsewhere: **risk points 3, 4 and 5
+were never broken.** The moment the fixture stopped throwing, every one of their
+checks passed at every rank count on the first run — `checkOwnershipPartition` (risk
+3, gid collisions across rounds, which only a post-`migrate()` multi-round test can
+see), `owned1RingLocal` (risk 4, closure children naming non-local vertices) and
+`checkSiblingCoresidency` with a *positive* fixup count (risk 5). Task 5's sibling
+fixup and `repairClosureCohesion()` are correct as written. The lesson is the one D1
+and D3 already taught, now with a third data point: **an `unordered_map::at` abort at
+np≥2 in a conforming test has meant the missing re-halo every single time, and never
+a closure defect.** Check the fixture for two `refine()`s before reading any of the
+risk-point analysis.
+
+**Result, np1–5 × {SERIAL, HIP}, all `exit=0`** (jobs `f3QK5ndGJFS7` SERIAL,
+`f3QK5nkAauXD` HIP; baseline `f3QK3ZfePcoh` reproduced the abort at np2 and np3
+first). `inv=0` — i.e. zero invariant failures out of
+`checkSiblingCoresidency` + `checkOwnershipPartition` + `owned1RingLocal` +
+`checkConforming` + `checkNoInteriorVertex` + `check21BalanceRed` + the topology
+checksum, plus the three-plan ghost corrupt-resync — and `euler=2`, at every rank
+count on both backends.
+
+**Measurement 1–3 — fixups and load balance** (SERIAL; HIP identical except where
+noted):
+
+| np | F | siblingGroups | case A destFixups | maxFaces before→after | maxWeight before→after | ideal | case B destFixups |
+|---|---|---|---|---|---|---|---|
+| 1 | 1222 | 246 | 0 *(size 1: nothing to scatter)* | 1222→1222 | 911.0→911.0 | 911.0 | 0 |
+| 2 | 1194 | 242 | **248** | 1194→604 | 893.0→447.0 | 446.5 | 4 |
+| 3 | 1230 | 244 | **306** | 1230→417 | 908.0→304.0 | 302.7 | 20 |
+| 4 | 1220 | 248 | **318** | 1220→307 | 902.0→226.0 | 225.5 | 14 |
+| 5 | 1232 | 242 | **318** | 1232→251 | 914.0→184.0 | 182.8 | 25–26 |
+
+Non-vacuity is strong in both cases. Case A's adversarial `dest = gid % size`
+scatters **essentially every** sibling group — 248 fixups against 242 groups at np2 —
+so the hazard the case exists to create is created in full. Case B needed no help:
+Zoltan2 partitions by centroid and splits siblings **on its own** (4–26 fixups), which
+is the prediction in `Tessera_Zoltan2Balancer.hpp:180` confirmed. The weighted load
+lands within **0.6 %** of ideal at every rank count (447.0 vs 446.5; 184.0 vs 182.8)
+against a bound of 2× ideal, so the per-parent weighting really is what makes the
+sibling fixup load-neutral — the fixup moves faces without moving weight.
+
+**Measurement 4 — on-disk cost, and the +32 B prediction is exact** (`io`, job
+`f3QK7YNayTao`):
+
+| np | redFaces | visibleF | closureChildren | h5 total | closure payload | share | B / visible face |
+|---|---|---|---|---|---|---|---|
+| 1 | 911 | 1222 | 818 | 201590 B | 39104 B | 19.4 % | **32.000** |
+| 2 | 893 | 1194 | 804 | 197194 B | 38208 B | 19.4 % | **32.000** |
+| 4 | 902 | 1220 | 827 | 201276 B | 39040 B | 19.4 % | **32.000** |
+
+39104/1222, 38208/1194 and 39040/1220 are all exactly 32, at three different rank
+counts — the two extra closure members of the conforming face tuple cost precisely
+what the design predicted, and 19.4 % of the file.
+
+**One thing not to mistake for a regression.** `F` now *varies with rank count*
+(1222 / 1194 / 1230 / 1220 / 1232 at np1–5) where a naive reading would want it
+invariant. That is D1's documented, benign side effect: the identity `migrate()`
+permutes the local face ordering, so round 1's children get gids in a different
+order, so round 2's **gid-derived** mask (`gidMask( mesh, 5 )`) selects a different
+face set at each rank count. This test's assertions are all structural — partition
+integrity, conformity, Euler, checksum-vs-itself — so they hold under any such
+permutation, and `io` (which has always had the re-halo) prints the *same* F values,
+1222 at np1 and 1194 at np2, which is the cross-check that the numbers are right.
+**Rank-count invariance of per-round counts is `conforming_determinism`'s job, and it
+uses a geometric mask for exactly this reason** — do not "fix" the F spread here.
+
+**A cosmetic instability, recorded so D8 does not trip on it.** Case B's
+`destFixups` differs by ±1 between backends and between the `[Serial]` and
+`[Default]` passes at np3 and np5 (20 vs 21, 25 vs 26), and `maxWeight` with it
+(184.0 vs 185.0). That is Zoltan2's partitioner, not the closure: it is a *reported
+count*, no assertion depends on it, and the weight bound it feeds has a 2× margin
+against a 0.6 % actual. Non-vacuity for case B needs only "Zoltan2 splits siblings
+unaided", which holds at every rank count.
+
+**No regressions to check for.** The change touches one test file and no library
+code, so nothing outside `conforming_migrate` can be affected; D8's full gate is the
+confirmation at HEAD.
 
 ---
 
 ## D6 — `conforming_operators` and `conforming_determinism`
 
-**Status:** Not started (blocked on D4).
+**Status:** Not started, but **no longer blocked** — D4 gave both a verdict and D5
+sharpens the steer. **Do the re-halo check first.** Both tests abort with
+`unordered_map::at` at np≥2, and that abort has now been the missing
+identity-`migrate()` + `haloExchange()` between two `refine()` calls **three times
+running** (D1, D3, D5) and a closure defect zero times.
+`test_conforming_determinism.cpp:516-517` refines twice back-to-back with nothing in
+between, so it is the same shape D5 just fixed; check
+`test_conforming_operators.cpp`'s fixture for the same. Do not start from the risk
+points below until that is ruled out. **But note the np1 idempotence failure is a
+separate, genuine defect** — no re-halo is involved at np1, so that one needs the
+risk-point-9 reading in case 1 below.
 
 `conforming_operators` is the payoff test — closed 1-ring fan, stencil topology,
 `applyStencil` and `reduceVertexFromFaces` error at closure vs interior vertices
@@ -905,6 +1010,39 @@ making the closure transient is that the bound is fixed.
 
 *(append-only)*
 
+- **2026-08-04 — D5.** `conforming_migrate` green SERIAL+HIP at **np1–5** (jobs
+  `f3QK5ndGJFS7`, `f3QK5nkAauXD`; baseline `f3QK3ZfePcoh` reproduced the abort first).
+  **One defect, no library change, a ten-line test edit.** The abort was D1's re-halo
+  defect for the **third** time, and it was in neither case — it was in the shared
+  fixture `refinedConformingMesh()`, which refines twice back-to-back with nothing in
+  between, so `gid2lv.at()` in Phase 3a wanted a ghost endpoint position the first
+  `refine()` had dropped. Fixed with the documented identity-`migrate()` +
+  `haloExchange()` idiom, plus `fflush( stdout )` after each case print — their absence
+  is why the abort appeared to have no locus. **Risk points 3, 4 and 5 were never
+  broken:** the moment the fixture stopped throwing, `checkOwnershipPartition` (gid
+  collisions across rounds), `owned1RingLocal` (closure children naming non-local
+  vertices) and `checkSiblingCoresidency` with a positive fixup count all passed at
+  every rank count on the first run, so Task 5's sibling fixup and
+  `repairClosureCohesion()` are correct as written. *An `unordered_map::at` abort at
+  np≥2 in a conforming test has meant the missing re-halo every time and a closure
+  defect never — check the fixture for two `refine()`s before reading any risk-point
+  analysis.* Non-vacuity is strong in both cases: case A's adversarial `dest = gid %
+  size` scatters essentially every sibling group (**248 fixups against 242 groups** at
+  np2; 306/318/318 at np3/4/5), and case B needed no help at all — **Zoltan2 splits
+  siblings unaided** (4/20/14/26 fixups at np2–5), confirming
+  `Tessera_Zoltan2Balancer.hpp:180`. `loadBalance` cuts maxFaces 1232→251 at np5 and
+  lands the **weighted** load within **0.6 %** of ideal at every rank count (447.0 vs
+  446.5; 184.0 vs 182.8) against a 2× bound — so the per-parent weighting is what makes
+  the sibling fixup load-neutral. **The +32 B prediction is exact:** `io`'s closure
+  payload is 39104 B / 1222 faces, 38208 / 1194, 39040 / 1220 — **32.000 B per visible
+  face at three different rank counts**, 19.4 % of the file. Two traps for later: (a)
+  `F` now varies with rank count (1222/1194/1230/1220/1232) because the identity
+  migrate permutes face ordering and this test's round-2 mask is **gid**-derived —
+  benign, D1 documented it, `io` prints the same F values as a cross-check, and
+  rank-count invariance is `conforming_determinism`'s job with its *geometric* mask;
+  (b) case B's `destFixups` wobbles ±1 across backends and passes (Zoltan2
+  nondeterminism) — a reported count only, no assertion reads it. Open failures are
+  down to **two**, both D6's, and D5's steer for them is: check the fixture first.
 - **2026-08-04 — D4.** The last two never-executed registrations,
   `conforming_quality` and `markquality_conforming`, are **green at np1–5 on both
   backends on first execution** (jobs `f3QJyix3uKMH` SERIAL, `f3QJyj547vZm` HIP).
