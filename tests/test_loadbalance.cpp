@@ -42,8 +42,11 @@ template <class Exec>
 int run( int rank, int size, const char* tag )
 {
     using mem = typename Exec::memory_space;
-    using MeshT =
-        Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>, mem, Exec>;
+    // Pinned to the hanging-node mode: the refine() call below produces a
+    // hanging-node mesh, which is no longer the Mesh default. The conforming
+    // counterpart is the conforming_migrate test's loadBalance case.
+    using MeshT = Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
+                       mem, Exec, RefinementMode::HangingNode2to1>;
 
     MeshT mesh( MPI_COMM_WORLD );
     buildIcosphere( mesh, 3 );

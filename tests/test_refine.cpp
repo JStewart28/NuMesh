@@ -127,8 +127,11 @@ template <class Exec>
 int case_uniform( const char* tag )
 {
     using mem = typename Exec::memory_space;
-    using MeshT =
-        Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>, mem, Exec>;
+    // Pinned to the hanging-node mode: everything below asserts the 2:1
+    // contract, which is no longer the Mesh default. The conforming
+    // counterpart of refineLocal() is the refine_closure test.
+    using MeshT = Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
+                       mem, Exec, RefinementMode::HangingNode2to1>;
     MeshT mesh( MPI_COMM_WORLD );
     buildIcosphere( mesh, 0 ); // V=12 E=30 F=20
 
@@ -193,8 +196,10 @@ template <class Exec>
 int case_partial( const char* tag )
 {
     using mem = typename Exec::memory_space;
-    using MeshT =
-        Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>, mem, Exec>;
+    // Pinned to the hanging-node mode (see the note in the uniform case):
+    // a partial mask is exactly the case the closure would change.
+    using MeshT = Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
+                       mem, Exec, RefinementMode::HangingNode2to1>;
     MeshT mesh( MPI_COMM_WORLD );
     buildIcosphere( mesh, 1 ); // a few faces to leave unrefined neighbours
 
@@ -281,8 +286,10 @@ template <class Exec>
 int case_policy( const char* tag )
 {
     using mem = typename Exec::memory_space;
-    using MeshT = Mesh<double, 3, VertexFields<double>, EdgeFields<>,
-                       FaceFields<>, mem, Exec>;
+    // Pinned to the hanging-node mode (see the note in the uniform case).
+    using MeshT =
+        Mesh<double, 3, VertexFields<double>, EdgeFields<>, FaceFields<>, mem,
+             Exec, RefinementMode::HangingNode2to1>;
 
     // Build once, snapshot the base topology + a seeded user field.
     auto make = []( MeshT& m )

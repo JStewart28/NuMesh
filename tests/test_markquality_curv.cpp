@@ -94,8 +94,11 @@ template <class Scalar, class Exec>
 int run( int rank, int size, const char* tag )
 {
     using mem = typename Exec::memory_space;
-    using MeshT =
-        Mesh<Scalar, 3, VertexFields<>, EdgeFields<>, FaceFields<>, mem, Exec>;
+    // Pinned to the hanging-node mode: the refine() post-conditions asserted
+    // below are the 2:1 ones, and the mode is no longer the Mesh default. The
+    // conforming counterpart is the markquality_conforming test.
+    using MeshT = Mesh<Scalar, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
+                       mem, Exec, RefinementMode::HangingNode2to1>;
 
     int fails = 0;
 

@@ -174,8 +174,15 @@ template <class Exec>
 int run( int rank, int size, const char* tag )
 {
     using mem = typename Exec::memory_space;
-    using MeshT =
-        Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>, mem, Exec>;
+    // Pinned to the hanging-node mode. Phase 2 is shared by both modes, and
+    // this test isolates it: with no closure the VISIBLE faces ARE the red
+    // faces, so "the edges of my owned faces" -- the reference set (a), the
+    // ground truth (d), and RefineResult::midpoints' own contract -- are one
+    // and the same set. In Conforming mode the map is keyed by the RED layer
+    // while mesh.faces() shows the closure, and the reference would have to
+    // un-close first; that composition is what refine_conforming covers.
+    using MeshT = Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
+                       mem, Exec, RefinementMode::HangingNode2to1>;
 
     int fails = 0;
 

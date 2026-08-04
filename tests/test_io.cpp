@@ -177,8 +177,12 @@ int run( int rank, int size, const char* tag, const std::string& stem )
 {
     using mem = typename Exec::memory_space;
     using Scalar = double;
-    using MeshT = Mesh<Scalar, 3, VertexFields<Scalar>, EdgeFields<>,
-                       FaceFields<Scalar>, mem, Exec>;
+    // Pinned to the hanging-node mode: this case covers the format-version-2
+    // file WITHOUT the closure datasets, which is no longer the Mesh default.
+    // runConforming() below is its conforming counterpart.
+    using MeshT =
+        Mesh<Scalar, 3, VertexFields<Scalar>, EdgeFields<>, FaceFields<Scalar>,
+             mem, Exec, RefinementMode::HangingNode2to1>;
 
     MeshT mesh( MPI_COMM_WORLD );
     buildIcosphere( mesh, 3 );

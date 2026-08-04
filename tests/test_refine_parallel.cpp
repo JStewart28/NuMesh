@@ -60,8 +60,12 @@ template <class Exec>
 int run( int rank, int size, const char* tag )
 {
     using mem = typename Exec::memory_space;
-    using MeshT =
-        Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>, mem, Exec>;
+    // Pinned to the hanging-node mode: this test asserts the 2:1 contract
+    // (owned Euler holds only for a UNIFORM mask, a bisected edge survives
+    // on its kept side), which is no longer the Mesh default. The conforming
+    // counterpart is the refine_conforming test.
+    using MeshT = Mesh<double, 3, VertexFields<>, EdgeFields<>, FaceFields<>,
+                       mem, Exec, RefinementMode::HangingNode2to1>;
 
     int fails = 0;
 
