@@ -33,21 +33,20 @@
 | D1 | Fix the `refine_splitedges` np≥2 hang | **Done** (2026-08-04) |
 | D2 | Fix risk point 9 — the persistent split-edge map | **Done** (2026-08-04) |
 | D3 | Fix the `refine_conforming` np≥2 `unordered_map::at` abort | **Done** (2026-08-04) |
-| D4 | Re-sweep: get the remaining nine never-executed tests to a first verdict | **Mostly done by D3's gate run** — see D4 |
-| D5 | Downstream conforming tests (`conforming_migrate`, `io`, `markquality_conforming`) | Not started |
+| D4 | Re-sweep: get the remaining nine never-executed tests to a first verdict | **Done** (2026-08-04) |
+| D5 | Downstream conforming tests (`conforming_migrate`, `io`, `markquality_conforming`) | Not started — **scope reduced to `conforming_migrate` alone** (see D4) |
 | D6 | `conforming_operators` and `conforming_determinism` | Not started |
 | D7 | `conforming_quality` — calibrate the provisional bounds | Not started |
 | D8 | Full gate at ranks 1–5, both tiers, `format-check`; close out Task 8 | Not started |
 
-**Open failures**, as measured by D3's full gate run (job `f3QJgiXFh3Ef`, 130
-instances, reached #172 of 177 before its 20-minute window):
+**Open failures.** After D4, **every one of the suite's 28 registrations has a
+verdict** and exactly three fail:
 
 | Test | Verdict | Owner |
 |---|---|---|
 | `conforming_migrate` | np1 pass; **np2–5 abort** `unordered_map::at` | D5 |
 | `conforming_operators` | np1 pass; **np2–5 abort** `unordered_map::at` | D6 |
 | `conforming_determinism` | **np1 fails** `closure-idempotence`; np2–5 abort | D6 |
-| `conforming_quality`, `markquality_conforming` | not yet reached | D5 / D7 |
 
 All three aborts are **pre-existing and not caused by D3** — verified by rebuilding
 with D3's library change stashed and re-probing at np2: byte-identical abort and the
@@ -55,10 +54,11 @@ identical np1 idempotence failure. They are almost certainly D1's re-halo defect
 again (all three refine repeatedly; `test_conforming_determinism.cpp:516-517`
 refines twice back-to-back with nothing in between).
 
-**Everything else in the gate passes at ranks 1–5 on both backends**, including
-`refine`, `refine_parallel`, `refine_splitedges`, `refine_conforming`,
-`refine_closure`, `migrate_mesh`, `distribute`, `halo`, `loadbalance`, `io`,
-`markquality_edge` and `markquality_curv`. D1, D2 and D3 are fixed.
+**The other 25 registrations pass**, including `refine`, `refine_parallel`,
+`refine_splitedges`, `refine_conforming`, `refine_closure`, `migrate_mesh`,
+`distribute`, `halo`, `loadbalance`, `io`, `markquality_edge`, `markquality_curv`
+and — new in D4 — `conforming_quality` and `markquality_conforming`. D1, D2 and D3
+are fixed.
 
 ---
 
@@ -170,6 +170,8 @@ distribution, halo, geometry, or the operators (risk point 6 clear on HIP too).
 the sweep never reached them): `conforming_migrate`, `loadbalance`, `io`,
 `markquality_edge`, `markquality_curv`, `conforming_operators`,
 `conforming_determinism`, `conforming_quality`, `markquality_conforming`.
+**All nine were resolved by D4** — see that section for the verdicts; six pass,
+three are the *Open failures* at the top of this file.
 
 ### The `refine_conforming` np1 output, in full — this is the primary evidence
 
@@ -650,18 +652,15 @@ consume edge gids — pass at ranks 1–5 on both backends for the first time.
 
 ## D4 — Re-sweep and get a first verdict on the nine never-executed tests
 
-**Status: mostly done, as a side effect of D3's gate run** (job `f3QJgiXFh3Ef`).
-Seven of the nine now have a verdict: `loadbalance`, `io`, `markquality_edge` and
-`markquality_curv` **pass** at ranks 1–5 on both backends; `conforming_migrate`,
-`conforming_operators` and `conforming_determinism` fail as tabulated under *Open
-failures*. Still unexecuted: **`conforming_quality` and `markquality_conforming`**
-(the gate window ended at instance #172 of 177, and `conforming_quality` is `unit`,
-so it is not in the gate at all — run `ctest -L unit` for it).
+**Status: DONE (2026-08-04).** All nine have verdicts; **six pass, three fail**, and
+the three failures are the ones already tabulated under *Open failures*. Seven of the
+nine were answered by D3's gate run; D4 itself ran the last two —
+**`conforming_quality` and `markquality_conforming` both pass at np1–5 on both
+backends**, first execution ever, no code change required. **D4 changed no code.**
+The suite now has **zero unexecuted registrations** (28 of 28), so D5–D7 are scoped
+for the first time — and D5's scope shrinks to one test.
 
-Remaining D4 work is therefore just those two, plus splitting the confirmed
-failures across D5/D6, which the table above already does.
-
-Nine registrations have **never been executed**: `conforming_migrate`,
+Nine registrations had **never been executed**: `conforming_migrate`,
 `loadbalance`, `io`, `markquality_edge`, `markquality_curv`,
 `conforming_operators`, `conforming_determinism`, `conforming_quality`,
 `markquality_conforming`. Until they run, the size of the remaining work is
@@ -679,15 +678,108 @@ ordering exists because one upstream bug manifests as a dozen unrelated
 downstream failures, and D2 in particular is expected to change most of these
 verdicts on its own.
 
-**What landed.** *(fill in)*
+**What landed.**
+
+No code change. D4 is a measurement task and the measurement came out clean.
+
+**The two remaining tests, np1–5 × {SERIAL, HIP}, all `exit=0`** (jobs
+`f3QJyix3uKMH` SERIAL, `f3QJyj547vZm` HIP). The sweep script was not reused: with
+only two registrations left, two `probe.flux` jobs — one per backend, ten `flux run`s
+each at a 110 s `timeout` — answered it in **1.4 minutes per job** rather than
+contending for a 20-minute allocation. Both jobs ran concurrently on separate pdebug
+nodes, which is worth knowing as a harness fact: `flux batch`ing two 1-node exclusive
+jobs does not serialise them.
+
+`markquality_conforming` (SERIAL, identical at every rank count and on HIP):
+
+```
+markquality/edge ok: conforming marked=25 F=430 closure=50 euler=2 badInc=0 tjunc=0 | control marked=25 F=395 euler=-3  badInc=25  tjunc=0
+markquality/curv ok: conforming marked=35 F=500 closure=95 euler=2 badInc=0 tjunc=0 | control marked=35 F=425 euler=-33 badInc=115 tjunc=25
+```
+
+Non-vacuity holds on both criteria: the `HangingNode2to1` control fails conformity
+(`euler=-3`, `-33`) with the *same* mark count, so the difference is the closure and
+nothing else. Task 6's specific worry is also visibly answered — `CurvatureCriterion`
+now sees two incident faces where the control leaves 25 T-junctions, and it still
+marks exactly 35 faces, so the criterion's edge coordinator is not disturbed by the
+wider face tuple. This closes **risk point 7's marking half** and completes D5's
+`markquality_conforming` item; **D5 reduces to `conforming_migrate` alone**, since
+`io` already passed at ranks 1–5 in D3's gate.
+
+`conforming_quality` (8 adaptive rounds on a shrinking geodesic cap; `unit` tier, so
+outside the gate by design):
+
+| round | marked | F | minAngle° | maxQ | closure | closureFrac |
+|---|---|---|---|---|---|---|
+| 1 | 6 | 344 | 26.094 | 1.5672 | 12 | 0.0349 |
+| 2 | 12 | 392 | 25.987 | 1.5672 | 36 | 0.0918 |
+| 3 | 24 | 476 | 25.987 | 1.5672 | 60 | 0.1261 |
+| 4 | 28 | 576 | 25.987 | 1.5672 | 92 | 0.1597 |
+| 5 | 46 | 732 | 25.987 | 1.5672 | 128 | 0.1749 |
+| 6 | 62 | 944 | 25.987 | 1.7759 | 176 | **0.1864** |
+| 7 | 88 | 1232 | 25.987 | 1.7759 | 224 | 0.1818 |
+| 8 | 134 | 1672 | 25.987 | **2.2344** | 292 | 0.1746 |
+
+`inv=0` (closure-inverse mismatches) every round. All three provisional bounds hold
+with wide margin — worst minAngle 25.987° vs 20°, worst `Q` 2.2344 vs 4.0, worst
+closure fraction 0.1864 vs 0.50.
+
+**Rank-count invariance is total, and this is the strongest single result in D4.**
+Across np1–5 × {SERIAL, HIP} × {`[Serial]`, `[Default]`} — 40 executions of the
+8-round loop — there are exactly **8 distinct round lines**, i.e. every printed
+quantity above is byte-identical at every rank count on both backends. Same for
+`markquality_conforming`. That is not something D4 had to be true; it says the
+geometric mask, the closure patterns and the blue tie-break all reproduce across
+partitions on this workload.
+
+**Steer for D7 — the honest reading, which is not "the bounds are confirmed".**
+Two of the three quantities are bounded on this evidence and one is **not yet shown
+to be**:
+
+- `minAngle` is *dead flat* at 25.987° from round 2 on. Round 1's 26.094° is the
+  undisturbed icosphere; 25.987° is the worst shape the closure patterns can make,
+  reached immediately and never worsened. This is exactly the round-independence D2's
+  flat closure fraction hinted at, now confirmed over 8 rounds.
+- `closureFrac` **peaks and then declines** (0.1864 at round 6, then 0.1818, 0.1746).
+  A peak followed by a decline is real evidence of a bound, not just a slow climb.
+- `maxQ` **grows monotonically, in steps, and has not plateaued**: 1.5672 (rounds
+  1–5) → 1.7759 (6–7) → 2.2344 (8). The step pattern — flat for several rounds, then
+  a jump — reads like a new worst-case nesting appearing each time the cap's refined
+  region gains a level, and the *last* observed round is a jump. **8 rounds cannot
+  distinguish a bounded sequence from an unbounded one here.** Do not calibrate the
+  `Q` bound down to ~2.5 on this data; extend the test to 12–16 rounds first and see
+  whether `maxQ` plateaus. If it keeps stepping, that is the design finding D7 is
+  told to stop and report, not a tolerance to loosen — and it would bear directly on
+  D8's default-flip decision.
+
+Also for D7: the test is **stable across repeated runs** in the sense the promotion
+criterion asks about (identical output in 40 executions), and it costs ~4 s, so
+nothing about cost or flakiness blocks promotion to `regression` — only the
+unresolved `Q` question does. Promotion still needs explicit user confirmation of
+backends and ranks (`CLAUDE.md`).
+
+**Cross-check that nothing was missed.** `ctest -N` lists **28 distinct
+registrations** (72 `unit` instances + 130 `regression` instances, all
+SERIAL|HIP). D0's 19 (17 passing + `refine_splitedges` + `refine_conforming`) plus
+D4's 9 is exactly 28, so the "never executed" list was complete and is now empty.
+Caveat for D8, stated so it is not mistaken for full coverage: 14 of the 15 `unit`
+registrations have their evidence from **D0's np1–4** sweep, not from a post-D3 run —
+D8's `ctest -L unit` is what confirms them at current HEAD.
 
 ---
 
-## D5 — Downstream conforming tests: `conforming_migrate`, `io`, `markquality_conforming`
+## D5 — Downstream conforming tests: `conforming_migrate` (~~`io`~~, ~~`markquality_conforming`~~)
 
-**Status:** Not started (blocked on D4 for a verdict).
+**Status:** Not started, but **scope reduced to `conforming_migrate` alone.** D4
+unblocked this: `io` passes at ranks 1–5 on both backends (D3's gate run) and
+`markquality_conforming` passes at np1–5 on both backends (D4), so **risk point 7 is
+clear in both halves** — the writer/reader agree on the two closure datasets, and the
+mask translation composes with both quality criteria. What remains is
+`conforming_migrate`'s np2–5 `unordered_map::at` abort, i.e. risk points 3, 4 and 5.
+Read D1's *What landed* first: the same exception with the same np≥2 threshold has
+twice now been the missing re-halo between rounds, not a closure defect.
 
-These three exercise the closure composed with redistribution, persistence and
+These exercise the closure composed with redistribution, persistence and
 marking. Their known risk points, from
 `tasks/conforming-refinement.md` → Task 8:
 
@@ -752,8 +844,13 @@ asserted separately. An empty closure-vertex set is a hard failure by design.
 
 ## D7 — `conforming_quality`: calibrate the provisional bounds
 
-**Status:** Not started (blocked on D4, and meaningless before D2 — quality
-measured on a mesh that has stopped being conforming measures nothing).
+**Status:** Not started, but **no longer blocked** — D4 ran it: green at np1–5 on
+both backends, with the full per-round measurement table and a rank-count-invariance
+result. **Read D4's *Steer for D7* before starting.** The short version: `minAngle`
+and `closureFrac` are demonstrably round-independent over 8 rounds, but `maxQ` is
+still *stepping upward at the last round measured* (1.5672 → 1.7759 → 2.2344), so
+D7's first job is to extend the test to 12–16 rounds and find out whether it
+plateaus — **not** to tighten the bound to the observed 2.23.
 
 Task 7 registered this as **`unit`, deliberately outside the gate**, with bounds
 derived from the patterns' ideal-parent geometry rather than measured: **min
@@ -808,6 +905,35 @@ making the closure transient is that the bound is fixed.
 
 *(append-only)*
 
+- **2026-08-04 — D4.** The last two never-executed registrations,
+  `conforming_quality` and `markquality_conforming`, are **green at np1–5 on both
+  backends on first execution** (jobs `f3QJyix3uKMH` SERIAL, `f3QJyj547vZm` HIP).
+  **No code change.** The suite now has **zero unexecuted registrations — 28 of 28
+  have verdicts, 25 pass, 3 fail**, and the three are the pre-existing np≥2 aborts
+  already owned by D5/D6. D5's scope shrinks to `conforming_migrate` alone (`io`
+  passed in D3, `markquality_conforming` passes here), so **risk point 7 is clear in
+  both halves**. `markquality_conforming` is non-vacuous on both criteria — the
+  control fails conformity (`euler=-3`, `-33`) with the *identical* mark count, and
+  `CurvatureCriterion` still marks exactly 35 faces where the control leaves 25
+  T-junctions, so seeing two incident faces instead of one does not disturb it.
+  **The strongest result:** across np1–5 × {SERIAL, HIP} × {`[Serial]`, `[Default]`}
+  — 40 executions of `conforming_quality`'s 8-round loop — there are exactly **8
+  distinct round lines**, i.e. every measured quantity is byte-identical at every rank
+  count on both backends. **The D7 handoff, stated carefully because the pass is
+  easy to over-read:** `minAngle` is dead flat at 25.987° from round 2 on and
+  `closureFrac` *peaks at round 6 (0.1864) and then declines*, so both are bounded on
+  this evidence; but `maxQ` grows in **steps and has not plateaued** — 1.5672 (rounds
+  1–5) → 1.7759 (6–7) → 2.2344 (8), with the last observed round being a jump. All
+  three provisional bounds hold with wide margin (20°, 4.0, 0.50), yet *8 rounds
+  cannot distinguish a bounded `Q` from an unbounded one*, so D7 must extend to 12–16
+  rounds before calibrating, and an unbounded `Q` is the design finding it is told to
+  stop and report rather than a tolerance to loosen. *A test passing all its bounds is
+  not the same as its bounds being justified — read the trend, not just the verdict.*
+  Harness facts: two `flux batch`ed 1-node exclusive jobs run **concurrently** on
+  separate pdebug nodes (1.4 min each here), so for a handful of tests two per-backend
+  `probe.flux` jobs beat re-running the 20-minute sweep. Caveat recorded for D8: 14 of
+  the 15 `unit` registrations still have their evidence from D0's np1–4 sweep rather
+  than from current HEAD.
 - **2026-08-04 — D3.** `refine_conforming` green SERIAL+HIP at **np1–5** (probe
   `f3QJwCBao2jR`, gate `f3QJgiXFh3Ef`). Two defects. (1) The abort was exactly D1's
   re-halo defect — `gid2lv.at()` in Phase 3a needs both endpoint *positions* of every
