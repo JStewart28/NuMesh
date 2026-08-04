@@ -320,11 +320,15 @@ make -j $(nproc)
 - **Conforming refinement is the `Mesh` default and is still being verified.** The
   whole `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
   `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented and
-  registered across the suite. Verification is under way in a single dedicated pass:
-  `refine_conforming` is green (SERIAL + HIP) at **one rank** over three successive
-  adaptive rounds, and **not yet at two or more** — it aborts there for the
-  re-halo reason in the entry above. Several conforming tests have not been executed
-  at all yet. Until the pass completes, treat multi-rank conforming mode as unproven
+  registered across the suite. Verification is under way in a single dedicated pass
+  and is nearly complete: every conforming test — `refine_conforming`,
+  `refine_closure`, `conforming_migrate`, `conforming_operators`,
+  `conforming_determinism`, `conforming_quality`, `markquality_conforming` — is now
+  green on SERIAL and HIP at **ranks 1–5** over multiple successive adaptive rounds.
+  What remains is calibrating `conforming_quality`'s provisional bounds (its `maxQ`
+  is still rising at the last measured round, so the shape bound is not yet shown to
+  be round-independent) and the closing full-gate run. Until the pass completes,
+  treat conforming mode as verified-but-not-yet-signed-off
   — and note that because it is the default, a `Mesh<...>` spelled with seven
   template arguments gets it. A consumer that wants the previous behaviour should
   spell `RefinementMode::HangingNode2to1` explicitly, which every pre-existing test
@@ -336,6 +340,24 @@ make -j $(nproc)
   [tasks/conforming-refinement-debug.md](tasks/conforming-refinement-debug.md);
   design: [tasks/conforming-refinement.md](tasks/conforming-refinement.md) and
   `docs/design.md` → *Adaptive refinement*.
+- **In `Conforming` mode the visible mesh is rank-count dependent up to blue
+  closure diagonals.** Refining the same mesh with the same mask on a different
+  number of ranks can produce a visible triangulation that differs in *which
+  diagonal* some blue closure quads are split along. Measured on the test workload:
+  ranks 1–4 agree exactly, rank 5 differs on 4 of 20 blue parents. Everything else
+  is rank-count invariant and asserted as such — the persistent **red** layer, the
+  `|S|` pattern histogram, the closure-vertex set, and V/E/F — so mesh *size*,
+  refinement decisions, and conformity are reproducible; only the transient
+  closure's diagonal choice is not. Cause: the blue tie-break compares midpoint
+  gids, and those come from an `MPI_Exscan`, so they are agreed across the ranks of
+  one run but are not the same values at a different rank count. A geometric rule
+  would fix it but cannot be evaluated locally (the closure runs on the un-closed
+  red layer, whose corners may name vertices the rank does not hold), so it needs
+  the split edge's length carried in `refine()`'s existing Phase-2 coordinator
+  reply — a tracked follow-up. Consequence for consumers: do not compare a
+  conforming mesh's *visible* face set or a visible-face-gid-keyed field bitwise
+  across rank counts; compare the red layer, or compare by position. Recorded as
+  Decision 11 in [tasks/conforming-refinement.md](tasks/conforming-refinement.md).
 - **`RefinementMode::HangingNode2to1` does not track hanging nodes across refine
   rounds.** Two consequences, both long-standing and neither visible to that mode's
   own tests (which assert non-conformity anyway), found while fixing the conforming

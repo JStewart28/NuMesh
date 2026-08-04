@@ -1400,7 +1400,21 @@ plausible defect):
    incidence as split — is worth considering, but it needs the midpoint gid, which
    only the finer side knows and which the local reconstruction above already has.
 
-10. **Rank-count independence is narrower than the design assumed.** New vertex and
+10. **RESOLVED (Task 8 D6) — Decision 11: the gid tie-break stays, and the visible
+    layer is documented as rank-count dependent up to blue diagonals.** The
+    prediction below was exactly right, including the signature to look for: np1–4
+    agree and np5 differs by 4 of 20 blue parents with every other component in
+    exact agreement. The geometric alternative it proposes was implemented and
+    measured, then reverted — not because of the floating-point fragility the
+    paragraph anticipates (the exact-tie case is real but handled by a positional
+    fallback), but because **the closure cannot see the positions**: it runs on the
+    un-closed red layer, whose corners come from `ClosureParentVerts` and may name
+    vertices the rank does not hold (risk point 4), which a 1-deep halo does not
+    fix. No purely local rule can be rank-count stable on the data the closure has.
+    `conforming_determinism` case A now asserts the sharper "differs only through
+    blue diagonals" instead of dropping the check. Original analysis preserved:
+
+    **Rank-count independence is narrower than the design assumed.** New vertex and
     face gids come from an `MPI_Exscan` over ranks, so which gid a midpoint gets
     depends on the partition, and after one round nothing gid-keyed is comparable
     across rank counts — see *What "partition independent" does and does not cover*
@@ -1553,6 +1567,45 @@ so collect them from the run output rather than re-running:
   message round**, and edges now match vertices and faces in having globally
   consistent gids. The numbering is hash-scattered rather than rank-contiguous;
   nothing depends on edge-gid locality. Found by Task 8 D3.
+- **2026-08-04 — Decision 11: the blue tie-break stays gid-valued, and the visible
+  layer is documented as rank-count dependent up to blue diagonals.** This settles
+  risk point 10 and the open question Decision 6 deferred to Task 8. Measured: the
+  visible layer agrees with the `MPI_COMM_SELF` reference at np1–4 and differs at
+  np5 by exactly **4 of 20 blue parents**, with the red layer, the `|S|` histogram,
+  the closure-vertex set, V/E/F and `parentMissing` all in exact agreement — i.e.
+  precisely the signature risk point 10 predicted, and not a partition-local read.
+
+  The geometric alternative risk point 10 proposed was **implemented in full and
+  measured, then reverted**, because it cannot be done locally. Two things worth
+  keeping:
+
+  * The shorter-diagonal rule is simpler than it looks. With `q0 = (A+B)/2` and
+    `q1 = (B+C)/2`, `dQ0C - dAQ1 = (3/4)(|C-B|^2 - |B-A|^2)`, so "take the shorter
+    diagonal" is exactly "connect the midpoint of the **longer split edge** to its
+    opposite corner" — the standard rule, needing only the two split edges' lengths.
+  * It still cannot be evaluated locally. The closure runs on the **un-closed** red
+    layer, whose corners come from closure children's `ClosureParentVerts`, and a
+    child may name a vertex gid its rank does not hold — the already-documented
+    risk point 4. A 1-deep halo does not help, because those are *parent* corners,
+    not neighbours. Instrumented at np2, a single `closeFaces()` call asked for 12
+    positions the rank did not have, including original icosphere vertices, so the
+    geometric rule aborts (or silently picks a diagonal from the origin) at np ≥ 2.
+
+  Since every gid-valued quantity is exscan-derived and positions are unreachable,
+  **no purely local rule can be rank-count stable on the data the closure currently
+  has.** Making a geometric rule work needs communication — the split edge's
+  squared length carried in Phase 2's existing coordinator reply, contributed by a
+  rank holding both endpoints (the refining side always does; the persistent split
+  edges of Decision 8 have only a coarse incidence and would need a separate
+  answer). That is deferred, not rejected: it is one extra field on an existing
+  round trip, the same shape as Decision 10's fix.
+
+  What `conforming_determinism` case A asserts was therefore **narrowed, but not to
+  nothing**: the visible layer must differ *only* through blue diagonals. A
+  visible-layer difference with no diagonal mismatch to explain it fails, and so
+  does a diagonal mismatch that leaves the visible layer identical. Every quantity
+  that is provably a function of the global mesh still has to agree exactly. Found
+  and settled by Task 8 D6.
 - **2026-07-31 — Decision 4: transient red–green–blue closure**, not
   newest-vertex bisection and not red-only propagation. Red-only propagation
   degenerates to uniform refinement; bisection replaces the red engine wholesale

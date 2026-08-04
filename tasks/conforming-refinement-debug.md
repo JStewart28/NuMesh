@@ -35,30 +35,23 @@
 | D3 | Fix the `refine_conforming` np≥2 `unordered_map::at` abort | **Done** (2026-08-04) |
 | D4 | Re-sweep: get the remaining nine never-executed tests to a first verdict | **Done** (2026-08-04) |
 | D5 | Downstream conforming tests (`conforming_migrate`, `io`, `markquality_conforming`) | **Done** (2026-08-04) |
-| D6 | `conforming_operators` and `conforming_determinism` | Not started |
+| D6 | `conforming_operators` and `conforming_determinism` | **Done** (2026-08-04) |
 | D7 | `conforming_quality` — calibrate the provisional bounds | Not started |
 | D8 | Full gate at ranks 1–5, both tiers, `format-check`; close out Task 8 | Not started |
 
-**Open failures.** After D5, **every one of the suite's 28 registrations has a
-verdict** and exactly two fail:
+**Open failures.** After D6, **none.** All 28 registrations have a verdict and
+**all 28 pass** at ranks 1–5 on both backends. D1, D2, D3, D5 and D6 are fixed.
 
-| Test | Verdict | Owner |
-|---|---|---|
-| `conforming_operators` | np1 pass; **np2–5 abort** `unordered_map::at` | D6 |
-| `conforming_determinism` | **np1 fails** `closure-idempotence`; np2–5 abort | D6 |
+One recorded **design limit**, not a failure: in `Conforming` mode the *visible*
+layer is rank-count dependent up to blue closure diagonals (np1–4 agree, np5 flips
+4 of 20 blue parents). Everything provably a function of the global mesh — red
+layer, `|S|` histogram, closure-vertex set, V/E/F — is invariant and asserted as
+such, and `conforming_determinism` now asserts the sharper "the visible layer
+differs *only* through blue diagonals". Decision 11 in
+[tasks/conforming-refinement.md](conforming-refinement.md); README *Known Issues*.
 
-Both aborts are **pre-existing and not caused by D3** — verified by rebuilding
-with D3's library change stashed and re-probing at np2: byte-identical abort and the
-identical np1 idempotence failure. They are almost certainly D1's re-halo defect
-again — which is now what `conforming_migrate`'s abort turned out to be for the
-**third** time (D1, D3, D5). `test_conforming_determinism.cpp:516-517` refines
-twice back-to-back with nothing in between, so start there.
-
-**The other 26 registrations pass**, including `refine`, `refine_parallel`,
-`refine_splitedges`, `refine_conforming`, `refine_closure`, `migrate_mesh`,
-`distribute`, `halo`, `loadbalance`, `io`, `markquality_edge`, `markquality_curv`,
-`conforming_quality`, `markquality_conforming` and — new in D5 —
-`conforming_migrate`. D1, D2, D3 and D5 are fixed.
+Remaining work is D7 (calibrate `conforming_quality`'s bounds — `maxQ` is still
+rising at round 8) and D8 (close out).
 
 ---
 
@@ -905,6 +898,18 @@ confirmation at HEAD.
 
 ## D6 — `conforming_operators` and `conforming_determinism`
 
+**Status: DONE (2026-08-04).** Both pass SERIAL and HIP at np1–5 — **70/70 test
+instances green** (jobs `f3QKnDU4D5qZ` SERIAL, `f3QKnDaehtYX` HIP), together with
+`refine_closure`, `refine_conforming`, `conforming_quality`, `conforming_migrate`
+and `markquality_conforming` re-run alongside them. **The suite now has zero open
+failures.** Three defects, all test-side, plus one **design decision** (Decision 11)
+that cost the most work and produced the most durable finding. **Read *What
+landed*** — in particular, the geometric tie-break the brief and I both expected to
+be the right answer turns out to be *impossible locally*, and the measurement that
+shows why is worth not repeating.
+
+**Original brief follows.**
+
 **Status:** Not started, but **no longer blocked** — D4 gave both a verdict and D5
 sharpens the steer. **Do the re-halo check first.** Both tests abort with
 `unordered_map::at` at np≥2, and that abort has now been the missing
@@ -943,7 +948,120 @@ asserted separately. An empty closure-vertex set is a hard failure by design.
    (`|S| hist=[1280,0,0,0]`, `closureChildren=0`), which is a good sign for this
    case.
 
-**What landed.** *(fill in)*
+**What landed.**
+
+**The re-halo steer was right, for the fourth, fifth and sixth time.** All three
+aborts were the missing identity-`migrate()` + `haloExchange()` between two
+back-to-back `refine()` calls, in three separate places:
+`test_conforming_operators.cpp:311-312`, `test_conforming_determinism.cpp:516-517`
+(case B's fixture, the site the brief named), and — not predicted anywhere —
+**case C's round loop**, which refines *both* the conforming and the hanging-node
+mesh twice with nothing in between. The tally over the whole of Task 8 is now
+**six occurrences, zero closure defects.** Fixing case B moved the abort *past* the
+idempotence print into case C, which is how the third one surfaced: **when an abort
+moves rather than disappears, re-read the output for what now prints, don't assume
+the fix failed.**
+
+`conforming_operators` needed nothing else: `closureVerts` 311/301/322/318/318 at
+np1–5 (non-vacuous by design — an empty closure-vertex set is a hard failure),
+`fanBad=0/0`, `ringBad=0/0`, `stencilMaxErr` and `areaMaxErr` at closure vertices
+identical to interior ones (0 exactly on Serial, ~7e-18 on HIP), and
+`vArea == fArea` to 9 digits. **Risk points 3–5 and the operator half of 6 are
+clear.**
+
+**The np1 idempotence failure was a stale assertion, not a defect — and the
+diagnostic found it in one run.** Following D3's lesson, the first thing I did was
+give case B a named bit per condition instead of a bare `++fails`. It printed
+`why=0x08: mids` with `dVis=+0 dRed=+0 dV=+0 dE=+0 dF=+0` — i.e. *every* structural
+quantity identical and only `!res.midpoints.empty()` failing. That assertion
+contradicts the contract D2 established: in `Conforming` mode
+`RefineResult::midpoints` is deliberately the **whole** split-edge map of the red
+layer, persistent hanging nodes included, and `RefineParallel.hpp:105-110` says so
+outright. It also contradicted its own neighbour — `checkClosureInverse`, two lines
+below, *needs* those entries to pass. Replaced with the correct and sharper
+statement: `midpoints` must equal **exactly** the split-edge map recovered from the
+pre-refine mesh, so an empty mask must have *invented nothing* rather than reported
+nothing. **When two assertions in the same block disagree about a contract, one of
+them is stale — check the library's own doc block before believing either.**
+
+**Decision 11 — the blue tie-break stays gid-valued.** Case A then failed at
+**np5 only**, with exactly the signature risk point 10 predicted:
+`vis=DIFF blueDiagMismatch=4`, and `counts / hist / red / closureVerts /
+parentMissing` all ok. np1–4 agree.
+
+The brief and the user both preferred replacing the tie-break with a geometric
+rule, so I implemented it in full: shorter diagonal with a positional
+lexicographic fallback for exact ties, a `ClosurePosOf` position lookup threaded
+through all six `closeFaces()` call sites, and the blue unit tests rewritten to
+drive **both** diagonals from geometry (by cutting a different corner of the
+reference triangle) plus a new case pinning that relabelling the midpoint *gids*
+does not move the diagonal. **It does not work, and the reason is worth keeping:**
+
+* The rule is simpler than it looks. With `q0 = (A+B)/2`, `q1 = (B+C)/2`,
+  `dQ0C - dAQ1 = (3/4)(|C-B|^2 - |B-A|^2)`, so "shorter diagonal" is exactly
+  "connect the midpoint of the **longer split edge**" — the standard rule, needing
+  only the two split edges' lengths.
+* It cannot be evaluated locally. `closeFaces()` runs on the **un-closed** red
+  layer, whose corners come from closure children's `ClosureParentVerts`, and a
+  child may name a vertex gid its rank does not hold — **the already-documented
+  risk point 4**, which was benign only because the closure never needed positions.
+  A 1-deep halo does not help: those are *parent* corners, not neighbours.
+  Instrumented at np2, one `closeFaces()` call asked for **12** positions the rank
+  did not have, including original icosphere vertices (gids 1, 3, 21, 41).
+
+So: every gid-valued quantity is exscan-derived and positions are unreachable,
+therefore **no purely local rule can be rank-count stable on the data the closure
+currently has.** Making a geometric rule work needs communication — the split
+edge's squared length carried in Phase 2's existing coordinator reply, contributed
+by a rank holding both endpoints (the refining side always does; Decision 8's
+*persistent* split edges have only a coarse incidence and need a separate answer).
+Deferred, not rejected: it is one extra field on an existing round trip, the same
+shape as Decision 10's fix. The implementation is preserved at
+`/tmp/geometric-tiebreak-d6-keep.patch` (not committed) and the reasoning in
+Decision 11 and in `Tessera_RefineClosure.hpp`'s header note, which used to claim
+partition-independence in a way that quietly conflated the two senses.
+
+**Two traps this exposed, both worth remembering:**
+
+1. **The regression it caused was *invisible* in the structural checks.** With
+   positions missing, `refine_conforming` np2 reported `euler=2`, correct `F`,
+   correct `|S|` histogram, populated both diagonals — and still FAILed, on
+   `checkClosureInverse` alone. A silently-wrong diagonal produces a mesh that is
+   perfectly conforming and perfectly wrong. *`euler=2` does not mean the closure
+   agreed with itself.*
+2. **A `std::function` position lookup that returns a default on a miss is a
+   footgun.** My first version returned the origin, which turned a hard failure
+   into a plausible mesh. The instrumented version that *printed* the missing gid
+   is what solved this in one run.
+
+**What case A asserts now — narrowed, but not to nothing.** Rather than dropping
+the visible-layer check, it asserts the sharper statement that the visible layer
+differs **only** through blue diagonals, in both directions: a `vis` difference
+with `diagMismatch == 0` fails (the closure diverged for some other reason), and a
+`diagMismatch != 0` that leaves `vis` identical also fails (`blueDiag` is not
+measuring what the closure emitted). Everything provably a function of the global
+mesh still has to agree exactly. This still bites: at np1–4 `vis=ok` *requires*
+`blueDiagMismatch=0`, which is what the run shows. np5 prints
+`vis=DIFF-by-blue-diag blueDiagMismatch=4` and passes.
+
+**Result, np1–5 x {SERIAL, HIP}, 70/70 `exit=0`.** Case A: `V=676 E=2022 F=1348`
+and `|S| hist=[1820,60,20,0]` **byte-identical at every rank count**, `closureVerts=74`,
+`parentMissing=0`. Case B: `siblingGroups` 246/242/244/248/242 (non-vacuous — there
+is real closure to be idempotent about) with every structural delta zero. Case C:
+`closureChildren=0` both rounds at every rank count, so the uniform-mask closure is
+provably inert and the two modes agree bit-for-bit on face gids, corners and levels.
+
+**Also landed.** `docs/design.md`'s closure section and `Tessera_RefineClosure.hpp`'s
+header note now distinguish partition-independence from rank-count independence
+instead of asserting the first and implying the second; README *Known Issues* gains
+the blue-diagonal entry (with the practical consequence: do not compare a conforming
+mesh's *visible* face set bitwise across rank counts — compare the red layer or
+compare by position) and its stale "conforming is green at one rank only, several
+tests never executed" entry is corrected to the current state. Risk point 10 is
+marked resolved with its original analysis preserved.
+
+**No library code changed in D6.** Every fix is test-side, so the only tests that
+can be affected are the ones re-run above.
 
 ---
 
@@ -1010,6 +1128,57 @@ making the closure transient is that the bound is fixed.
 
 *(append-only)*
 
+- **2026-08-04 — D6.** `conforming_operators` and `conforming_determinism` green
+  SERIAL+HIP at **np1–5**; re-run alongside `refine_closure`, `refine_conforming`,
+  `conforming_quality`, `conforming_migrate`, `markquality_conforming` for
+  **70/70 instances green** (jobs `f3QKnDU4D5qZ`, `f3QKnDaehtYX`). **The suite now
+  has zero open failures — 28/28 registrations pass.** No library code changed.
+  Three defects plus one design decision. (1) All three aborts were the missing
+  re-halo, in *three* places: operators' fixture, determinism case B's fixture (the
+  site the brief named), and — unpredicted — **case C's round loop**, which refines
+  both meshes twice with nothing between. Task 8's tally is now **six occurrences of
+  this one defect and zero closure defects.** Fixing case B moved the abort *past*
+  the idempotence print into case C: *when an abort moves instead of disappearing,
+  re-read what now prints rather than assuming the fix failed.* (2) The np1
+  idempotence failure was a **stale assertion**, found in one run by adding a named
+  bit per condition: `why=0x08: mids` alone, every structural delta zero.
+  `!res.midpoints.empty()` contradicts the contract D2 established — in Conforming
+  mode `midpoints` is deliberately the whole split-edge map including persistent
+  hanging nodes, as `RefineParallel.hpp:105-110` states — and contradicted
+  `checkClosureInverse` two lines below, which *needs* those entries. Replaced with
+  the sharper "invented nothing": `midpoints` must equal exactly the pre-refine
+  recovered split-edge map. *When two assertions in one block disagree about a
+  contract, one is stale — read the library's doc block before believing either.*
+  (3) **Decision 11, and the most durable finding of D6:** case A failed at **np5
+  only** with exactly risk point 10's predicted signature (`vis=DIFF`,
+  `blueDiagMismatch=4`, everything else ok; np1–4 agree). The geometric tie-break
+  everyone expected to be the fix was implemented in full — shorter diagonal with a
+  positional tie fallback, a position lookup threaded through all six `closeFaces()`
+  call sites, blue unit tests rewritten to drive both diagonals from geometry — and
+  **cannot work locally.** The rule itself is clean (`dQ0C - dAQ1 =
+  (3/4)(|C-B|² - |B-A|²)`, so it is just "connect the midpoint of the longer split
+  edge"), but `closeFaces()` runs on the **un-closed** red layer whose corners come
+  from `ClosureParentVerts`, and a child may name a vertex the rank does not hold —
+  **risk point 4**, benign until something needed positions. Instrumented at np2:
+  **12 missing positions in one call**, including original icosphere vertices. Since
+  all gids are exscan-derived and positions are unreachable, *no purely local rule
+  can be rank-count stable on the closure's current data*; a geometric one needs the
+  split edge's length in Phase 2's existing coordinator reply (one extra field, same
+  shape as Decision 10 — deferred, not rejected; patch kept out-of-tree). **Two
+  traps:** the regression this caused was invisible structurally — `refine_conforming`
+  np2 reported `euler=2`, correct `F`, correct `|S|` histogram, both diagonals
+  populated, and failed on `checkClosureInverse` alone, because *a silently-wrong
+  diagonal yields a mesh that is perfectly conforming and perfectly wrong*; and a
+  position lookup that returns a default on a miss converts a hard failure into a
+  plausible mesh — the version that *printed* the missing gid solved it in one run.
+  Case A was narrowed but **not** gutted: it now asserts the visible layer differs
+  *only* through blue diagonals, failing both a `vis` difference with no diagonal
+  mismatch to explain it and a diagonal mismatch that leaves `vis` identical, so it
+  still bites at np1–4 where `vis=ok` requires `blueDiagMismatch=0`. Evidence of
+  strength elsewhere: case A's `V=676 E=2022 F=1348` and `|S| hist=[1820,60,20,0]`
+  are byte-identical at every rank count, case C's `closureChildren=0` proves the
+  uniform-mask closure inert, and `conforming_operators` shows closure-vertex stencil
+  and area errors identical to interior ones with `closureVerts` 301–322.
 - **2026-08-04 — D5.** `conforming_migrate` green SERIAL+HIP at **np1–5** (jobs
   `f3QK5ndGJFS7`, `f3QK5nkAauXD`; baseline `f3QK3ZfePcoh` reproduced the abort first).
   **One defect, no library change, a ten-line test edit.** The abort was D1's re-halo

@@ -88,11 +88,34 @@ namespace Tessera
 //     The tie-break is: connect the midpoint with the LOWER GID to its opposite
 //     corner. Midpoint gids are globally agreed (bit-identical on every rank that
 //     shares the bisected edge -- the central guarantee of refine()'s Phase 2),
-//     so this choice is a function of global data only and the closure is
-//     therefore PARTITION-INDEPENDENT: the same red mesh closes to the same
-//     visible mesh at any rank count. A tie-break reading a partition-local
-//     quantity (local index, owner rank, iteration order) would pass every other
-//     test and fail only the rank-count topology checksum.
+//     so this choice does not depend on WHICH RANK OWNS THE FACE: the closure is
+//     partition-independent at a fixed rank count. A tie-break reading a
+//     partition-local quantity (local index, owner rank, iteration order) would
+//     pass every other test and fail only the rank-count topology checksum.
+//
+//     WHAT THIS RULE DOES NOT GIVE, and it is a real limit, not an oversight
+//     (Task 8 D6, Decision 11 in tasks/conforming-refinement.md): the visible
+//     layer is NOT invariant under a change of RANK COUNT. Midpoint gids come
+//     from an MPI_Exscan, so which gid a midpoint receives is a function of the
+//     partition -- "agreed across the ranks of one run" is not "the same value at
+//     a different rank count". The same red mesh can therefore close with a
+//     different blue diagonal at np5 than at np1 (measured: 4 of 20 blue parents,
+//     np1-4 all agreeing). Everything else IS rank-count invariant and is
+//     asserted as such by test_conforming_determinism case A: the red layer, the
+//     |S| histogram, the closure-vertex set, and V/E/F.
+//
+//     A GEOMETRIC rule would fix this and was implemented and measured -- take
+//     the shorter diagonal, which reduces exactly to "connect the midpoint of the
+//     longer split edge" since dQ0C - dAQ1 = (3/4)(|C-B|^2 - |B-A|^2). It cannot
+//     be done locally. The closure runs on the UN-CLOSED red layer, whose corners
+//     come from closure children's ClosureParentVerts, and a child may name a
+//     vertex gid its rank does not hold -- the documented risk point 4. Those
+//     positions are not reachable even with a 1-deep halo (they are parent
+//     corners, not neighbours), so a position-based tie-break aborts at np >= 2.
+//     Since every gid-valued quantity is exscan-derived and positions are
+//     unreachable, no purely local rule can be rank-count stable on the data the
+//     closure currently has. Making one work needs communication: the split
+//     edge's squared length carried in Phase 2's existing coordinator reply.
 //   * Face e[3] follows the existing convention e[k] = edge(v[k], v[(k+1)%3])
 //     and is re-derived with the rest of the edge table by the caller.
 //

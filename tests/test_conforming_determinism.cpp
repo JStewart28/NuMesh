@@ -34,11 +34,25 @@
 //      globally agreed within a run, so the closure never depends on which rank
 //      owns the face -- but they are gid-valued, and gids are rank-count
 //      dependent as above. The red layer, the |S| histogram, the closure-vertex
-//      set, and V/E/F are all provably rank-count independent; the VISIBLE
-//      layer is too only if the diagonal choice is. All of them are asserted,
-//      and the breakdown is printed component by component (plus a direct count
-//      of blue parents whose diagonal differs from the serial reference) so a
-//      failure names its own cause instead of just "the checksums differ".
+//      set, and V/E/F are all provably rank-count independent and are asserted
+//      to agree exactly.
+//
+//      The VISIBLE layer is NOT, and that is a recorded design limit rather than
+//      a bug: it is invariant only up to the blue diagonal. Measured, np1-4 all
+//      agree and np5 flips 4 of 20 blue parents. A geometric tie-break would fix
+//      it and was implemented and measured; it cannot be made local, because the
+//      closure runs on the un-closed red layer whose corners come from
+//      ClosureParentVerts and may name vertices the rank does not hold (risk
+//      point 4). See Decision 11 in tasks/conforming-refinement.md.
+//
+//      So what this case asserts about the visible layer is the sharper
+//      statement that it differs ONLY through blue diagonals -- a difference
+//      with no diagonal mismatch to explain it fails, and so does a diagonal
+//      mismatch that leaves the visible layer identical. Any divergence beyond
+//      the known one is still caught. The breakdown is printed component by
+//      component (plus a direct count of blue parents whose diagonal differs
+//      from the serial reference) so a failure names its own cause instead of
+//      just "the checksums differ".
 //
 //   B. CLOSURE IDEMPOTENCE. Re-refining an already-closed mesh with an EMPTY
 //      mask is un-close -> no red split -> re-close, which must be the identity
@@ -74,6 +88,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <type_traits>
 #include <unordered_map>
@@ -424,9 +439,26 @@ static int case_rank_count( int rank, int size, const char* tag )
     diagMismatch = globalSum( diagMismatch, MPI_COMM_WORLD );
     parentMissing = globalSum( parentMissing, MPI_COMM_WORLD );
 
-    if ( !okCounts || !okHist || !okRed || !okVis || !okCv )
+    // Everything that is provably a function of the global mesh alone must
+    // agree exactly. `parentMissing` belongs here: a blue parent the reference
+    // does not contain at all means the RED layer diverged, not the diagonal.
+    if ( !okCounts || !okHist || !okRed || !okCv || parentMissing != 0 )
         ++fails;
-    if ( diagMismatch != 0 || parentMissing != 0 )
+
+    // The VISIBLE layer is rank-count invariant only up to the blue diagonal
+    // tie-break, which compares midpoint gids and so reads an MPI_Exscan
+    // (Decision 11 in tasks/conforming-refinement.md -- a geometric rule was
+    // implemented and measured, and cannot be made local). The assertion is
+    // therefore not "the visible layers agree" but the sharper "they differ ONLY
+    // through blue diagonals", checked in both directions:
+    //   * a visible-layer difference with NO diagonal mismatch to explain it is a
+    //     real failure -- the closure diverged for some other reason;
+    //   * a diagonal mismatch that does NOT show up in the visible layer means
+    //     blueDiag is not measuring what the closure actually emitted.
+    // So any divergence beyond the known one still fails here.
+    if ( !okVis && diagMismatch == 0 )
+        ++fails;
+    if ( okVis && diagMismatch != 0 )
         ++fails;
     // Non-vacuity: an all-|S|=0 refinement would make every comparison above
     // trivially true.
@@ -443,8 +475,11 @@ static int case_rank_count( int rank, int size, const char* tag )
             tag, fails == 0 ? "ok" : "FAIL", size, dist.V, dist.E, dist.F,
             dist.hist[0], dist.hist[1], dist.hist[2], dist.hist[3],
             okCounts ? "ok" : "DIFF", okHist ? "ok" : "DIFF",
-            okRed ? "ok" : "DIFF", okVis ? "ok" : "DIFF", okCv ? "ok" : "DIFF",
-            dist.closureVerts.n, diagMismatch, parentMissing );
+            okRed ? "ok" : "DIFF", okVis ? "ok" : "DIFF-by-blue-diag",
+            okCv ? "ok" : "DIFF", dist.closureVerts.n, diagMismatch,
+            parentMissing );
+    if ( rank == 0 )
+        std::fflush( stdout );
     return fails;
 }
 
@@ -513,16 +548,29 @@ static int case_idempotence( int rank, int size, const char* tag )
                 mask[f] = ( v[f].gid % m == 0 ) ? 1 : 0;
             return mask;
         };
+        // refine() leaves an owned-only mesh, and its Phase 3a interpolates
+        // each midpoint it owns from both endpoint positions -- across a
+        // partition boundary one of those endpoints is a ghost the previous
+        // refine() dropped. So the halo must be rebuilt BETWEEN the two rounds
+        // (dest = identity, so nothing actually moves).
         refine( mesh, halo, gidOf( 7 ) );
+        {
+            std::vector<Rank> dest( mesh.numOwnedFaces(),
+                                    static_cast<Rank>( rank ) );
+            migrate( mesh, halo, dest );
+            haloExchange( mesh, halo );
+        }
         refine( mesh, halo, gidOf( 5 ) );
     }
 
-    auto snapshot =
-        [&]( Chk& vs, Chk& rs, long long& V, long long& E, long long& F )
+    auto snapshot = [&]( Chk& vs, Chk& rs, long long& V, long long& E,
+                         long long& F, std::map<EdgeKey, GlobalId>& se )
     {
         const std::vector<VisibleFace> vis = ownedVisible( mesh );
         vs = visibleSigNoGid( vis );
-        rs = redSigGid( unclose( vis ).red );
+        auto un = unclose( vis );
+        se = un.splitEdges;
+        rs = redSigGid( un.red );
         vs.reduce( comm );
         rs.reduce( comm );
         V = TesseraTest::globalOwnedVertices( mesh );
@@ -530,9 +578,28 @@ static int case_idempotence( int rank, int size, const char* tag )
         F = TesseraTest::globalOwnedFaces( mesh );
     };
 
+    // One named bit per condition, OR-ed across both passes and all ranks, so a
+    // failure reports its own cause instead of only a count.
+    enum
+    {
+        WHY_VIS = 1 << 0,   //!< visible layer (corners/level/parent) moved
+        WHY_RED = 1 << 1,   //!< red layer moved
+        WHY_VEF = 1 << 2,   //!< V/E/F counts moved
+        WHY_MIDS = 1 << 3,  //!< an empty mask reported midpoints
+        WHY_CONF = 1 << 4,  //!< checkConforming
+        WHY_BAL = 1 << 5,   //!< check21BalanceRed
+        WHY_INV = 1 << 6,   //!< checkClosureInverse
+        WHY_EULER = 1 << 7, //!< owned Euler characteristic != 2
+    };
+    int why = 0;
+    long long dn[2][2] = { { 0, 0 }, { 0, 0 } };
+    long long dV[2] = { 0, 0 }, dE[2] = { 0, 0 }, dF[2] = { 0, 0 };
+    long long nmid[2] = { 0, 0 };
+
     Chk vs0, rs0;
     long long V0, E0, F0;
-    snapshot( vs0, rs0, V0, E0, F0 );
+    std::map<EdgeKey, GlobalId> se0;
+    snapshot( vs0, rs0, V0, E0, F0, se0 );
     const long long closure0 =
         globalSum( TesseraTest::closureSiblingGroups( mesh ), comm );
     if ( closure0 <= 0 )
@@ -547,24 +614,56 @@ static int case_idempotence( int rank, int size, const char* tag )
 
         Chk vs1, rs1;
         long long V1, E1, F1;
-        snapshot( vs1, rs1, V1, E1, F1 );
+        std::map<EdgeKey, GlobalId> se1;
+        snapshot( vs1, rs1, V1, E1, F1, se1 );
 
-        if ( vs1 != vs0 || rs1 != rs0 )
-            ++fails;
+        // Name every condition separately: an aggregate ++fails cannot
+        // distinguish "the visible layer moved" from "Euler broke", and those
+        // have completely different causes.
+        if ( vs1 != vs0 )
+            why |= WHY_VIS;
+        if ( rs1 != rs0 )
+            why |= WHY_RED;
         if ( V1 != V0 || E1 != E0 || F1 != F0 )
-            ++fails;
-        if ( !res.midpoints.empty() )
-            ++fails; // an empty mask bisects nothing
+            why |= WHY_VEF;
+        // An empty mask bisects nothing NEW -- but in Conforming mode
+        // RefineResult::midpoints is deliberately the whole split-edge map of
+        // the red layer, persistent hanging nodes included (Task 8 D2), and
+        // checkClosureInverse above consumes exactly those entries. So the
+        // assertion is not "empty", it is "invented nothing": every reported
+        // midpoint must already have been a split edge of the mesh we started
+        // from, with the same midpoint gid, and none may be new.
+        {
+            std::map<EdgeKey, GlobalId> got( res.midpoints.begin(),
+                                             res.midpoints.end() );
+            if ( got.size() != res.midpoints.size() )
+                why |= WHY_MIDS; // must be unique by EdgeKey
+            if ( got != se0 )
+                why |= WHY_MIDS;
+        }
 
-        int local = TesseraTest::checkConforming( mesh );
-        local += TesseraTest::check21BalanceRed( mesh );
-        local += TesseraTest::checkClosureInverse( mesh, res.midpoints );
-        int g = 0;
-        MPI_Allreduce( &local, &g, 1, MPI_INT, MPI_SUM, comm );
-        if ( g != 0 )
-            ++fails;
+        if ( TesseraTest::checkConforming( mesh ) != 0 )
+            why |= WHY_CONF;
+        if ( TesseraTest::check21BalanceRed( mesh ) != 0 )
+            why |= WHY_BAL;
+        if ( TesseraTest::checkClosureInverse( mesh, res.midpoints ) != 0 )
+            why |= WHY_INV;
         if ( TesseraTest::checkOwnedEuler( mesh ) != 2 )
-            ++fails;
+            why |= WHY_EULER;
+
+        // The per-rank invariant bits must agree globally, or a rank-local
+        // failure would be invisible on rank 0's print.
+        int gwhy = 0;
+        MPI_Allreduce( &why, &gwhy, 1, MPI_INT, MPI_BOR, comm );
+        why = gwhy;
+
+        // Record what actually moved, for the print.
+        dn[pass][0] = vs1.n - vs0.n;
+        dn[pass][1] = rs1.n - rs0.n;
+        dV[pass] = V1 - V0;
+        dE[pass] = E1 - E0;
+        dF[pass] = F1 - F0;
+        nmid[pass] = static_cast<long long>( res.midpoints.size() );
 
         std::vector<Rank> dest( mesh.numOwnedFaces(),
                                 static_cast<Rank>( rank ) );
@@ -573,10 +672,42 @@ static int case_idempotence( int rank, int size, const char* tag )
     }
 
     (void)size;
+    if ( why != 0 )
+        ++fails;
+
     if ( rank == 0 )
+    {
+        char bits[128] = "";
+        if ( why & WHY_VIS )
+            std::strcat( bits, " vis" );
+        if ( why & WHY_RED )
+            std::strcat( bits, " red" );
+        if ( why & WHY_VEF )
+            std::strcat( bits, " vef" );
+        if ( why & WHY_MIDS )
+            std::strcat( bits, " mids" );
+        if ( why & WHY_CONF )
+            std::strcat( bits, " conforming" );
+        if ( why & WHY_BAL )
+            std::strcat( bits, " 2:1" );
+        if ( why & WHY_INV )
+            std::strcat( bits, " closureInverse" );
+        if ( why & WHY_EULER )
+            std::strcat( bits, " euler" );
+
         std::printf( "  [%s] closure-idempotence %s (V=%lld E=%lld F=%lld "
                      "siblingGroups=%lld)\n",
                      tag, fails == 0 ? "ok" : "FAIL", V0, E0, F0, closure0 );
+        if ( fails != 0 )
+            std::printf(
+                "      why=0x%02x:%s | pass0 dVis=%+lld dRed=%+lld "
+                "dV=%+lld dE=%+lld dF=%+lld mids=%lld"
+                " | pass1 dVis=%+lld dRed=%+lld dV=%+lld dE=%+lld dF=%+lld "
+                "mids=%lld\n",
+                why, bits, dn[0][0], dn[0][1], dV[0], dE[0], dF[0], nmid[0],
+                dn[1][0], dn[1][1], dV[1], dE[1], dF[1], nmid[1] );
+        std::fflush( stdout );
+    }
     return fails;
 }
 
@@ -664,10 +795,29 @@ static int case_cross_mode( int rank, int size, const char* tag )
             ++fails;
 
         if ( rank == 0 )
+        {
             std::printf( "  [%s] cross-mode round%d %s (V=%lld E=%lld F=%lld "
                          "closureChildren=%lld)\n",
                          tag, round + 1, fails == 0 ? "ok" : "FAIL", Vc, Ec, Fc,
                          closureChildren );
+            std::fflush( stdout );
+        }
+
+        // Rebuild both halos before the next round: refine() leaves an
+        // owned-only mesh and its Phase 3a needs both endpoint positions of
+        // every midpoint the rank owns, one of which can be a ghost the
+        // previous refine() dropped. Placed after the checks and the print so
+        // the signatures above measure exactly what refine() produced.
+        {
+            std::vector<Rank> dc( conf.numOwnedFaces(),
+                                  static_cast<Rank>( rank ) );
+            migrate( conf, confHalo, dc );
+            haloExchange( conf, confHalo );
+            std::vector<Rank> dh( hang.numOwnedFaces(),
+                                  static_cast<Rank>( rank ) );
+            migrate( hang, hangHalo, dh );
+            haloExchange( hang, hangHalo );
+        }
     }
 
     // With no kept faces the closure has nothing to do; if it emitted anything

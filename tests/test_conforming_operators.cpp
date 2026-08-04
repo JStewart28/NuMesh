@@ -308,16 +308,22 @@ static int case_operators( int rank, int size, const char* tag )
         auto faceOwner = facePartitionByAxis( mesh );
         distribute( mesh, halo, faceOwner );
     }
-    refine( mesh, halo, gidMask( mesh, 7 ) );
-    refine( mesh, halo, gidMask( mesh, 5 ) );
+    // refine() leaves an owned-only mesh; migrate rebuilds the 1-deep halo
+    // (dest = identity, so nothing moves). Needed BETWEEN the two rounds as
+    // well as after the second: refine()'s Phase 3a interpolates each midpoint
+    // it owns from both endpoint positions, and across a partition boundary one
+    // of those endpoints is a ghost the previous refine() dropped.
+    auto rehalo = [&]()
     {
-        // refine() leaves an owned-only mesh; migrate rebuilds the 1-deep halo
-        // that every operator below needs (dest = identity, so nothing moves).
         std::vector<Rank> dest( mesh.numOwnedFaces(),
                                 static_cast<Rank>( rank ) );
         migrate( mesh, halo, dest );
         haloExchange( mesh, halo );
-    }
+    };
+    refine( mesh, halo, gidMask( mesh, 7 ) );
+    rehalo();
+    refine( mesh, halo, gidMask( mesh, 5 ) );
+    rehalo();
 
     // The neighbourhood checks below are only meaningful on a mesh whose owned
     // 1-rings are complete and whose global topology is conforming.

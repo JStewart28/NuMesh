@@ -328,7 +328,20 @@ inside `detail::refineImpl()` under `if constexpr`.
    boundary half-edges is bisected this round, which is possible exactly when its
    parent's edge carried a **reused** midpoint; `closeFaces()` asserts that
    narrower form. The blue quad's diagonal is tie-broken on the **lower midpoint
-   gid**, which is globally agreed, so the closure is partition-independent.
+   gid**, which is globally agreed within a run, so the closure does not depend on
+   *which rank owns a face* — it is partition-independent at a fixed rank count.
+   It is **not** independent of the *rank count*: midpoint gids come from an
+   `MPI_Exscan`, so the same red mesh can close with a different blue diagonal
+   under a different partition size (measured: np1–4 agree, np5 flips 4 of 20 blue
+   parents). Everything else about the closure *is* rank-count invariant — the red
+   layer, the `|S|` histogram, the closure-vertex set and V/E/F — and
+   `conforming_determinism` asserts that the visible layer differs *only* through
+   blue diagonals. A geometric rule (equivalently: connect the midpoint of the
+   **longer split edge**) would remove the dependence but cannot be evaluated
+   locally, because the closure runs on the un-closed red layer whose corners may
+   name vertices the rank does not hold; it would need the split edge's length
+   carried in Phase 2's coordinator reply. See Decision 11 in
+   `tasks/conforming-refinement.md`.
 
 The closure creates **no vertices**, so no `MPI_Exscan`, no interpolation, and no
 `RefinePolicy` involvement. The one widened count is the *face*-gid allocation:
