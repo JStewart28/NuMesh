@@ -1748,6 +1748,49 @@ per-sub-task *What landed* sections.
   np1–5 × {SERIAL, HIP} × {`[Serial]`, `[Default]`} reduce to exactly **16 distinct
   lines** — every measured quantity, including all the new per-pattern ones, is
   byte-identical at every rank count on both backends — at 11–16 s per instance.
+- **2026-08-05 — Decision 14: `refine()` rebuilds the halo, and `rebuildHalo()`
+  canonicalises the local layout by gid.** Follow-up 1 of
+  [halo-rebuild-split-edge-design.md](halo-rebuild-split-edge-design.md). The general
+  non-replicated 1-deep halo rebuild was welded inside `migrate()`; the five round
+  letters hid a sixth (round G, gather referenced-but-non-held tuples), and only
+  rounds S and A are migration proper. Rounds G and B/C/D moved to
+  `Tessera_HaloRebuild.hpp` as two `detail::` helpers plus a public
+  `rebuildHalo( mesh, halo )`, which `refine()` now calls in place of clearing the
+  three plans. This retires the wart in Decision 13's second bullet — the one that
+  caused **six of Task 8's nine defects** and threw from *inside the next*
+  `refine()` rather than at the call the caller got wrong. Ten workaround sites
+  across eight tests were deleted; `refine_rehalo` (regression, SERIAL+HIP, ranks
+  1–5, confirmed with the user) is the acceptance test, and contains no `migrate()`
+  and no `rebuildHalo()` call by design.
+
+  **Two sub-decisions worth pinning:**
+
+  * **Round D's gid-sort is kept, not generalised** (option A of the design's open
+    question). `rebuildHalo()` reuses round D verbatim, so **local index order is a
+    pure function of the owned gid set**: a mesh's layout is reproducible regardless
+    of how it was reached, and the old "with vs without re-halo differ" ambiguity —
+    which is why `refine_conforming` round 3 at np1 reported `F=2372` with the
+    identity migrate and `F=2386` without — no longer exists, because there is one
+    behaviour. Since `rebuildHalo()` is exactly the identity `migrate()` minus round
+    A's all-to-all and round S's fixup, and round A with an identity `dest` is
+    content-preserving, every test that already used the workaround saw **byte-
+    identical** output. Measured: of the eight gid-masked/conforming tests probed at
+    np1 and np5, seven were byte-identical and one number moved —
+    `conforming_migrate`'s `loadBalance destFixups` 26 → 25, a Zoltan2 cut shifted by
+    the now-canonical owned-face ordering, with `F`, `maxFaces`, `maxWeight`, `ideal`
+    and `inv=0` all unchanged.
+  * **No `bool rebuild` escape hatch.** A single-shot `refine()` on a mesh nobody
+    will halo now pays for a halo it may not need, but every multi-round caller
+    already paid strictly more via the identity `migrate()` (which adds round A's
+    all-to-all on top), so real drivers get *faster*. Gate wall time: 814 s\*proc
+    before the change, measured after at the same node count. The parameter is not
+    added speculatively.
+
+  `MigrateStats` needed no threading — both its fields are populated by round S,
+  which stays in `migrate()`. The two shared rounds' profiling keys were renamed
+  `migrate_round_{g,b,c,d}_*` → `halo_round_*` since either caller can drive them.
+  Also deleted: `refineImpl()` step 3j, the deliberately incomplete best-effort
+  owned-vertex 1-ring CSR, which round D now rebuilds completely.
 - **2026-08-05 — Decision 13: `Conforming` stays the `Mesh` default.** Decision 3
   chose it, Decision 5 accepted that Task 7 would flip it *before* anything had ever
   been executed, and Task 8 held the escape hatch: revert to `HangingNode2to1` if
@@ -1772,6 +1815,8 @@ per-sub-task *What landed* sections.
     merely an inert `haloExchange()`. It accounted for **six** of Task 8's nine
     defects. It is a library-contract wart, not a conforming-mode defect, and is the
     strongest candidate for the next round of work — see the Milestone-2 note.
+    **RESOLVED 2026-08-05 by Decision 14** — `refine()` rebuilds the halo itself.
+    The README entry is gone; only the blue-diagonal limit above remains.
 - **2026-07-31 — Decision 4: transient red–green–blue closure**, not
   newest-vertex bisection and not red-only propagation. Red-only propagation
   degenerates to uniform refinement; bisection replaces the red engine wholesale

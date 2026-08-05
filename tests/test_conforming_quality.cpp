@@ -459,14 +459,9 @@ static int case_quality( int rank, int size, const char* tag )
 
         refine( mesh, halo, mask );
 
-        // refine() leaves an owned-only mesh; the quality measurement and the
-        // next round's geometric mask both need corner positions locally.
-        {
-            std::vector<Rank> dest( mesh.numOwnedFaces(),
-                                    static_cast<Rank>( rank ) );
-            migrate( mesh, halo, dest );
-            haloExchange( mesh, halo );
-        }
+        // Nothing in between: refine() rebuilds the 1-deep halo itself, so the
+        // quality measurement and the next round's geometric mask find corner
+        // positions locally. This used to need an identity migrate().
 
         const Quality q = measureQuality( mesh, fails );
         if ( q.faces <= 0 )

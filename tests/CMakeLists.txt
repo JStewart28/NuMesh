@@ -665,3 +665,32 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_markquality_conforming.cpp
 )
+
+# refine() rebuilds the halo itself, so the NAIVE sequence works (follow-up 1 of
+# tasks/halo-rebuild-split-edge-design.md). refine() used to drop every ghost and
+# CLEAR the three halo plans, so haloExchange() silently no-opped on an empty
+# plan and a second refine() threw std::out_of_range from inside Phase 3a's
+# endpoint lookup, on a non-zero rank -- the midpoint owner is the lowest
+# incident refining-face owner, which can hold one endpoint only as a ghost. The
+# workaround was an identity migrate(), an idiom that reads like a no-op and that
+# every multi-round driver had to know. This test therefore contains NO migrate()
+# and NO rebuildHalo() call: four refine() rounds back-to-back with nothing in
+# between, in both refinement modes, checking the ownership partition, the owned
+# 1-ring, conformity/Euler, the 2:1 balance and cross-rank midpoint agreement
+# after each. NON-VACUITY at ranks >= 2: the plans must be non-empty and a ghost
+# corrupt-resync must restore the owners' positions -- every structural check
+# above passes on the old EMPTY plan, so those two are what detect a regression.
+tessera_add_test(
+    NAME     refine_rehalo
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_refine_rehalo.cpp
+)
+tessera_add_test(
+    NAME     refine_rehalo
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_refine_rehalo.cpp
+)

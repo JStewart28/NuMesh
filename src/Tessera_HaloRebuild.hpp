@@ -129,16 +129,15 @@ struct EdgeInc
 //! Host-space tuple types of a mesh's three entity kinds. The gid-keyed maps that
 //! form the interface between the move half and the halo half hold these.
 template <class MeshT>
-using HostVertexTuple = typename Cabana::AoSoA<
-    typename MeshT::vertex_member_types, Kokkos::HostSpace>::tuple_type;
-template <class MeshT>
-using HostEdgeTuple =
-    typename Cabana::AoSoA<typename MeshT::edge_member_types,
+using HostVertexTuple =
+    typename Cabana::AoSoA<typename MeshT::vertex_member_types,
                            Kokkos::HostSpace>::tuple_type;
 template <class MeshT>
-using HostFaceTuple =
-    typename Cabana::AoSoA<typename MeshT::face_member_types,
-                           Kokkos::HostSpace>::tuple_type;
+using HostEdgeTuple = typename Cabana::AoSoA<typename MeshT::edge_member_types,
+                                             Kokkos::HostSpace>::tuple_type;
+template <class MeshT>
+using HostFaceTuple = typename Cabana::AoSoA<typename MeshT::face_member_types,
+                                             Kokkos::HostSpace>::tuple_type;
 
 //! ROUND G. Add to `heldV`/`heldE` every gid in `refVerts`/`refEdges` that is not
 //! already there, fetching the full tuple from its true owner via a gid
@@ -173,8 +172,8 @@ void gatherReferencedTuples( MPI_Comm comm, int self_rank, int comm_size,
     if ( globalNeed == 0 )
         return;
 
-    auto gather = [&]( auto& held, const std::set<GlobalId>& need,
-                       auto ownerOf )
+    auto gather =
+        [&]( auto& held, const std::set<GlobalId>& need, auto ownerOf )
     {
         using Held = typename std::decay<decltype( held )>::type;
         using Tup = typename Held::mapped_type;
@@ -212,10 +211,10 @@ void gatherReferencedTuples( MPI_Comm comm, int self_rank, int comm_size,
             held[r.gid] = fromBlob( r.blob );
     };
 
-    gather( heldV, needV,
-            []( const VTuple& t ) { return Cabana::get<VertexField::Owner>( t ); } );
-    gather( heldE, needE,
-            []( const ETuple& t ) { return Cabana::get<EdgeField::Owner>( t ); } );
+    gather( heldV, needV, []( const VTuple& t )
+            { return Cabana::get<VertexField::Owner>( t ); } );
+    gather( heldE, needE, []( const ETuple& t )
+            { return Cabana::get<EdgeField::Owner>( t ); } );
 }
 
 //! ROUNDS B, C, D. Given the tuples this rank now OWNS (`faceById`) and the
@@ -687,7 +686,7 @@ void rebuildHalo( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo )
             refE.push_back( f_edges( f, k ) );
         }
     detail::gatherReferencedTuples( mesh.comm(), mesh.rank(), mesh.commSize(),
-                                   refV, refE, heldV, heldE );
+                                    refV, refE, heldV, heldE );
 
     // The three gid-keyed maps rounds B/C/D consume. migrate() fills them from the
     // faces it RECEIVED; here nothing moved, so they come from the owned faces

@@ -68,14 +68,19 @@ haloExchange( mesh, halo );                         // refresh ghosts (whole fie
 
 refine( mesh, halo, face_refine_mask );             // 2:1-balanced red split, plus the
                                                      // conforming closure in the default
-                                                     // mode; clears `halo` as a side effect
+                                                     // mode; REBUILDS `halo` on the way
+                                                     // out, so it may be called again
+                                                     // immediately and haloExchange() is
+                                                     // meaningful straight afterwards
 
 loadBalance( mesh, halo );           // internal Zoltan2 rebalance + halo rebuild (optional)
 // or, external (e.g. Canopy-driven):
 //   auto c = ownedFaceCentroids( mesh );
 //   std::vector<Rank> dest = external_partition( c );
 //   migrate( mesh, halo, dest );   // also rebuilds the halo
-haloExchange( mesh, halo );                         // required again after refine/migrate
+haloExchange( mesh, halo );                         // re-sync the field pack (refine() and
+                                                     // migrate() leave ghost values already
+                                                     // equal to the owners')
 
 writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
 ```
@@ -115,7 +120,7 @@ every region at levels ≤ *n*):
 | Level | Adds | Example regions |
 |---|---|---|
 | 1 | Top-level phases | `build_icosphere`, `partition`, `distribute`, `halo_exchange`, `refine`, `migrate`, `load_balance`, `write_mesh`, `read_mesh`, `mark_*` |
-| 2 | Major sub-phases | `refine_2to1_balance`, `refine_local_rebuild`, `migrate_round_*`, `distribute_csr_rebuild`, `write_datasets`, `lb_zoltan2_solve` |
+| 2 | Major sub-phases | `refine_2to1_balance`, `refine_local_rebuild`, `migrate_round_*`, `halo_round_*`, `distribute_csr_rebuild`, `write_datasets`, `lb_zoltan2_solve` |
 | 3 | Comm rounds / device kernels | `refine_advertise_alltoallv`, `mark_edge_length_kernel`, `write_hyperslabs`, `read_hyperslabs` |
 
 **Reporting is caller-driven — Tessera has no timestep loop.** The library owns the
@@ -288,40 +293,11 @@ make -j $(nproc)
 
 ## Known Issues
 
-- **A distributed mesh must be re-haloed after `refine()` before `haloExchange()`.**
-  Distributed `refine()` (Step 6b) leaves each rank holding only its refined *owned*
-  entities and clears the halo. The general (non-replicated) halo rebuild now exists
-  (Step 7, inside `migrate()`), but it is currently coupled to `migrate()` and is not
-  yet invoked automatically at the end of `refine()`; calling `haloExchange()` on a
-  freshly-refined-but-not-migrated mesh is a no-op on an empty plan, not a synced
-  ghost layer. Factoring the rebuild into a standalone `rebuildHalo()` that `refine()`
-  also calls is a tracked follow-up.
-
-  **Calling `refine()` a second time without re-haloing in between throws** at
-  ranks >= 2 — `std::out_of_range: unordered_map::at`, from the vertex-gid ->
-  local-index lookup in Phase 3a. `refine()` needs the *positions* of both
-  endpoints of every midpoint the rank owns in order to interpolate it, and
-  across a partition boundary such an endpoint is a ghost that the previous
-  `refine()` dropped. Until the standalone `rebuildHalo()` lands, a multi-round
-  driver must re-halo between rounds; the idiom is an identity `migrate()`
-  (`dest[f] == rank`) followed by `haloExchange()`:
-
-  ```cpp
-  refine( mesh, halo, mask );
-  std::vector<Tessera::Rank> dest( mesh.numOwnedFaces(),
-                                   static_cast<Tessera::Rank>( rank ) );
-  migrate( mesh, halo, dest );        // Step-7 halo rebuild rides along
-  haloExchange( mesh, halo );
-  ```
-
-  Note this permutes the local face ordering, and hence which gid each of the
-  next round's children is assigned, so a *gid-derived* refinement mask selects a
-  different (equally valid) face set than it would without the re-halo.
 - **Conforming refinement is the `Mesh` default.** *(Not a defect — recorded here
   because it changes what a default-spelled `Mesh` does.)* The whole
   `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
   `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented,
-  registered across the suite, and **verified**: the ship gate is 140/140 and the
+  registered across the suite, and **verified**: the ship gate is 150/150 and the
   diagnostic tier 62/62 on SERIAL and HIP at **ranks 1–5**, over multiple successive
   adaptive rounds, and the shape-quality bounds are measured rather than assumed (the
   worst radius ratio saturates by round 11 and is flat through round 16 while the mesh
@@ -330,8 +306,8 @@ make -j $(nproc)
   must spell `RefinementMode::HangingNode2to1` explicitly, which every pre-existing
   test in the gate now does. Under `HangingNode2to1` a partial refine mask leaves
   T-junctions bounded to a 2:1 level jump, so the owned-only Euler number equals 2
-  only for a uniform refine; that is the *contract* of the mode, not a defect. The two
-  genuine limits of conforming mode are the entries above and below this one. Design:
+  only for a uniform refine; that is the *contract* of the mode, not a defect. The one
+  remaining genuine limit of conforming mode is the entry below this one. Design:
   [tasks/conforming-refinement.md](tasks/conforming-refinement.md) and
   `docs/design.md` → *Adaptive refinement*; verification evidence:
   [tasks/conforming-refinement-debug.md](tasks/conforming-refinement-debug.md).

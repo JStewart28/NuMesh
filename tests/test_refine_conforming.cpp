@@ -282,25 +282,10 @@ int case_adaptive( int rank, int size, const char* tag )
         }
 
         // refine() drops every ghost and clears the halo plans, but its own
-        // Phase 3a needs the positions of BOTH endpoints of every midpoint the
-        // rank owns -- and across a partition boundary one of those endpoints
-        // is a ghost. So a second refine() with no rebuild in between throws at
-        // np >= 2. Re-halo with the documented identity-migrate idiom (Step 7
-        // couples the general halo rebuild to migrate()); dest == self, so
-        // ownership is unchanged. Placed AFTER every check and the print, so
-        // the invariants above still measure exactly what refine() produced.
-        {
-            std::vector<Rank> dest( mesh.numOwnedFaces(),
-                                    static_cast<Rank>( rank ) );
-            migrate( mesh, halo, dest );
-            haloExchange( mesh, halo );
-        }
-        {
-            std::vector<Rank> dest( ctrl.numOwnedFaces(),
-                                    static_cast<Rank>( rank ) );
-            migrate( ctrl, ctrlHalo, dest );
-            haloExchange( ctrl, ctrlHalo );
-        }
+        // Nothing between rounds: refine() rebuilds the 1-deep halo itself, so
+        // its Phase 3a finds the positions of BOTH endpoints of every midpoint
+        // the rank owns even when one is a ghost across a partition boundary.
+        // This used to need an identity migrate() on each mesh here.
     }
 
     if ( totalClosure <= 0 )

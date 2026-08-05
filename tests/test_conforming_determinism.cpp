@@ -297,12 +297,9 @@ static GeoSig refineAndMeasure( MPI_Comm comm, int& fails )
         for ( int i = 0; i < 4; ++i )
             sig.hist[i] += res.closure.patternCount[i];
 
-        // refine() leaves an owned-only mesh; the next round's geometric mask
-        // and the measurement below both need corner positions locally.
-        std::vector<Rank> dest( mesh.numOwnedFaces(),
-                                static_cast<Rank>( rank ) );
-        migrate( mesh, halo, dest );
-        haloExchange( mesh, halo );
+        // Nothing in between: refine() rebuilds the 1-deep halo itself, so the
+        // next round's geometric mask and the measurement below find corner
+        // positions locally. This used to need an identity migrate().
     }
 
     long long h[4] = { sig.hist[0], sig.hist[1], sig.hist[2], sig.hist[3] };
@@ -548,18 +545,12 @@ static int case_idempotence( int rank, int size, const char* tag )
                 mask[f] = ( v[f].gid % m == 0 ) ? 1 : 0;
             return mask;
         };
-        // refine() leaves an owned-only mesh, and its Phase 3a interpolates
-        // each midpoint it owns from both endpoint positions -- across a
-        // partition boundary one of those endpoints is a ghost the previous
-        // refine() dropped. So the halo must be rebuilt BETWEEN the two rounds
-        // (dest = identity, so nothing actually moves).
+        // Two rounds back-to-back with nothing in between. refine() rebuilds the
+        // 1-deep halo itself, so its Phase 3a -- which interpolates each
+        // midpoint it owns from both endpoint positions, one of which is a ghost
+        // across a partition boundary -- finds both. This used to need an
+        // identity migrate() between the rounds.
         refine( mesh, halo, gidOf( 7 ) );
-        {
-            std::vector<Rank> dest( mesh.numOwnedFaces(),
-                                    static_cast<Rank>( rank ) );
-            migrate( mesh, halo, dest );
-            haloExchange( mesh, halo );
-        }
         refine( mesh, halo, gidOf( 5 ) );
     }
 
@@ -664,11 +655,8 @@ static int case_idempotence( int rank, int size, const char* tag )
         dE[pass] = E1 - E0;
         dF[pass] = F1 - F0;
         nmid[pass] = static_cast<long long>( res.midpoints.size() );
-
-        std::vector<Rank> dest( mesh.numOwnedFaces(),
-                                static_cast<Rank>( rank ) );
-        migrate( mesh, halo, dest );
-        haloExchange( mesh, halo );
+        // Nothing between passes: refine() rebuilds the 1-deep halo itself. This
+        // used to need an identity migrate() + haloExchange().
     }
 
     (void)size;
@@ -803,21 +791,10 @@ static int case_cross_mode( int rank, int size, const char* tag )
             std::fflush( stdout );
         }
 
-        // Rebuild both halos before the next round: refine() leaves an
-        // owned-only mesh and its Phase 3a needs both endpoint positions of
-        // every midpoint the rank owns, one of which can be a ghost the
-        // previous refine() dropped. Placed after the checks and the print so
-        // the signatures above measure exactly what refine() produced.
-        {
-            std::vector<Rank> dc( conf.numOwnedFaces(),
-                                  static_cast<Rank>( rank ) );
-            migrate( conf, confHalo, dc );
-            haloExchange( conf, confHalo );
-            std::vector<Rank> dh( hang.numOwnedFaces(),
-                                  static_cast<Rank>( rank ) );
-            migrate( hang, hangHalo, dh );
-            haloExchange( hang, hangHalo );
-        }
+        // Nothing between rounds on either mesh: refine() rebuilds the 1-deep
+        // halo itself, so its Phase 3a finds both endpoint positions of every
+        // midpoint the rank owns. This used to be an identity migrate() +
+        // haloExchange() on each of the two meshes.
     }
 
     // With no kept faces the closure has nothing to do; if it emitted anything

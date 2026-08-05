@@ -350,9 +350,9 @@ MigrateStats migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     // Round A — move owned faces + their vertices/edges to destinations.
     // ======================================================================
     // Owned faces (unique) and candidate vertices/edges (deduped by gid).
-    std::map<GlobalId, FTuple> faceById;     // this rank's new owned faces
-    std::map<GlobalId, VTuple> vById;        // vertices referenced locally
-    std::map<GlobalId, ETuple> eById;        // edges referenced locally
+    std::map<GlobalId, FTuple> faceById; // this rank's new owned faces
+    std::map<GlobalId, VTuple> vById;    // vertices referenced locally
+    std::map<GlobalId, ETuple> eById;    // edges referenced locally
     {
         TESSERA_SCOPED_TIMER_DETAILED(
             ::Tessera::Profiling::TIMER_MIGRATE_MOVE );

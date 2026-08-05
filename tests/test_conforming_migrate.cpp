@@ -195,18 +195,11 @@ void refinedConformingMesh( MeshT& mesh, MeshHalo<Mem>& halo )
         auto faceOwner = facePartitionByAxis( mesh );
         distribute( mesh, halo, faceOwner );
     }
+    // Two rounds back-to-back with nothing in between: refine() rebuilds the
+    // 1-deep halo itself, so its Phase 3a finds both endpoint positions of every
+    // midpoint the rank owns even when one is a ghost across a partition
+    // boundary. This used to need an identity migrate() between the rounds.
     refine( mesh, halo, gidMask( mesh, 7 ) );
-    // refine() drops every ghost and clears the halo plans, but its own Phase 3a
-    // needs the POSITIONS of both endpoints of every midpoint the rank owns --
-    // and across a partition boundary one of those endpoints is a ghost. So a
-    // second refine() with no rebuild in between throws at size > 1 (README
-    // Known Issues). An identity migrate carries the Step-7 halo rebuild along.
-    {
-        std::vector<Rank> dest( mesh.numOwnedFaces(),
-                                static_cast<Rank>( mesh.rank() ) );
-        migrate( mesh, halo, dest );
-        haloExchange( mesh, halo );
-    }
     refine( mesh, halo, gidMask( mesh, 5 ) );
 }
 

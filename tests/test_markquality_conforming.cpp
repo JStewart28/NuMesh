@@ -260,11 +260,9 @@ static Figures driveCriterion( MeshT& mesh,
                 ++fails;
         }
 
-        std::vector<Rank> dest( mesh.numOwnedFaces(),
-                                static_cast<Rank>( rank ) );
-        migrate( mesh, halo, dest );
-        haloExchange( mesh, halo );
-
+        // refine() rebuilds the 1-deep halo itself, so the 1-ring and ownership
+        // checks below need nothing done in between. This used to be an identity
+        // migrate() + haloExchange().
         if ( conforming )
         {
             int l = TesseraTest::checkSiblingCoresidency( mesh );

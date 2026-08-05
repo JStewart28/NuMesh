@@ -15,6 +15,7 @@
 #include "Tessera_AllToAllV.hpp"
 #include "Tessera_Distribute.hpp"
 #include "Tessera_Fields.hpp"
+#include "Tessera_HaloRebuild.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_Profiling.hpp"
 #include "Tessera_Refine.hpp"
@@ -72,13 +73,17 @@ namespace Tessera
 //      face owner, so owned counts remain a global partition (for Euler).
 //
 // Local topology is then rebuilt exactly as the serial engine (Tessera_Refine),
-// reusing the interpolation policy. Because the halo rebuild for a distributed
-// (non-replicated) mesh is shared with migration, it is deferred to Step 7: this
-// routine leaves each rank holding only its refined OWNED entities (owned counts
-// == local counts) and CLEARS the passed halo. A haloExchange() must not be
-// called until the halo is rebuilt (Step 7). The acceptance invariants (midpoint
-// agreement, 2:1 balance, owned-only Euler) are all owned-entity properties and
-// need no halo.
+// reusing the interpolation policy. Phases 1-3 produce an OWNED-ONLY mesh — every
+// cross-rank decision went through a coordinator, so no ghost was needed, and the
+// acceptance invariants (midpoint agreement, 2:1 balance, owned-only Euler) are
+// all owned-entity properties. refine() then finishes with rebuildHalo()
+// (Tessera_HaloRebuild.hpp), the general non-replicated 1-deep halo rebuild it
+// shares with migrate(), so on return:
+//   * the passed halo's three plans are VALID, not cleared — a haloExchange() is
+//     meaningful (and a re-sync, since ghost values already equal the owners');
+//   * refine() may be called again immediately, with nothing in between;
+//   * local ordering is canonical — owned first then ghost, each kind ascending
+//     by gid — which a caller can observe through a gid-derived face mask.
 //
 // Preconditions: `mesh` is distributed (post-distribute), owned-first, entities
 // carry global gids, and is 2:1-balanced on entry (true initially — uniform
@@ -1036,13 +1041,22 @@ RefineResult refineImpl( MeshT& mesh,
         }
     }
 
-    // INVALIDATION: the 1-deep halo is now stale (topology changed, ghosts
-    // dropped), as is every slice/CSR/key-View a caller took out before this
-    // refine() call. Clear the halo plans; Step 7 provides the general
-    // (non-replicated) halo rebuild. Callers must re-slice from the mesh.
-    halo.vplan.clear();
-    halo.eplan.clear();
-    halo.fplan.clear();
+    // Rebuild the 1-deep ghost layer and the three halo plans over the refined
+    // owned entities. Phases 1-3 above deliberately produce an OWNED-ONLY mesh —
+    // every cross-rank decision went through a coordinator, so no ghost was
+    // needed — but leaving it that way made the library easy to misuse: a
+    // haloExchange() would silently no-op on an empty plan, and a second
+    // refine() would throw from Phase 3a, which needs the POSITIONS of both
+    // endpoints of every midpoint this rank owns and across a partition boundary
+    // holds one of them only as a ghost. rebuildHalo() moves nothing; it
+    // discovers ownership and the ghost layer by communication (rounds G/B/C/D,
+    // shared with migrate()) and leaves ghost values equal to the owners' values.
+    //
+    // INVALIDATION: this reallocates the AoSoAs, key Views and CSRs and replaces
+    // the halo plans, as does everything above it, so every slice/CSR/key-View a
+    // caller took out before this refine() call is dangling. Re-slice from the
+    // mesh.
+    rebuildHalo( mesh, halo );
 
     return result;
 }

@@ -403,19 +403,11 @@ int run( int rank, int size, const char* tag )
                 std::fflush( stdout );
             }
 
-            // Re-halo before the next round. refine() drops every ghost and
-            // clears the halo plans (README Known Issues), but its own Phase 3a
-            // reads the POSITIONS of both endpoints of every midpoint this rank
-            // owns — and across a partition boundary such an endpoint is a
-            // ghost. Refining twice without rebuilding in between therefore
-            // throws from the endpoint lookup at np >= 2. The identity migrate
-            // is the documented rebuild idiom (Step 7 couples the general halo
-            // rebuild to migrate()); dest == self, so ownership, the owned-face
-            // snapshot taken next round, and the reference sets are unchanged.
-            std::vector<Rank> dest( mesh.numOwnedFaces(),
-                                    static_cast<Rank>( rank ) );
-            migrate( mesh, halo, dest );
-            haloExchange( mesh, halo );
+            // Nothing between rounds: refine() rebuilds the 1-deep halo itself
+            // (rebuildHalo()), so its own Phase 3a finds the POSITIONS of both
+            // endpoints of every midpoint this rank owns even when one of them
+            // is a ghost across a partition boundary. This used to need an
+            // identity migrate() here; refine_rehalo is the test for that.
         }
     }
 

@@ -284,9 +284,18 @@ the conforming closure needs to retriangulate a kept face. The extra traffic is
 bounded by three messages per *kept* owned face on the first Phase-2 round only
 (plus, in `Conforming` mode, one more per already-bisected edge, which is
 advertised as its two halves — see the closure section); no new communication
-rounds were added. The refined mesh is left holding each rank's owned entities; the 1-deep
-halo is **rebuilt in Step 7** (shared with migration), so `haloExchange()` must not
-run on a freshly-refined mesh until then.
+rounds were added.
+
+Phases 1-3 leave each rank holding only its owned entities — every cross-rank
+decision went through a coordinator, so no ghost was needed — and `refine()` then
+finishes by calling **`rebuildHalo()`** (`Tessera_HaloRebuild.hpp`), the general
+non-replicated 1-deep halo rebuild it shares with `migrate()`. So on return the
+passed halo's three plans are valid: `haloExchange()` is meaningful (and a re-sync,
+since round C/D fetch ghost values from their owners), and `refine()` may be called
+again immediately with nothing in between. `rebuildHalo()` also canonicalises the
+local layout — owned first then ghost, each kind ascending by gid — so local index
+order is a pure function of the owned gid set, which a caller can observe through a
+gid-derived face mask.
 
 ### The closure layer (`Conforming` mode only)
 
@@ -370,8 +379,10 @@ angle; that difference is the whole reason the closure is transient.
 Consequences worth knowing:
 
 - Live face gids are **sparse**, and a closure child may name a vertex gid the
-  rank does not hold until the halo is rebuilt — the same post-refine gotcha
-  noted below, just with one more source.
+  rank does not hold at the point the closure runs — its midpoint corner is owned
+  by the refining neighbour. That is why the halo rebuild's round G (recover
+  referenced-but-non-held tuples) is not optional; by the time `refine()` returns,
+  every vertex an owned face references is held locally with its position.
 - The 2:1 balance is a property of the **red** layer; check it after un-closing.
 - Face **user** fields on closure faces are the parent's, copied. If a solver
   writes per-closure-face state, un-close keeps the lowest-gid child's values and
@@ -465,16 +476,18 @@ A face flagged by more than one criterion is refined once; combining criteria (e
 edge-length OR curvature) is a caller-side element-wise OR of their masks — no
 combinator is shipped.
 
-**Gotcha for anyone computing mesh geometry right after `refine()`:** `refine()`
-clears the halo and leaves only owned-first entities (the 1-deep halo is rebuilt in
-Step 7's `migrate()`), so an owned edge's endpoint can be a vertex this rank neither
-owns nor holds any copy of — in particular a new midpoint's owner and an edge
-incident to it can differ (midpoint owner = min incident *refining-face* owner;
-edge owner = min incident *child-face* owner), and `refine()` only ever ships a
-midpoint's **gid** to its co-sharers, never its position. A purely local (or
-before/after-snapshotted) vertex map is therefore not sufficient in general; code
-that needs positions immediately post-refine must gather any missing ones from
-their true owner via a gid coordinator (`gid % size`), the same idiom
+**Note for anyone computing mesh geometry right after `refine()`:** this used to be
+a gotcha and is no longer one. `refine()` finishes with `rebuildHalo()`, whose round
+G guarantees that every vertex an owned face references is held locally **with its
+position** — so a purely local vertex map is sufficient. Before that, `refine()`
+cleared the halo and left only owned entities, and an owned edge's endpoint could be
+a vertex the rank neither owned nor held any copy of, because a new midpoint's owner
+and an edge incident to it can differ (midpoint owner = min incident *refining-face*
+owner; edge owner = min incident *child-face* owner) and `refine()` only ever ships a
+midpoint's **gid** to its co-sharers, never its position. Code that must gather a
+position it does not hold — `ownedFaceCentroids()` on a mesh whose owned set was
+changed by something else — does so from the true owner via a gid coordinator
+(`gid % size`), the same idiom
 `MeshInvariants.hpp`'s `check21Balance`/`checkMidpointAgreement` use for cross-rank
 edge decisions, applied to position data instead of level/gid (see
 `tests/test_markquality_edge.cpp`'s `maxOwnedEdgeLength()` for a worked example).
@@ -495,8 +508,16 @@ The public contract is **migration**, not partitioning:
   `migrate()` assumes **no replicated knowledge** — every rank holds only its own
   entities, so ownership and the ghost set are discovered by communication (whole
   Cabana tuples travel over `allToAllV`; ownership and ghost-face discovery route
-  through per-gid vertex/edge coordinators). This is the **general (non-replicated)
-  ghost builder** that distributed `refine()` (Step 6b) deferred.
+  through per-gid vertex/edge coordinators).
+- `Tessera::rebuildHalo(mesh, halo)` (`Tessera_HaloRebuild.hpp`) is the **general
+  (non-replicated) ghost builder** on its own, with no move: rounds G (recover
+  referenced-but-non-held vertex/edge tuples), B (ownership + ghost discovery via
+  coordinators), C (ghost fetch from face owners) and D (owned-first assembly, CSRs,
+  key tables, the three plans). `migrate()` is rounds S and A plus this; `refine()`
+  calls it directly. The entire interface between the move half and the halo half is
+  the three gid-keyed maps `faceById` / `vById` / `eById`. Callers normally never
+  need it — it is public for the case where a mesh's owned set was changed by
+  something other than `refine()`/`migrate()`.
 - `Tessera::loadBalance(mesh, halo, imbalanceTolerance=0.05)` is a thin convenience
   wrapper (**Step 7b**): `Tessera::computeLoadBalance(mesh, imbalanceTolerance)`
   gathers every rank's owned-face centroids/weights/gids to rank 0 (the mesh is
