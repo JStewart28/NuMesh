@@ -614,27 +614,32 @@ tessera_add_test(
 
 # Triangle SHAPE QUALITY over refinement depth (Task 7 of
 # tasks/conforming-refinement.md): the guarantee that justifies making the
-# closure transient. Eight adaptive rounds over a shrinking geodesic cap,
-# tracking global min angle, max radius ratio, and closure-face fraction per
-# round, each asserted against a FIXED bound -- fixed being the point, since a
-# persistent closure would degrade without bound.
+# closure transient. SIXTEEN adaptive rounds over a shrinking geodesic cap,
+# tracking global min angle, max radius ratio and closure-face fraction per
+# round -- plus each of the four closure patterns separately and the red layer
+# that feeds them -- each asserted against a FIXED bound, and the worst radius
+# ratio additionally required to have STOPPED GROWING over the final rounds.
+# Fixed is the point: a persistent closure would degrade without bound.
 #
-# TIER unit, DELIBERATELY NOT IN THE GATE: its bounds are provisional, derived
-# from the pattern geometry rather than from measurement, because no test in
-# Tasks 1-7 has been executed. Task 8 calibrates them against the printed
-# per-round data and promotes this to `regression` at ranks 1-5 only if it
-# proves stable. Never promote a failing test to the gate.
+# TIER regression, ranks 1-5, both backends (promoted in Task 8 sub-task D7 with
+# explicit user confirmation, per CLAUDE.md). The bounds were provisional until
+# D7 measured them at 16 rounds; the round count is 16 because 8 rounds could
+# not distinguish a saturating radius ratio from a growing one. Stability
+# evidence for the promotion: 320 printed round lines over np1-5 x {SERIAL, HIP}
+# x {Serial, Default} reduce to exactly 16 distinct lines, i.e. every measured
+# quantity is byte-identical at every rank count on both backends; 11-16 s per
+# instance.
 tessera_add_test(
     NAME     conforming_quality
     BACKEND  SERIAL
-    TIER     unit
+    TIER     regression
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_conforming_quality.cpp
 )
 tessera_add_test(
     NAME     conforming_quality
     BACKEND  HIP
-    TIER     unit
+    TIER     regression
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_conforming_quality.cpp
 )

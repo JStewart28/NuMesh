@@ -1211,7 +1211,10 @@ stencil/reduction operators.
      rounds. Valid across *modes* (they share the red engine and its exscans) even
      though it is not valid across rank counts.
 
-3. **`conforming_quality`** — **`unit`**, SERIAL + HIP, ranks 1–5.
+3. **`conforming_quality`** — registered **`unit`** by Task 7; **promoted to
+   `regression`** (SERIAL + HIP, ranks 1–5) by Task 8 sub-task D7 once its bounds
+   were measured, and extended from 8 rounds to **16**. See Decision 12 for the
+   measured bounds that replaced the provisional ones below.
    `tests/test_conforming_quality.cpp`. Eight adaptive rounds over a shrinking
    geodesic cap (half-angle `0.35 × 0.6^k`, chosen so the marked set neither dies out
    nor engulfs the sphere as the faces halve), tracking per round the global minimum
@@ -1232,7 +1235,9 @@ stencil/reduction operators.
    below those. The registered bounds — **min angle ≥ 20°, `Q` ≤ 4.0, closure
    fraction ≤ 0.50** — allow roughly a further third of shape loss for that
    distortion. They are *derived, not measured*: this is why the test is `unit` and
-   not in the gate.
+   not in the gate. **Superseded by Decision 12** — D7 measured them; the
+   derivation above proved sound in direction (blue is the worst family, the green
+   worst is below its ideal-parent value) but loose by ~1.6× on `Q`.
 
 4. **`staleslice_guard` extension** (landed in the existing SERIAL-only np1 test).
    The conforming refine path un-closes and re-closes, so it reallocates the face
@@ -1441,6 +1446,10 @@ plausible defect):
   data, then promote it to `regression` at ranks 1–5 *only if* it is stable across
   repeated runs. If the measured quality is genuinely unbounded with round count, that
   is a **design** finding, not a tolerance to loosen — stop, record it, and report it.
+  **DONE (D7) — Decision 12.** The bound is fixed: `maxQ` saturates at 2.5254 by
+  round 11 and is flat through round 16. Bounds recalibrated, the round count raised
+  to 16, saturation and the red layer's own shape now asserted, and the test promoted
+  to `regression` × {SERIAL, HIP} × ranks 1–5.
 - **Escape hatch on the default flip.** Task 7 flipped the `Mesh` default to
   `Conforming` before anything had been executed. If conforming cannot be made green
   in this task, revert the default to `HangingNode2to1` (keeping conforming opt-in and
@@ -1475,7 +1484,9 @@ hanging-node behaviour from the second round on); and `refine_conforming` aborts
 at np2 with `std::out_of_range: unordered_map::at`. Nine registrations
 (`conforming_migrate`, `loadbalance`, `io`, `markquality_edge`,
 `markquality_curv`, `conforming_operators`, `conforming_determinism`,
-`conforming_quality`, `markquality_conforming`) have not yet been executed.
+`conforming_quality`, `markquality_conforming`) had not yet been executed at that
+point; **all nine have since run and pass** at ranks 1–5 on both backends (D3–D6),
+so the suite has 28 of 28 registrations passing.
 
 **Report back.** The full failure list as first observed and the root cause of each;
 which of the ten risk points above actually fired; the new regression/unit totals;
@@ -1492,7 +1503,7 @@ so collect them from the run output rather than re-running:
 | Task 4 | Closure-face fraction vs mask fraction, and the `|S|`-pattern histogram, per rank count |
 | Task 5 | How many `dest` entries the sibling-cohesion fixup moved (both the adversarial `dest` and Zoltan2's); pre/post `loadBalance` max face count and max weighted load vs ideal |
 | Task 6 | Actual on-disk size delta for a conforming vs hanging-node file |
-| Task 7 | `conforming_operators`: closure-vertex count per rank count (non-vacuity), closed-fan and 1-ring mismatch counts split closure/interior, closure-vertex vs interior-vertex `applyStencil` max error, the same split for the accumulated-area error, and the vertex-area vs face-area totals. `conforming_determinism`: the per-component agreement breakdown (counts / `\|S\|` histogram / red layer / visible layer / closure vertices) against the `MPI_COMM_SELF` reference at each rank count, plus `blueDiagMismatch` and `parentMissing` — the numbers risk point 10 turns on. `conforming_quality`: per-round marked count, F, min angle, max radius ratio, closure count and fraction over 8 rounds, and the worst-of-all-rounds figures against the provisional bounds |
+| Task 7 | `conforming_operators`: closure-vertex count per rank count (non-vacuity), closed-fan and 1-ring mismatch counts split closure/interior, closure-vertex vs interior-vertex `applyStencil` max error, the same split for the accumulated-area error, and the vertex-area vs face-area totals. `conforming_determinism`: the per-component agreement breakdown (counts / `\|S\|` histogram / red layer / visible layer / closure vertices) against the `MPI_COMM_SELF` reference at each rank count, plus `blueDiagMismatch` and `parentMissing` — the numbers risk point 10 turns on. `conforming_quality`: per-round marked count, F, min angle, max radius ratio, closure count and fraction over 16 rounds, split by closure pattern `\|S\|` and against the red layer that feeds them, plus the worst-of-all-rounds figures against the bounds — **collected by D7, tabulated in Decision 12** |
 
 ---
 
@@ -1606,6 +1617,52 @@ so collect them from the run output rather than re-running:
   does a diagonal mismatch that leaves the visible layer identical. Every quantity
   that is provably a function of the global mesh still has to agree exactly. Found
   and settled by Task 8 D6.
+- **2026-08-05 — Decision 12: the shape bound is fixed in the round count, measured
+  at 16 rounds, and `conforming_quality` is promoted into the gate.** This settles
+  the last open question of Task 8. Task 7's bounds (min angle ≥ 20°, `Q` ≤ 4.0,
+  closure fraction ≤ 0.50) were derived from the ideal-parent patterns; D4's 8-round
+  run held them all but left `maxQ` *stepping upward at the last round measured*
+  (1.5672 → 1.7759 → 2.2344), which 8 rounds cannot distinguish from unbounded
+  growth. The round count is therefore now **16**, and the answer is that the bound
+  is fixed:
+
+  | quantity | measured over 16 rounds |
+  |---|---|
+  | `\|S\|=0` (red — the closure's **input**) | `Q` 1.0278, min angle 54.397° — identical in **every** round |
+  | `\|S\|=1` (green) | `Q` 1.5672 from round 1, never moves |
+  | `\|S\|=2` (blue) | 1.7759 (r6) → 2.2344 (r8) → 2.5254 (r11), then **flat through r16** |
+  | `\|S\|=3` (red-closure) | never realised on this workload |
+  | min angle (all faces) | 25.987° from round 2 on, flat |
+  | closure fraction | peaks 0.1864 at r6, declines to 0.0623 at r16 |
+  | amplification `Q(child)/Q(parent)` | 2.4906, flat from r11 |
+
+  Blue is the only family that moves, and it moves in **discrete steps separated by
+  flat rounds, then saturates** — rounds 11–16 are identical while F grows 4348 →
+  24608 and the marked set 384 → 2388. That is a maximum over a finite set being
+  progressively discovered (red similarity class × which edges are split × which
+  diagonal), not a drift with depth. The derivation in Task 7 was right in
+  *direction* — blue is the worst family, green sits below its ideal-parent value —
+  and loose by ~1.6× on `Q`.
+
+  Calibrated bounds, each the measured worst plus ~10%: **min angle ≥ 24.0°,
+  `Q` ≤ 2.8, closure fraction ≤ 0.25, amplification ≤ 2.8**, plus two new
+  assertions that make the *claim* checkable rather than merely printed:
+
+  * **The red layer is bounded separately** (`Q` ≤ 1.10, min angle ≥ 50°). The red
+    layer is the closure's input and is round-independent by construction; bounding
+    it apart from the aggregate is what distinguishes "the closure degrades shape"
+    from "the red engine does", which a single aggregate number cannot.
+  * **Saturation.** The worst `Q` over the final 4 rounds may not exceed the worst
+    over the preceding rounds. This is the assertion 8 rounds could not support and
+    is the reason the round count is 16 rather than 12 — the last step is at round
+    11.
+
+  **Promoted to `regression` × {SERIAL, HIP} × ranks 1–5** with explicit user
+  confirmation (`CLAUDE.md` requires it). The gate *definition* is unchanged, so no
+  gate-definition edit was needed. Stability evidence: 320 printed round lines over
+  np1–5 × {SERIAL, HIP} × {`[Serial]`, `[Default]`} reduce to exactly **16 distinct
+  lines** — every measured quantity, including all the new per-pattern ones, is
+  byte-identical at every rank count on both backends — at 11–16 s per instance.
 - **2026-07-31 — Decision 4: transient red–green–blue closure**, not
   newest-vertex bisection and not red-only propagation. Red-only propagation
   degenerates to uniform refinement; bisection replaces the red engine wholesale

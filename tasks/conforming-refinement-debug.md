@@ -36,11 +36,11 @@
 | D4 | Re-sweep: get the remaining nine never-executed tests to a first verdict | **Done** (2026-08-04) |
 | D5 | Downstream conforming tests (`conforming_migrate`, `io`, `markquality_conforming`) | **Done** (2026-08-04) |
 | D6 | `conforming_operators` and `conforming_determinism` | **Done** (2026-08-04) |
-| D7 | `conforming_quality` — calibrate the provisional bounds | Not started |
+| D7 | `conforming_quality` — calibrate the provisional bounds | **Done** (2026-08-05) |
 | D8 | Full gate at ranks 1–5, both tiers, `format-check`; close out Task 8 | Not started |
 
 **Open failures.** After D6, **none.** All 28 registrations have a verdict and
-**all 28 pass** at ranks 1–5 on both backends. D1, D2, D3, D5 and D6 are fixed.
+**all 28 pass** at ranks 1–5 on both backends. D1, D2, D3, D5, D6 and D7 are fixed.
 
 One recorded **design limit**, not a failure: in `Conforming` mode the *visible*
 layer is rank-count dependent up to blue closure diagonals (np1–4 agree, np5 flips
@@ -50,8 +50,14 @@ such, and `conforming_determinism` now asserts the sharper "the visible layer
 differs *only* through blue diagonals". Decision 11 in
 [tasks/conforming-refinement.md](conforming-refinement.md); README *Known Issues*.
 
-Remaining work is D7 (calibrate `conforming_quality`'s bounds — `maxQ` is still
-rising at round 8) and D8 (close out).
+Remaining work is D8 (close out). D7 answered the last open question: the shape
+bound **is** fixed in the round count — `maxQ` saturates at 2.5254 by round 11 and
+is flat through round 16 — so `conforming_quality` is recalibrated, extended to 16
+rounds, and **promoted into the gate** (Decision 12).
+
+**Note for D8: the tier counts changed.** Promoting `conforming_quality`'s two
+registrations moves 10 instances from `unit` to `regression`, so D8's recount starts
+from **140 `regression` + 62 `unit`**, not 130 + 72.
 
 ---
 
@@ -1067,6 +1073,19 @@ can be affected are the ones re-run above.
 
 ## D7 — `conforming_quality`: calibrate the provisional bounds
 
+**Status: DONE (2026-08-05).** The bound **is** fixed in the round count: extended to
+16 rounds, `maxQ` saturates at 2.5254 by round 11 and is flat through round 16 while
+the mesh grows 4348 → 24608 faces. So this is *not* the design finding D7 was told to
+stop and report. Bounds recalibrated from measurement, two new assertions added
+(the red layer's own shape, and saturation itself), and the test **promoted to
+`regression` × {SERIAL, HIP} × ranks 1–5** with explicit user confirmation. **No
+library code changed.** Decision 12 in
+[tasks/conforming-refinement.md](conforming-refinement.md). **Read *What landed*** —
+the per-pattern instrumentation is what turned "is `maxQ` bounded?" into a
+one-run answer, and it is worth reusing.
+
+**Original brief follows.**
+
 **Status:** Not started, but **no longer blocked** — D4 ran it: green at np1–5 on
 both backends, with the full per-round measurement table and a rank-count-invariance
 result. **Read D4's *Steer for D7* before starting.** The short version: `minAngle`
@@ -1090,7 +1109,93 @@ design finding, not a tolerance to loosen** — stop, record it in
 `tasks/conforming-refinement.md`, and report it. The whole justification for
 making the closure transient is that the bound is fixed.
 
-**What landed.** *(fill in)*
+**What landed.**
+
+**The instrumentation came first, and it is what made this a one-run task.** D4's
+handoff framed D7 as "run 12–16 rounds and see whether `maxQ` plateaus", which would
+have produced a yes/no with no explanation. Instead the measurement was first split
+by **which closure pattern emitted the face** — `|S|` is recoverable with no library
+change, since a closed parent's `|S|` is (number of its children) − 1 and siblings are
+co-resident — and extended to measure the **red parent** of every closure child
+(reachable for the same reason) and the amplification `Q(child)/Q(parent)`. One
+16-round run then answered not just *whether* the bound is fixed but *which family
+moves and why*:
+
+| round | F | minAngle | maxQ | closureFrac | `\|S\|`=0 (red) | `\|S\|`=1 (green) | `\|S\|`=2 (blue) | amp |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 344 | 26.094 | 1.5672 | 0.0349 | 1.0278 | 1.5672 | — | 1.5426 |
+| 5 | 732 | 25.987 | 1.5672 | 0.1749 | 1.0278 | 1.5672 | — | 1.5426 |
+| 6 | 944 | 25.987 | 1.7759 | **0.1864** | 1.0278 | 1.5672 | 1.7759 | 1.7515 |
+| 8 | 1672 | 25.987 | 2.2344 | 0.1746 | 1.0278 | 1.5672 | 2.2344 | 2.2310 |
+| 10 | 3124 | 25.987 | 2.2344 | 0.1434 | 1.0278 | 1.5672 | 2.2344 | 2.2310 |
+| 11 | 4348 | 25.987 | **2.5254** | 0.1316 | 1.0278 | 1.5672 | 2.5254 | 2.4906 |
+| 12–15 | 6052–17296 | 25.987 | 2.5254 | 0.1143–0.0726 | 1.0278 | 1.5672 | 2.5254 | 2.4906 |
+| 16 | 24608 | 25.987 | 2.5254 | 0.0623 | 1.0278 | 1.5672 | 2.5254 | 2.4906 |
+
+Four things fall out that eight rounds could not show:
+
+1. **The red layer — the closure's *input* — never moves at all.** `Q` = 1.0278 and
+   min angle 54.397° in every one of the 16 rounds. So none of the movement in the
+   aggregate is the red engine degrading; it is entirely the closure's own patterns,
+   which is the split the aggregate number cannot make.
+2. **Green never moves either** (1.5672 from round 1), and `|S|`=3 (red-closure) is
+   **never realised on this workload** — worth knowing, because it means the
+   red-closure pattern's shape is *not* covered by this test's evidence.
+3. **Blue is the only family that moves, and it saturates.** 1.7759 (r6) → 2.2344
+   (r8) → 2.5254 (r11), then identical for rounds 11–16 while F grows 5.7× and the
+   marked set 6.2×. The step-then-flat pattern is a maximum over a **finite** set
+   being progressively discovered — (red similarity class) × (which edges are split)
+   × (which blue diagonal) — and each new combination the growing cap reaches can
+   raise the maximum once. D4 was right to refuse to call it bounded at round 8: the
+   last round it measured was itself a step, and the *next* step was still to come at
+   round 11.
+4. **The closure fraction peaks and then declines monotonically**, 0.1864 at r6 down
+   to 0.0623 at r16 — an O(perimeter) set inside an O(area) mesh, now visible over
+   enough rounds to be unambiguous rather than a two-point hint.
+
+**Bounds, each the measured worst plus ~10%:** min angle ≥ **24.0°** (was 20.0),
+`Q` ≤ **2.8** (was 4.0), closure fraction ≤ **0.25** (was 0.50), and a new
+amplification bound ≤ **2.8**. The margin is thin on purpose and it is affordable
+because there is no run-to-run spread to absorb (see the invariance result below).
+Task 7's derivation was right in *direction* — blue is the worst family and green
+lands below its ideal-parent value — and loose by ~1.6× on `Q`.
+
+**Two new assertions, which are the real deliverable.** Calibrating numbers alone
+would have left the *claim* ("the bound is fixed in the round count") as prose in a
+comment with a printed table underneath it. It is now checked:
+
+* **The red layer is bounded separately** (`Q` ≤ 1.10, min angle ≥ 50°). If this ever
+  fires, the defect is in the red engine and the closure bounds are measuring someone
+  else's damage — a distinction no aggregate can make.
+* **Saturation:** the worst `Q` over the final 4 rounds may not exceed the worst over
+  the preceding rounds (relative tolerance 1e-6, since the tail's worst face is a
+  different face from the head's). **This is why the round count is 16 and not 12** —
+  the last step is at round 11, so a 12-round test cannot assert saturation at all.
+  The assertion is skipped, with a printed note, below 12 rounds.
+
+**Also added:** `TESSERA_QUALITY_ROUNDS` overrides the round count, so the
+round-independence claim can be re-measured to any depth without editing and
+rebuilding — that is how the 16-round evidence was collected, and it is reproducible
+in one command.
+
+**Promotion, with the user's explicit confirmation** (`CLAUDE.md` requires it for
+backends and ranks): `regression` × {SERIAL, HIP} × ranks 1–5. The gate
+*definition* is unchanged — label, backends and ranks all already match — so none of
+the four gate-definition files needed an edit. **Tier counts move: `regression`
+130 → 140 instances, `unit` 72 → 62** (verified with `ctest -N -L`), which D8's
+recount should start from.
+
+**Result, np1–5 × {SERIAL, HIP}, 10/10 `exit=0`** (calibration run
+`f3QTpdVZrSHu` / `f3QTpdcX74wh`; final binaries re-run at `f3QTtqth7Ypo` /
+`f3QTtr1vg3aP`; the 16-round exploration was `f3QL4AAzVZYj`). 11–16 s per instance.
+**Rank-count and backend invariance is total and now covers the new quantities:**
+320 printed round lines over np1–5 × {SERIAL, HIP} × {`[Serial]`, `[Default]`} reduce
+to exactly **16 distinct lines**. Non-vacuity is unchanged and still asserted — a
+round that marked nothing or everything fails, and zero closure children over the
+whole run fails.
+
+**No regressions to check for.** One test file plus its CMake tier; no library code.
+D8's full gate is the confirmation at HEAD — and it will now *include* this test.
 
 ---
 
@@ -1106,7 +1211,9 @@ making the closure transient is that the bound is fixed.
    clang-format v21 and that predates this work; check touched files under both
    the v21 (`/usr/bin`) and v19 (`/opt/rocm-6.4.2/llvm/bin`) binaries.
 4. Recompute the **new test totals** (they were 70/70 regression and 28/28 unit
-   before the conforming work) and record them in the *Status* section of
+   before the conforming work; at HEAD `ctest -N -L` reports **140 `regression`
+   and 62 `unit` instances**, D7's promotion having moved 10 across) and record
+   them in the *Status* section of
    `tasks/conforming-refinement.md` and in the `CLAUDE.md` task-log row.
 5. Decide the **default flip**. Task 7 flipped `Mesh`'s `Mode` default to
    `Conforming` before anything had run. If conforming cannot be made green,
@@ -1128,6 +1235,50 @@ making the closure transient is that the bound is fixed.
 
 *(append-only)*
 
+- **2026-08-05 — D7.** `conforming_quality` recalibrated from measurement, extended
+  from 8 rounds to **16**, and **promoted to `regression` × {SERIAL, HIP} × ranks
+  1–5** with the user's explicit confirmation. Green 10/10, 11–16 s per instance
+  (calibration `f3QTpdVZrSHu`/`f3QTpdcX74wh`, final `f3QTtqth7Ypo`/`f3QTtr1vg3aP`,
+  16-round exploration `f3QL4AAzVZYj`). **No library code changed.** **The answer to
+  D4's open question is that the bound IS fixed:** `maxQ` steps 1.7759 (r6) → 2.2344
+  (r8) → 2.5254 (r11) and is then **identical for rounds 11–16** while F grows
+  4348 → 24608 and the marked set 384 → 2388 — step-then-flat, i.e. a maximum over a
+  finite set being progressively discovered, not drift with depth. D4 was right to
+  refuse to call it bounded at 8 rounds: the last round it saw was itself a step and
+  another step was still to come at r11. **The method is the transferable part.** The
+  brief said "run 12–16 rounds and see whether it plateaus", which yields a yes/no
+  with no explanation; instead the measurement was first split by **which closure
+  pattern emitted the face** — free, since a closed parent's `|S|` is (its child
+  count) − 1 and siblings are co-resident — plus the **red parent** of every closure
+  child and the amplification `Q(child)/Q(parent)`. One run then said *which* family
+  moves and why: the red layer, the closure's own INPUT, is **dead flat at Q=1.0278 /
+  54.397° in all 16 rounds**, green is flat at 1.5672 from round 1, `|S|`=3 is *never
+  realised on this workload* (so its shape is not covered by this evidence), and blue
+  is the sole mover. *When a trend question has more than one possible cause, split
+  the measurement by cause before extending the run — the aggregate number cannot
+  tell you whether the closure degraded shape or the red engine did.* Bounds are now
+  the measured worst plus ~10%: min angle ≥ **24.0°** (was 20), `Q` ≤ **2.8** (was
+  4.0), closure fraction ≤ **0.25** (was 0.50, peak measured 0.1864 at r6 then
+  declining monotonically to 0.0623 — O(perimeter) inside O(area), unambiguous over
+  16 rounds where 8 gave only a hint), plus a new amplification bound ≤ **2.8**.
+  Task 7's derivation was right in direction (blue worst, green below its
+  ideal-parent value) and loose by ~1.6× on `Q`. **The real deliverable is two new
+  assertions**, because calibrated numbers alone would leave the *claim* as prose:
+  the red layer is bounded **separately** (Q ≤ 1.10, angle ≥ 50°), so a red-engine
+  regression can never be mistaken for closure damage; and **saturation** — the worst
+  Q over the final 4 rounds may not exceed the worst over the preceding rounds. *That
+  second one is why the round count is 16 and not 12: the last step is at round 11,
+  so a 12-round test cannot assert saturation at all* (it is skipped, with a printed
+  note, below 12). `TESSERA_QUALITY_ROUNDS` now overrides the count so the claim is
+  re-measurable to any depth without an edit. Invariance is total and now covers the
+  new per-pattern quantities: **320 round lines → exactly 16 distinct** over np1–5 ×
+  {SERIAL, HIP} × {`[Serial]`, `[Default]`}, which is what made a ~10% margin
+  affordable. Gate *definition* unchanged (label/backends/ranks already matched), so
+  no gate-definition file needed editing; tier counts move to **140 `regression` /
+  62 `unit`** instances for D8's recount. Decision 12 records it; README's
+  provisional-bounds Known Issue is deleted rather than reworded, and
+  `docs/design.md`'s closure section now carries the measured table so the
+  "similarity classes are bounded" claim cites numbers.
 - **2026-08-04 — D6.** `conforming_operators` and `conforming_determinism` green
   SERIAL+HIP at **np1–5**; re-run alongside `refine_closure`, `refine_conforming`,
   `conforming_quality`, `conforming_migrate`, `markquality_conforming` for

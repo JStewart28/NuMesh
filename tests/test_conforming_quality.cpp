@@ -22,11 +22,13 @@
 // one, so the number of triangle similarity classes is BOUNDED and the worst
 // shape is bounded with it -- independent of how many rounds have been run.
 //
-// This test measures that. It refines a shrinking geodesic cap for >= 8 rounds
-// and tracks, per round: the global minimum triangle angle, the global maximum
-// radius ratio, and the closure-face fraction. It then asserts each stays inside
-// a FIXED bound -- fixed being the whole point: a bound that had to grow with
-// the round count would mean the closure is not transient after all.
+// This test measures that. It refines a shrinking geodesic cap for 16 rounds and
+// tracks, per round: the global minimum triangle angle, the global maximum
+// radius ratio, and the closure-face fraction -- each of those split by which of
+// the four closure patterns produced the face, plus the same for the red layer
+// that feeds them. It then asserts each stays inside a FIXED bound -- fixed being
+// the whole point: a bound that had to grow with the round count would mean the
+// closure is not transient after all.
 //
 //   MIN ANGLE. On an exactly equilateral parent the four patterns give: |S|=0
 //   60 deg, |S|=1 (green, a median cut) 30 deg, |S|=2 (blue) 30 deg (the
@@ -44,14 +46,39 @@
 //   set, while the mesh grows by area, so the fraction must stay bounded well
 //   below 1 rather than tracking the mesh size.
 //
-// *** THE BOUNDS BELOW ARE PROVISIONAL. *** Per the Task-7 acceptance criteria,
-// no test in Tasks 1-7 has been executed, so these are derived from the geometry
-// above plus margin -- not from measurement. This test is therefore registered
-// at the `unit` tier, NOT in the ship gate. Task 8 runs it, replaces the bounds
-// with values justified by the printed per-round data, and promotes it to
-// `regression` at ranks 1-5 only if it proves stable across repeated runs. If
-// the measured quality turns out to be genuinely unbounded in the round count,
-// that is a DESIGN finding about the closure, not a tolerance to loosen.
+// THE BOUNDS BELOW ARE MEASURED (Task 8 sub-task D7). Task 7 registered this
+// test with bounds derived from the ideal-parent geometry alone -- 20 deg, Q <=
+// 4.0, closure fraction <= 0.50 -- because nothing had been executed yet. D7 ran
+// it to 16 rounds and calibrated them against the result. The 16-round run is
+// what settled the open question, so its shape is recorded here:
+//
+//   |S|=0 (RED, the closure's INPUT)  maxQ 1.0278, minAngle 54.397 deg
+//                                     -- IDENTICAL in all 16 rounds.
+//   |S|=1 (green)                     maxQ 1.5672 from round 1, never moves.
+//   |S|=2 (blue)                      maxQ 1.7759 (r6) -> 2.2344 (r8) ->
+//                                     2.5254 (r11), then FLAT through r16.
+//   |S|=3 (red-closure)               never realised on this workload.
+//   closure fraction                  peaks 0.1864 at r6, declines to 0.0623.
+//   worst amplification Q/Q(parent)   2.4906, flat from r11.
+//
+// The blue family is the only one that moves, and it moves in DISCRETE STEPS
+// separated by several flat rounds, then saturates: rounds 11-16 are identical
+// while F grows 4348 -> 24608 and the marked set grows 384 -> 2388. That is the
+// signature of a maximum over a FINITE set being progressively discovered, not
+// of unbounded growth -- the closure can only emit (red similarity class) x
+// (which edges are split) x (which blue diagonal), and each new combination the
+// growing cap reaches can raise the maximum once. Eight rounds could not tell
+// the two apart (the last round measured was itself a step); sixteen can.
+//
+// So the bounds are FIXED in the round count, which is exactly the claim that
+// buys the closure its transient design. The test now asserts that directly
+// rather than only printing it: the red layer's own shape is bounded (the
+// closure's input never degrades), the per-round worst is bounded, AND the worst
+// must stop growing over the final quarter of the rounds. Bounds keep ~10%
+// margin over the measured worst -- affordable because every printed quantity is
+// byte-identical at every rank count on both backends: D7's 320 round lines over
+// np1-5 x {SERIAL, HIP} x {Serial, Default} reduce to exactly 16 distinct lines,
+// so there is no run-to-run spread to absorb.
 //
 // Runs on host (Serial) and device (default, HIP), ranks 1-5.
 
@@ -76,18 +103,44 @@
 
 using namespace Tessera;
 
-// ---- PROVISIONAL quality bounds (see the header note; Task 8 calibrates) ----
+// ---- MEASURED quality bounds (D7; see the header note for the 16-round data) --
 //
-// Derived, not measured: the ideal-parent worst cases are 30 deg / Q = 2.16,
-// and the red layer's own faces are icosphere triangles whose min angle is
-// already ~54 deg rather than 60. These allow a further ~1/3 of shape loss for
-// that distortion before failing.
-static constexpr double kMinAngleDeg = 20.0;    //!< provisional
-static constexpr double kMaxRadiusRatio = 4.0;  //!< provisional
-static constexpr double kMaxClosureFrac = 0.50; //!< provisional
+// Each is the 16-round measured worst plus ~10%. The measured worst is in the
+// comment, so a future change that moves one of these is visible as a diff
+// against a number, not against a guess.
+static constexpr double kMinAngleDeg = 24.0;     //!< measured 25.987
+static constexpr double kMaxRadiusRatio = 2.8;   //!< measured 2.5254
+static constexpr double kMaxClosureFrac = 0.25;  //!< measured 0.1864 (peak, r6)
+static constexpr double kMaxAmplification = 2.8; //!< measured 2.4906
+//
+// The RED layer is the closure's input. It is a pure 4-way subdivision of
+// icosphere triangles, so its shape is round-independent by construction and
+// measured dead flat; bounding it separately is what distinguishes "the closure
+// degrades shape" from "the red engine does", which the aggregate cannot.
+//! Measured 1.0278 in every one of the 16 rounds.
+static constexpr double kRedMaxRadiusRatio = 1.10;
+//! Measured 54.397 deg in every one of the 16 rounds.
+static constexpr double kRedMinAngleDeg = 50.0;
+//
+// Rounds over which the worst radius ratio must have STOPPED growing. Measured:
+// the last step is at round 11, so the final 5 of 16 rounds are flat.
+static constexpr int kSaturationRounds = 4;
 
-static constexpr int kRounds = 8;
+static constexpr int kRounds = 16;
 static constexpr double kPi = 3.14159265358979323846;
+
+//! Rounds to run. `kRounds` by default; `TESSERA_QUALITY_ROUNDS` overrides it so
+//! the round-independence claim can be re-measured to any depth without an edit.
+//! Deeper than ~16 is not useful: the cap's faces reach ~1e-5 of a unit sphere
+//! and the mesh grows ~1.35x per round.
+static int roundCount()
+{
+    const char* e = std::getenv( "TESSERA_QUALITY_ROUNDS" );
+    if ( e == nullptr )
+        return kRounds;
+    const int n = std::atoi( e );
+    return n > 0 ? n : kRounds;
+}
 
 static inline long long globalSum( long long v )
 {
@@ -139,6 +192,50 @@ static std::vector<VisibleFace> ownedVisible( MeshT& mesh )
     return readVisibleFaces<MeshT>( hf, mesh.numOwnedFaces() );
 }
 
+//! Min angle (deg) and radius ratio Q of one triangle. False if degenerate.
+static bool triMetrics( const std::array<double, 3> p[3], double& minAngleDeg,
+                        double& Q )
+{
+    // Side lengths: s[k] is the side OPPOSITE corner k.
+    double s[3];
+    for ( int k = 0; k < 3; ++k )
+    {
+        const std::array<double, 3>& a = p[( k + 1 ) % 3];
+        const std::array<double, 3>& b = p[( k + 2 ) % 3];
+        double d2 = 0.0;
+        for ( int c = 0; c < 3; ++c )
+            d2 += ( b[c] - a[c] ) * ( b[c] - a[c] );
+        s[k] = std::sqrt( d2 );
+    }
+    if ( s[0] <= 0.0 || s[1] <= 0.0 || s[2] <= 0.0 )
+        return false;
+
+    // Angles by the law of cosines; area from the cross product.
+    minAngleDeg = 180.0;
+    for ( int k = 0; k < 3; ++k )
+    {
+        const double num = s[( k + 1 ) % 3] * s[( k + 1 ) % 3] +
+                           s[( k + 2 ) % 3] * s[( k + 2 ) % 3] - s[k] * s[k];
+        const double den = 2.0 * s[( k + 1 ) % 3] * s[( k + 2 ) % 3];
+        double cosA = num / den;
+        cosA = std::max( -1.0, std::min( 1.0, cosA ) );
+        minAngleDeg = std::min( minAngleDeg, std::acos( cosA ) * 180.0 / kPi );
+    }
+
+    const double u[3] = { p[1][0] - p[0][0], p[1][1] - p[0][1],
+                          p[1][2] - p[0][2] };
+    const double w[3] = { p[2][0] - p[0][0], p[2][1] - p[0][1],
+                          p[2][2] - p[0][2] };
+    const double n[3] = { u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
+                          u[0] * w[1] - u[1] * w[0] };
+    const double area =
+        0.5 * std::sqrt( n[0] * n[0] + n[1] * n[1] + n[2] * n[2] );
+    if ( area <= 0.0 )
+        return false;
+    Q = s[0] * s[1] * s[2] * ( s[0] + s[1] + s[2] ) / ( 16.0 * area * area );
+    return true;
+}
+
 //! One round's measurements, already reduced across ranks.
 struct Quality
 {
@@ -148,6 +245,23 @@ struct Quality
     long long faces = 0;
     long long closureChildren = 0;
     long long marked = 0;
+    //! Per closure PATTERN, indexed by the parent's |S|: 0 = a red face passed
+    //! through unchanged, 1 = green, 2 = blue, 3 = red-closure. This is what
+    //! makes the bound legible: the closure can only ever emit one of these
+    //! four families, so if each family's worst shape is flat in the round
+    //! count then the overall bound is too, and if the overall maximum moves it
+    //! says WHICH family moved it.
+    double maxQByPattern[4] = { 0.0, 0.0, 0.0, 0.0 };
+    double minAngleByPattern[4] = { 180.0, 180.0, 180.0, 180.0 };
+    //! Worst shape of a RED PARENT triangle (the input the closure retriangulates).
+    double maxParentQ = 0.0;
+    double minParentAngle = 180.0;
+    //! Worst amplification Q(child) / Q(its red parent) -- how much shape the
+    //! closure itself costs, with the parent's own distortion divided out. Not
+    //! quite a property of the patterns alone: the split points are the red
+    //! engine's midpoints, which are re-projected onto the sphere rather than
+    //! being exact affine midpoints.
+    double maxAmp = 0.0;
 };
 
 //! Shape of every OWNED visible face, from the haloed positions.
@@ -157,12 +271,32 @@ static Quality measureQuality( MeshT& mesh, int& fails )
     const auto pos = readPositions( mesh );
     const std::vector<VisibleFace> vis = ownedVisible( mesh );
 
+    // |S| of a closed red parent is (number of its children) - 1, and siblings
+    // are co-resident (checkSiblingCoresidency), so this count is complete.
+    std::unordered_map<GlobalId, int> childCount;
+    childCount.reserve( vis.size() * 2 );
+    for ( const auto& f : vis )
+        if ( f.parent != invalid_gid )
+            ++childCount[f.parent];
+
     double minAngle = 180.0, maxQ = 0.0;
+    double maxQPat[4] = { 0.0, 0.0, 0.0, 0.0 };
+    double minAngPat[4] = { 180.0, 180.0, 180.0, 180.0 };
+    double maxParentQ = 0.0, minParentAngle = 180.0, maxAmp = 0.0;
     long long nClosure = 0;
     for ( const auto& f : vis )
     {
+        int pattern = 0; // |S| = 0: a red face, passed through
         if ( f.parent != invalid_gid )
+        {
             ++nClosure;
+            pattern = childCount[f.parent] - 1;
+            if ( pattern < 1 || pattern > 3 )
+            {
+                ++fails;  // a closure family of 2..4 children is the only legal
+                continue; // shape; anything else is a bookkeeping defect
+            }
+        }
 
         std::array<double, 3> p[3];
         bool have = true;
@@ -182,57 +316,63 @@ static Quality measureQuality( MeshT& mesh, int& fails )
             continue;
         }
 
-        // Side lengths: s[k] is the side OPPOSITE corner k.
-        double s[3];
-        for ( int k = 0; k < 3; ++k )
-        {
-            const std::array<double, 3>& a = p[( k + 1 ) % 3];
-            const std::array<double, 3>& b = p[( k + 2 ) % 3];
-            double d2 = 0.0;
-            for ( int c = 0; c < 3; ++c )
-                d2 += ( b[c] - a[c] ) * ( b[c] - a[c] );
-            s[k] = std::sqrt( d2 );
-        }
-        if ( s[0] <= 0.0 || s[1] <= 0.0 || s[2] <= 0.0 )
+        double ang = 180.0, Q = 0.0;
+        if ( !triMetrics( p, ang, Q ) )
         {
             ++fails; // a degenerate triangle is a hard failure, not a datum
             continue;
         }
+        minAngle = std::min( minAngle, ang );
+        maxQ = std::max( maxQ, Q );
+        minAngPat[pattern] = std::min( minAngPat[pattern], ang );
+        maxQPat[pattern] = std::max( maxQPat[pattern], Q );
 
-        // Angles by the law of cosines; area by Heron via the cross product.
+        // The parent this child retriangulates. Its corners are corners of the
+        // sibling group, which is co-resident, so they are held after the halo.
+        if ( pattern == 0 )
+        {
+            maxParentQ = std::max( maxParentQ, Q );
+            minParentAngle = std::min( minParentAngle, ang );
+            continue;
+        }
+        std::array<double, 3> pp[3];
         for ( int k = 0; k < 3; ++k )
         {
-            const double num = s[( k + 1 ) % 3] * s[( k + 1 ) % 3] +
-                               s[( k + 2 ) % 3] * s[( k + 2 ) % 3] -
-                               s[k] * s[k];
-            const double den = 2.0 * s[( k + 1 ) % 3] * s[( k + 2 ) % 3];
-            double cosA = num / den;
-            cosA = std::max( -1.0, std::min( 1.0, cosA ) );
-            minAngle = std::min( minAngle, std::acos( cosA ) * 180.0 / kPi );
+            auto it = pos.find( f.parentVerts[k] );
+            if ( it == pos.end() )
+            {
+                have = false;
+                break;
+            }
+            pp[k] = it->second;
         }
-
-        const double u[3] = { p[1][0] - p[0][0], p[1][1] - p[0][1],
-                              p[1][2] - p[0][2] };
-        const double w[3] = { p[2][0] - p[0][0], p[2][1] - p[0][1],
-                              p[2][2] - p[0][2] };
-        const double n[3] = { u[1] * w[2] - u[2] * w[1],
-                              u[2] * w[0] - u[0] * w[2],
-                              u[0] * w[1] - u[1] * w[0] };
-        const double area =
-            0.5 * std::sqrt( n[0] * n[0] + n[1] * n[1] + n[2] * n[2] );
-        if ( area <= 0.0 )
+        if ( !have )
+        {
+            ++fails; // a closure child's parent corners must be held too
+            continue;
+        }
+        double pang = 180.0, pQ = 0.0;
+        if ( !triMetrics( pp, pang, pQ ) )
         {
             ++fails;
             continue;
         }
-        const double Q = s[0] * s[1] * s[2] * ( s[0] + s[1] + s[2] ) /
-                         ( 16.0 * area * area );
-        maxQ = std::max( maxQ, Q );
+        maxParentQ = std::max( maxParentQ, pQ );
+        minParentAngle = std::min( minParentAngle, pang );
+        maxAmp = std::max( maxAmp, Q / pQ );
     }
 
     Quality q;
     q.minAngleDeg = globalMinD( minAngle );
     q.maxRadiusRatio = globalMaxD( maxQ );
+    for ( int s = 0; s < 4; ++s )
+    {
+        q.maxQByPattern[s] = globalMaxD( maxQPat[s] );
+        q.minAngleByPattern[s] = globalMinD( minAngPat[s] );
+    }
+    q.maxParentQ = globalMaxD( maxParentQ );
+    q.minParentAngle = globalMinD( minParentAngle );
+    q.maxAmp = globalMaxD( maxAmp );
     q.faces = globalSum( static_cast<long long>( vis.size() ) );
     q.closureChildren = globalSum( nClosure );
     q.closureFrac = q.faces > 0 ? static_cast<double>( q.closureChildren ) /
@@ -295,11 +435,14 @@ static int case_quality( int rank, int size, const char* tag )
         distribute( mesh, halo, faceOwner );
     }
 
-    double worstAngle = 180.0, worstQ = 0.0, worstFrac = 0.0;
+    double worstAngle = 180.0, worstQ = 0.0, worstFrac = 0.0, worstAmp = 0.0;
     long long totalClosure = 0;
     bool properSubsetEveryRound = true;
+    const int rounds = roundCount();
+    std::vector<double> maxQPerRound;
+    maxQPerRound.reserve( static_cast<std::size_t>( rounds ) );
 
-    for ( int round = 0; round < kRounds; ++round )
+    for ( int round = 0; round < rounds; ++round )
     {
         const double halfAngle = 0.35 * std::pow( 0.6, round );
         const auto pos = readPositions( mesh );
@@ -332,6 +475,7 @@ static int case_quality( int rank, int size, const char* tag )
         worstAngle = std::min( worstAngle, q.minAngleDeg );
         worstQ = std::max( worstQ, q.maxRadiusRatio );
         worstFrac = std::max( worstFrac, q.closureFrac );
+        worstAmp = std::max( worstAmp, q.maxAmp );
 
         // The bound must hold EVERY round, not just on average: a quality that
         // degrades with depth would show up as a late round crossing it.
@@ -341,6 +485,17 @@ static int case_quality( int rank, int size, const char* tag )
             ++fails;
         if ( q.closureFrac > kMaxClosureFrac )
             ++fails;
+        if ( q.maxAmp > kMaxAmplification )
+            ++fails;
+
+        // The closure's INPUT must not degrade. The red layer is a pure 4-way
+        // subdivision, so this is round-independent by construction -- if it
+        // ever moves, the defect is in the red engine and the closure bounds
+        // above are measuring someone else's damage.
+        if ( q.maxQByPattern[0] > kRedMaxRadiusRatio ||
+             q.minAngleByPattern[0] < kRedMinAngleDeg )
+            ++fails;
+        maxQPerRound.push_back( q.maxRadiusRatio );
 
         // Conformity must survive all eight rounds too -- a quality bound on a
         // mesh that stopped being conforming would prove nothing.
@@ -355,12 +510,21 @@ static int case_quality( int rank, int size, const char* tag )
             ++fails;
 
         if ( rank == 0 )
+        {
             std::printf( "  [%s] quality round%d marked=%lld F=%lld "
                          "minAngle=%.3f deg maxQ=%.4f closure=%lld (%.4f) "
-                         "inv=%d\n",
+                         "inv=%d | parent minAng=%.3f maxQ=%.4f amp=%.4f | "
+                         "maxQ by |S| = [%.4f %.4f %.4f %.4f] minAng by |S| = "
+                         "[%.3f %.3f %.3f %.3f]\n",
                          tag, round + 1, gMarked, q.faces, q.minAngleDeg,
-                         q.maxRadiusRatio, q.closureChildren, q.closureFrac,
-                         g );
+                         q.maxRadiusRatio, q.closureChildren, q.closureFrac, g,
+                         q.minParentAngle, q.maxParentQ, q.maxAmp,
+                         q.maxQByPattern[0], q.maxQByPattern[1],
+                         q.maxQByPattern[2], q.maxQByPattern[3],
+                         q.minAngleByPattern[0], q.minAngleByPattern[1],
+                         q.minAngleByPattern[2], q.minAngleByPattern[3] );
+            std::fflush( stdout );
+        }
     }
 
     if ( totalClosure <= 0 )
@@ -368,15 +532,43 @@ static int case_quality( int rank, int size, const char* tag )
     if ( !properSubsetEveryRound )
         ++fails; // vacuous: some round refined nothing, or everything
 
+    // SATURATION. A fixed bound that merely happens to hold for the rounds run
+    // is not the claim; the claim is that the worst shape stops growing. The
+    // blue family discovers new worst cases in discrete steps for a while (last
+    // step measured at round 11 of 16), so require the final kSaturationRounds
+    // to introduce no new worst case. This is the assertion 8 rounds could not
+    // support and is why the round count is 16.
+    double tailWorst = 0.0, headWorst = 0.0;
+    const int nR = static_cast<int>( maxQPerRound.size() );
+    const bool saturationTestable = nR >= kSaturationRounds + 8;
+    if ( saturationTestable )
+    {
+        for ( int r = 0; r < nR - kSaturationRounds; ++r )
+            headWorst = std::max( headWorst, maxQPerRound[r] );
+        for ( int r = nR - kSaturationRounds; r < nR; ++r )
+            tailWorst = std::max( tailWorst, maxQPerRound[r] );
+        // Relative tolerance only: the tail's worst face is a different face
+        // from the head's, so exact equality is not the right statement.
+        if ( tailWorst > headWorst * ( 1.0 + 1e-6 ) )
+            ++fails;
+    }
+
     (void)size;
     if ( rank == 0 )
+    {
         std::printf(
             "  [%s] quality over %d rounds %s (worst minAngle=%.3f "
-            "deg [bound %.1f], worst Q=%.4f [bound %.1f], worst "
-            "closureFrac=%.4f [bound %.2f]) -- BOUNDS ARE PROVISIONAL, "
-            "Task 8 calibrates\n",
-            tag, kRounds, fails == 0 ? "ok" : "FAIL", worstAngle, kMinAngleDeg,
-            worstQ, kMaxRadiusRatio, worstFrac, kMaxClosureFrac );
+            "deg [bound %.1f], worst Q=%.4f [bound %.2f], worst "
+            "closureFrac=%.4f [bound %.2f], worst amp=%.4f [bound "
+            "%.2f]) | saturation: last %d rounds worst Q=%.4f vs "
+            "first %d rounds %.4f%s\n",
+            tag, rounds, fails == 0 ? "ok" : "FAIL", worstAngle, kMinAngleDeg,
+            worstQ, kMaxRadiusRatio, worstFrac, kMaxClosureFrac, worstAmp,
+            kMaxAmplification, kSaturationRounds, tailWorst,
+            nR - kSaturationRounds, headWorst,
+            saturationTestable ? "" : " (not testable, too few rounds)" );
+        std::fflush( stdout );
+    }
     return fails;
 }
 
@@ -402,7 +594,7 @@ int main( int argc, char* argv[] )
         if ( rank == 0 )
             std::printf( "test_conforming_quality: triangle shape over %d "
                          "adaptive rounds (size %d)\n",
-                         kRounds, size );
+                         roundCount(), size );
 
         fails += run<Kokkos::Serial>( rank, size, "Serial" );
         if ( !std::is_same<Kokkos::DefaultExecutionSpace,

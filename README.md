@@ -324,10 +324,10 @@ make -j $(nproc)
   and is nearly complete: every conforming test — `refine_conforming`,
   `refine_closure`, `conforming_migrate`, `conforming_operators`,
   `conforming_determinism`, `conforming_quality`, `markquality_conforming` — is now
-  green on SERIAL and HIP at **ranks 1–5** over multiple successive adaptive rounds.
-  What remains is calibrating `conforming_quality`'s provisional bounds (its `maxQ`
-  is still rising at the last measured round, so the shape bound is not yet shown to
-  be round-independent) and the closing full-gate run. Until the pass completes,
+  green on SERIAL and HIP at **ranks 1–5** over multiple successive adaptive rounds,
+  and the shape-quality bounds are measured rather than assumed: the worst radius
+  ratio saturates by round 11 and is flat through round 16 while the mesh grows 5.7×.
+  What remains is the closing full-gate run. Until the pass completes,
   treat conforming mode as verified-but-not-yet-signed-off
   — and note that because it is the default, a `Mesh<...>` spelled with seven
   template arguments gets it. A consumer that wants the previous behaviour should
@@ -371,14 +371,6 @@ make -j $(nproc)
   `RefinementMode::Conforming` fixes both, because it can recover the persistent
   split-edge map locally from the closure bookkeeping; `HangingNode2to1` keeps no
   such record and would need a new face field or an extra message round.
-- **`conforming_quality` is registered `unit`, not in the gate, and its bounds
-  are provisional.** It asserts that the minimum triangle angle, the maximum
-  radius ratio, and the closure-face fraction stay inside fixed bounds over
-  eight adaptive rounds — the guarantee that justifies making the closure
-  transient. The bounds (20°, 4.0, 0.50) are derived from the closure patterns'
-  geometry plus margin, not from measurement, since nothing has run. The
-  verification pass calibrates them from the test's per-round printout and
-  promotes it to `regression` at ranks 1–5 only if it proves stable.
 - **`buildVertexStencil(mesh, 2)` (k=2) is incomplete within one hop of a partition
   boundary.** Tessera's halo is **1-deep**, which fully covers a k=1 stencil but not a
   k=2 one: for an owned vertex whose 2-ring reaches beyond the ghost layer, the missing

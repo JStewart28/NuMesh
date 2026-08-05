@@ -349,6 +349,24 @@ the single existing exscan covers `4·nRefining + countClosureChildren(...)` per
 rank, allocated above the global max **visible** face gid so a retired parent gid
 (reused by the next round's un-close) can never collide.
 
+**Shape quality is bounded in the round count, and this is measured.** Because the
+closure is discarded and rebuilt each `refine()`, every visible triangle is a red
+triangle or one of three fixed retriangulations of one, so the triangle similarity
+classes are finitely many and the worst shape cannot drift with depth. Over 16
+adaptive rounds on a shrinking geodesic cap (`tests/test_conforming_quality.cpp`,
+in the gate at ranks 1–5 on both backends), the red layer — the closure's *input* —
+holds at radius ratio `Q = 1.0278` and min angle 54.397° in **every** round; the
+green family holds at `Q = 1.5672` from round 1; the closure fraction peaks at
+0.1864 in round 6 and then *declines* to 0.0623, as an O(perimeter) set inside an
+O(area) mesh must. Only the blue family moves, and it moves in discrete steps —
+1.7759 (round 6) → 2.2344 (8) → 2.5254 (11) — as the growing cap reaches new
+(red class × split pair × diagonal) combinations, then **saturates**: rounds 11–16
+are identical while the mesh grows from 4348 to 24608 faces. The worst measured
+shape over 16 rounds is min angle 25.987°, `Q = 2.5254`, and amplification
+`Q(child)/Q(parent) = 2.4906`. A *persistent* closure would instead bisect
+already-bisected green triangles round after round, with no lower bound on the
+angle; that difference is the whole reason the closure is transient.
+
 Consequences worth knowing:
 
 - Live face gids are **sparse**, and a closure child may name a vertex gid the
