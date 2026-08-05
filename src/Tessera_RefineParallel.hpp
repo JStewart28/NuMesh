@@ -978,67 +978,16 @@ RefineResult refineImpl( MeshT& mesh,
             mesh.setFaceKeys( fk );
         }
 
-        // 3j. best-effort owned-vertex 1-ring CSR over LOCAL faces/edges. It is
-        //     incomplete at partition boundaries (ghost faces/edges are dropped
-        //     until the Step-7 halo rebuild); provided so the container is not
-        //     stale rather than as a complete 1-ring. The gid2nv lookups are
-        //     GUARDED because a face may legitimately name a vertex this rank
-        //     does not hold — always true across a partition boundary, and in
-        //     Conforming mode also true of a closure child, whose midpoint
-        //     corner is owned by the refining neighbour. The halo rebuild inside
-        //     migrate() brings those in.
-        std::unordered_map<GlobalId, int> gid2nv;
-        gid2nv.reserve( nNewV * 2 );
-        {
-            auto gid = Cabana::slice<VertexField::Gid>( lv );
-            for ( int i = 0; i < nNewV; ++i )
-                gid2nv[gid( i )] = i;
-        }
-        {
-            std::vector<int> off( nNewV + 1, 0 );
-            for ( int f = 0; f < nNewF; ++f )
-                for ( int k = 0; k < 3; ++k )
-                {
-                    auto it = gid2nv.find( newVis[f].v[k] );
-                    if ( it != gid2nv.end() )
-                        ++off[it->second + 1];
-                }
-            for ( int i = 0; i < nNewV; ++i )
-                off[i + 1] += off[i];
-            std::vector<LocalIndex> nbr( off.back() );
-            std::vector<int> cur( off.begin(), off.end() );
-            for ( int f = 0; f < nNewF; ++f )
-                for ( int k = 0; k < 3; ++k )
-                {
-                    auto it = gid2nv.find( newVis[f].v[k] );
-                    if ( it != gid2nv.end() )
-                        nbr[cur[it->second]++] = static_cast<LocalIndex>( f );
-                }
-            mesh.rebuildVertexFaces( off, nbr, "vertex_faces" );
-        }
-        {
-            std::vector<int> off( nNewV + 1, 0 );
-            for ( int e = 0; e < nLocalE; ++e )
-                for ( int j = 0; j < 2; ++j )
-                {
-                    auto it = gid2nv.find( ep[e][j] );
-                    if ( it != gid2nv.end() )
-                        ++off[it->second + 1];
-                }
-            for ( int i = 0; i < nNewV; ++i )
-                off[i + 1] += off[i];
-            std::vector<LocalIndex> nbr( off.back() );
-            std::vector<int> cur( off.begin(), off.end() );
-            for ( int e = 0; e < nLocalE; ++e )
-                for ( int j = 0; j < 2; ++j )
-                {
-                    auto it = gid2nv.find( ep[e][j] );
-                    if ( it != gid2nv.end() )
-                        nbr[cur[it->second]++] =
-                            static_cast<LocalIndex>( newIndexOf[e] );
-                }
-            mesh.rebuildVertexEdges( off, nbr, "vertex_edges" );
-        }
+        // NOTE: no local 1-ring CSR rebuild here. This used to be step 3j, a
+        //       deliberately INCOMPLETE best-effort CSR over local faces and
+        //       edges only, with GUARDED gid lookups because a face may
+        //       legitimately name a vertex this rank does not hold -- always
+        //       true across a partition boundary, and in Conforming mode also
+        //       true of a closure child whose midpoint corner is owned by the
+        //       refining neighbour. rebuildHalo() below brings those vertices
+        //       in and rebuilds both CSRs COMPLETELY over the ghosted 1-ring,
+        //       so the partial version was dead work whose only effect was to
+        //       leave a container that looked valid and was not.
     }
 
     // Rebuild the 1-deep ghost layer and the three halo plans over the refined

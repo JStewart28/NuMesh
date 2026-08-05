@@ -13,6 +13,11 @@
 >
 > **Do them in order: 1 then 2.** Follow-up 1 is independently valuable and materially
 > simplifies follow-up 2 — see *Why 1 before 2* at the end. Do not start 2 first.
+>
+> **Follow-up 1 landed 2026-08-05** (`Tessera_HaloRebuild.hpp`; Decision 14 in
+> [conforming-refinement.md](conforming-refinement.md)). Its section below is kept as
+> the design of record; the progress log at the end says what actually happened and
+> where it differed. Follow-up 2 is ready to start.
 
 ---
 
@@ -20,8 +25,8 @@
 
 | # | Item | Priority | Status |
 |---|------|----------|--------|
-| 1 | Factor the halo rebuild into a standalone `rebuildHalo()` that `refine()` calls | **High** — caused 6 of Task 8's 9 defects | Not started |
-| 2 | Carry the split edge's squared length in Phase 2's coordinator reply so the blue tie-break can be geometric | Medium — closes Decision 11 | Not started |
+| 1 | Factor the halo rebuild into a standalone `rebuildHalo()` that `refine()` calls | **High** — caused 6 of Task 8's 9 defects | **Done** (2026-08-05) — gate **150/150**, unit **62/62**. See the progress log. |
+| 2 | Carry the split edge's squared length in Phase 2's coordinator reply so the blue tie-break can be geometric | Medium — closes Decision 11 | Not started — **now unblocked**: follow-up 1's round-G postcondition (every vertex an owned face references is held locally with its position) is what option 1 of its open sub-problem needs. |
 
 **Both are recorded in README *Known Issues* and in the Decision record** (Decision 11
 for item 2, Decision 13's second bullet for item 1). If either lands, update those.
@@ -602,3 +607,46 @@ paying for this.**
 
   Noted that `/tmp/geometric-tiebreak-d6-keep.patch` has been reaped from scratch, so
   item 2 must be rebuilt from the reasoning preserved here and in Decision 11.
+
+- 2026-08-05 — **Follow-up 1 landed**, in three commits: the code motion, the
+  behaviour change, and the step-3j deletion. Gate **150/150** and `ctest -L unit`
+  **62/62**; `format-check` clean on every touched file under clang-format v21
+  (`/usr/bin`) and v19 (`/opt/rocm-6.4.2/llvm/bin`). Recorded as **Decision 14** in
+  [conforming-refinement.md](conforming-refinement.md); the README *Known Issues*
+  re-halo entry is deleted outright.
+
+  **The design held up; four things are worth correcting or pinning for follow-up 2.**
+
+  1. **`MigrateStats` needed no threading at all** — listed as "the fiddliest
+     mechanical part" under *Risks*, it was a non-issue. Both fields
+     (`siblingFixups`, `siblingGroups`) are populated by round S, which stays in
+     `migrate()`; rounds G and B/C/D touch no stats. The two shared helpers have
+     `void` return.
+  2. **`rebuildHalo()` is provably the identity `migrate()` minus rounds A and S**,
+     which made the acceptance far cheaper to trust than *Acceptance* anticipated.
+     Round A with an identity `dest` is content-preserving on the three maps, so
+     every test that already used the workaround is **byte-identical**. The predicted
+     "expect gid-masked per-round counts to move once" did **not** materialise for
+     those tests: probed at np1 and np5 across the eight gid-masked/conforming tests,
+     seven were byte-identical and exactly one number moved —
+     `conforming_migrate`'s `loadBalance destFixups` 26 → 25, a Zoltan2 cut shifted
+     by the now-canonical owned-face ordering, with `F`, `maxFaces`, `maxWeight`,
+     `ideal` and `inv=0` unchanged. `conforming_determinism` was byte-identical, as
+     required. Option **(A)** (keep round D's gid-sort) was taken.
+  3. **Cost is small and in the predicted direction.** The pre-existing 140 gate
+     instances went 814 → 837 s\*proc (+2.8%); `refine_rehalo` adds 69 s\*proc for
+     10 instances (gate total 906). No `bool rebuild` escape hatch was added.
+  4. **The one real bug written during this work was in the new test, not the
+     library, and it was a deadlock:** the per-round `printf` called
+     `TesseraTest::globalOwned{Vertices,Edges,Faces}()` — all `MPI_Allreduce` —
+     **inside the `rank == 0` guard**. np1 passed and np2/np5 hung with no output.
+     Reduce on every rank, then print on rank 0. Worth remembering because it looks
+     exactly like a library hang and the probe harness reports it as `exit=124`.
+
+  **What this buys follow-up 2**, restated now that it is a fact rather than a plan:
+  after `refine()` returns, *every vertex referenced by an owned face is held locally
+  with its position* (round G's postcondition, not merely "a 1-deep ghost layer
+  exists"). Compose that with sibling co-residency and "a closed parent's corners are
+  the union of its children's" and option 1 of follow-up 2's persistent-split-edge
+  sub-problem is sound with no communication. `rebuildHalo()` is also public API, so
+  a `recoverSplitEdges()`-adjacent helper can rely on the postcondition by name.
