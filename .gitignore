@@ -37,3 +37,6 @@ scripts/**/profile.local.sh
 *.exe
 *.out
 *.app
+
+# Crash dumps (Flux/MPI aborts drop these in the repo root)
+*.core

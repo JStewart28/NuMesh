@@ -31,23 +31,36 @@
 | 5 | `migrate()` / `loadBalance()` / halo rebuild on a closed mesh | **Done** |
 | 6 | I/O round-trip, `markByQuality`, example + docs | **Done** |
 | 7 | Dedicated conforming test suite; flip the default to `Conforming` | **Done** |
-| 8 | **Run the full suite and fix everything it finds** (the only task that runs tests) | **In progress** — sub-tasks D0–D8 in [conforming-refinement-debug.md](conforming-refinement-debug.md); D0, D1, D2 done |
+| 8 | **Run the full suite and fix everything it finds** (the only task that runs tests) | **Done** (2026-08-05) — sub-tasks D0–D8 in [conforming-refinement-debug.md](conforming-refinement-debug.md), all done. Gate **140/140**, unit **62/62** at HEAD |
 
-Tasks 1–7 have landed, so **conforming refinement is feature-complete, covered,
-and the default**: the closure kernel and its inverse are pure local functions in
-`src/Tessera_RefineClosure.hpp`, both `refineLocal()` and the distributed
-`refine()` run un-close → mask translation → red split → close, `migrate()` /
-`loadBalance()` keep closure siblings co-resident and weight a red parent's
-children as one unit, the closure bookkeeping round-trips through HDF5,
+All eight tasks have landed, so **conforming refinement is feature-complete,
+verified, and the default**: the closure kernel and its inverse are pure local
+functions in `src/Tessera_RefineClosure.hpp`, both `refineLocal()` and the
+distributed `refine()` run un-close → mask translation → red split → close,
+`migrate()` / `loadBalance()` keep closure siblings co-resident and weight a red
+parent's children as one unit, the closure bookkeeping round-trips through HDF5,
 `markByQuality` drives the whole thing through the mask translation, every
 mode-sensitive test is registered in both modes, and `Mesh`'s `Mode` parameter
-defaults to `Conforming`. There is no abort stub left anywhere. What remains is
-the single verification pass (Task 8), now **under way** — its sub-tasks, verdicts
-and evidence live in [conforming-refinement-debug.md](conforming-refinement-debug.md).
+defaults to `Conforming`. There is no abort stub left anywhere.
 
-**Two findings from Task 7's analysis that Task 8 should triage first** — both
-are recorded in full under *Task 8 → risk points* below, because both were found
-by reading the code while writing tests against it, not by running anything:
+**Verification is complete (Task 8, sub-tasks D0–D8).** At HEAD the ship gate
+(`regression` × {SERIAL, HIP} × ranks 1–5) is **140/140** and the diagnostic tier
+(`ctest -L unit`) is **62/62** — 202 instances over 28 registrations, zero
+failures, zero tests relabelled or excluded. The `Conforming` default **survived**
+(Decision 13). Task 8 found and fixed **nine defects**: three in the library (all
+in the red engine's handling of a persistent hanging node — Decision 8/9 — plus
+locally-minted edge gids, Decision 10) and six test-side, of which **six separate
+occurrences were the same defect**: a missing re-halo between two back-to-back
+`refine()` calls. Two design limits are recorded rather than fixed: the visible
+layer is rank-count dependent up to blue closure diagonals (Decision 11), and
+defects 2–3 of Decision 8 remain in `HangingNode2to1` mode by construction. The
+per-sub-task verdicts, root causes and evidence live in
+[conforming-refinement-debug.md](conforming-refinement-debug.md); the measurements
+are tabulated under *Task 8 → Report back* below.
+
+**Two findings from Task 7's analysis, both since resolved by Task 8** — both were
+found by reading the code while writing tests against it, not by running anything,
+and both are recorded in full under *Task 8 → risk points* below:
 
 1. **The split-edge map the closure consumes is this-round-only, but the level
    jumps it must close are persistent.** This looks like a defect in the Task-4
@@ -57,7 +70,13 @@ by reading the code while writing tests against it, not by running anything:
 2. **Rank-count independence of anything gid-keyed is not achievable**, because
    new vertex and face gids come from an `MPI_Exscan` over ranks. Only
    position-canonical comparisons are rank-count independent, which is how
-   `conforming_determinism` is written. Risk point 10.
+   `conforming_determinism` is written. Risk point 10. **Confirmed and accepted as
+   a design limit — Task 8 D6** (Decision 11): it fires at np5 only, on the blue
+   closure diagonal, and the geometric tie-break that would fix it cannot be
+   evaluated locally because `closeFaces()` runs on the un-closed red layer whose
+   corners a rank may not hold (risk point 4). `conforming_determinism` now asserts
+   the sharper statement that the visible layer differs *only* through blue
+   diagonals.
 
 ---
 
@@ -185,7 +204,7 @@ of its edges that are bisected in the red layer, with midpoints `m_ab, m_bc, m_c
 The 2:1 balance bounds the jump to one level, so each split edge contributes exactly
 one midpoint and `|S| ∈ {0,1,2,3}`:
 
-| `|S|` | Pattern | Children | Child count |
+| `\|S\|` | Pattern | Children | Child count |
 |---|---|---|---|
 | 0 | none | face emitted unchanged | 1 |
 | 1 | **green** (say `ab` split) | `(a, m_ab, c)`, `(m_ab, b, c)` | 2 |
@@ -666,9 +685,9 @@ assumes — flagged for Task 6.)*
 |---|---|
 | `RedFace { v[3], gid, level }` | one face of the persistent red layer |
 | `VisibleFace { v[3], gid, level, parent, parentVerts[3] }` | one face of the visible layer; `parent == invalid_gid` ⇒ a passed-through red face |
-| `ClosureStats` | `|S|` histogram, visible/closure-child counts, per-diagonal blue counts |
+| `ClosureStats` | `\|S\|` histogram, visible/closure-child counts, per-diagonal blue counts |
 | `closureChildCount(nSplit)` | `nSplit + 1` |
-| `faceSplitEdges(v, midpointOf, mid)` | fills `mid[k]` per edge, returns `|S|` |
+| `faceSplitEdges(v, midpointOf, mid)` | fills `mid[k]` per edge, returns `\|S\|` |
 | `countClosureChildren(red, midpointOf)` | new-gid count, for Task 4's `MPI_Exscan` *before* closing |
 | `closeFaces(red, midpointOf, firstChildGid, freshChild = {})` → `CloseResult` | the patterns; children take consecutive gids from `firstChildGid` |
 | `unclose(visible)` → `UncloseResult` | the inverse |
@@ -1455,6 +1474,9 @@ plausible defect):
   in this task, revert the default to `HangingNode2to1` (keeping conforming opt-in and
   fully built), record why in README *Known Issues* and under *Open failures*, and
   report it. Reverting the default is preferable to leaving a broken default.
+  **Not exercised (D8) — Decision 13.** Conforming *is* green: 140/140 gate and
+  62/62 unit at HEAD, zero open failures, so the escape hatch's precondition never
+  arose and `Conforming` stays the default.
 - If a fix changes a **design** decision, rewrite the affected design section of this
   file — do not leave the design describing something the code no longer does.
 - Recompute and record the **new expected test totals** (they were 70/70 regression
@@ -1488,22 +1510,85 @@ at np2 with `std::out_of_range: unordered_map::at`. Nine registrations
 point; **all nine have since run and pass** at ranks 1–5 on both backends (D3–D6),
 so the suite has 28 of 28 registrations passing.
 
-**Report back.** The full failure list as first observed and the root cause of each;
-which of the ten risk points above actually fired; the new regression/unit totals;
-any test relabelled to `unit` and why; whether the `Conforming` default survived; any
-design section this task had to rewrite.
+**Report back.** *(delivered — D8, 2026-08-05. Per-sub-task root causes and evidence
+are in [conforming-refinement-debug.md](conforming-refinement-debug.md); this is the
+summary the task asked for.)*
 
-**Plus the measurements Tasks 2–7 deferred to here** — the tests print all of these,
-so collect them from the run output rather than re-running:
+**Totals at HEAD.** Gate (`regression` × {SERIAL, HIP} × ranks 1–5) **140/140**,
+job `f3QTwKZkEkSK`, 14.3 min. Diagnostic tier (`ctest -L unit`) **62/62**, job
+`f3QTwKgRBWzK`, 4.9 min. **202 instances over 28 registrations, zero failures.**
+Before this work (at `f50a91b^`) the suite was 70 `regression` + 28 `unit` = **98
+instances over 19 registrations** (7 `regression` + 12 `unit`), so conforming
+refinement **more than doubled the instance count**: **+9 registrations, +104
+instances**, and the gate itself went 7 → 14 registrations and 70 → 140 instances. `format-check` is clean on all 34 source files this work touched,
+under both clang-format v21 (`/usr/bin`) and v19 (`/opt/rocm-6.4.2/llvm/bin`); the
+only tree violation is `src/Tessera_Geometry.hpp`, untouched since `5dcb202` and so
+predating Task 1.
 
-| Deferred from | Measurement |
-|---|---|
-| Task 2 | Whether the "red child of a refined face has `|S| = 0`" assert in `closeFaces()` ever fired; and the `refine_closure` printout (per-`\|S\|` histogram, closure-face count, both blue-diagonal counts, conforming vs hanging-node Euler / bad-incidence / T-junction figures) |
-| Task 3 | Actual message-volume increase on the extended Phase-2 rounds vs the estimated `1/ρ`; and the `refine_splitedges` printout (split-edge count, kept-side-discovered count per rank count, phase-2a total vs refining-only per round) |
-| Task 4 | Closure-face fraction vs mask fraction, and the `|S|`-pattern histogram, per rank count |
-| Task 5 | How many `dest` entries the sibling-cohesion fixup moved (both the adversarial `dest` and Zoltan2's); pre/post `loadBalance` max face count and max weighted load vs ideal |
-| Task 6 | Actual on-disk size delta for a conforming vs hanging-node file |
-| Task 7 | `conforming_operators`: closure-vertex count per rank count (non-vacuity), closed-fan and 1-ring mismatch counts split closure/interior, closure-vertex vs interior-vertex `applyStencil` max error, the same split for the accumulated-area error, and the vertex-area vs face-area totals. `conforming_determinism`: the per-component agreement breakdown (counts / `\|S\|` histogram / red layer / visible layer / closure vertices) against the `MPI_COMM_SELF` reference at each rank count, plus `blueDiagMismatch` and `parentMissing` — the numbers risk point 10 turns on. `conforming_quality`: per-round marked count, F, min angle, max radius ratio, closure count and fraction over 16 rounds, split by closure pattern `\|S\|` and against the red layer that feeds them, plus the worst-of-all-rounds figures against the bounds — **collected by D7, tabulated in Decision 12** |
+**No test was relabelled to `unit`, and none was deleted or weakened.** The traffic
+went the other way: `conforming_quality` was **promoted** `unit` → `regression`
+(D7, Decision 12), moving 10 instances, and three assertions got *stronger* —
+`empty-mask`'s gid check became a gathered sorted set comparison instead of an XOR
+(D3), `conforming_determinism`'s idempotence case now demands `midpoints` equal the
+recovered split-edge map exactly rather than merely be non-empty (D6), and its
+rank-count case now asserts the visible layer differs *only* through blue diagonals
+(D6).
+
+**The `Conforming` default survived** — Decision 13.
+
+**Failure list as first observed, and root cause.** D0 saw 3 failing registrations
+and 9 that had never executed; the final tally is **nine defects**.
+
+| # | First seen | Where | Root cause | Fixed in |
+|---|---|---|---|---|
+| 1 | `refine_splitedges` hangs np≥2 | test | `globalOwnedFaces()` — an `MPI_Allreduce` — was an *argument to a `printf` guarded by `if (rank==0)`* | D1 |
+| 2 | `refine_splitedges` aborts np≥2 | test | **missing re-halo** between two `refine()`s | D1 |
+| 3 | `refine_conforming` rounds 2–3 fail np1 | **library** | the closure's split-edge map was this-round-only (risk point 9) | D2 |
+| 4 | *(unmasked by #3)* | **library** | a refining coarse face minted a second, coincident midpoint across a hanging node — *pre-existing since Step 6b* | D2 |
+| 5 | *(unmasked by #3)* | **library** | 2:1 propagation was blind across a hanging node (both coordinator rules need two incidences) — *pre-existing* | D2 |
+| 6 | `refine_conforming` aborts np≥2 | test | **missing re-halo** | D3 |
+| 7 | *(unmasked by #6)* | **library** | `refine()` minted edge gids from an exscan over each rank's *local* edge count — gaps in the owned gid space, and the two sides of a boundary edge carried different gids — *pre-existing* | D3 |
+| 8 | `conforming_migrate` / `conforming_operators` / `conforming_determinism` abort np≥2 | test | **missing re-halo**, in four more places (one fixture each, plus determinism case C's round loop) | D5, D6 |
+| 9 | `conforming_determinism` idempotence fails np1 | test | a **stale assertion** (`!midpoints.empty()`) contradicting the contract D2 established and its own neighbour two lines below | D6 |
+
+Three of the nine are in the library and **all three are in the red engine's handling
+of a persistent hanging node**; #4, #5 and #7 were *pre-existing* and invisible before
+conforming refinement existed, because `HangingNode2to1`'s own tests assert
+non-conformity. Six of the nine are test-side, and **six separate occurrences (#2, #6,
+#8×4) are the same defect** — the missing identity-`migrate()` + `haloExchange()`
+between two back-to-back `refine()` calls. That is the single most repeated finding of
+Task 8 and the first thing to check on any future `unordered_map::at` abort at np≥2.
+
+**Which risk points fired.** Of the ten: **9 fired** and was the central defect (D2,
+three coupled library defects where one was predicted). **10 fired** at np5 and became
+a recorded design limit rather than a fix (D6, Decision 11). **4 fired, but only
+indirectly and only once** — it is benign for the closure itself, and surfaced solely
+as the reason a *geometric* blue tie-break cannot be evaluated locally. **1, 2, 3, 5,
+6, 7 and 8 never fired**: `refinement_mode` and `refine_closure` passed in D0's first
+sweep, and risk points 3, 4 and 5 all passed on the first run the moment
+`conforming_migrate`'s fixture stopped throwing, so Task 5's sibling fixup and
+`repairClosureCohesion()` were correct as written.
+
+**Design sections rewritten.** *Persistent split edges* under the distributed
+algorithm plus steps 0c/1/3/3b of the pseudocode (D2); the refine section's edge-gid
+assignment, here and in `docs/design.md` (D3); the closure section's determinism
+claim, here, in `docs/design.md` and in `Tessera_RefineClosure.hpp`'s header note,
+which had conflated partition-independence with rank-count independence (D6); and the
+closure section now carries D7's measured shape table so the "similarity classes are
+bounded" claim cites numbers. Decisions **8–13** were added.
+
+**Plus the measurements Tasks 2–7 deferred to here** — collected from the run output.
+Results are in the right-hand column; the fuller tables are in the debug file's
+per-sub-task *What landed* sections.
+
+| Deferred from | Measurement | Result |
+|---|---|---|
+| Task 2 | Whether the "red child of a refined face has `\|S\| = 0`" assert in `closeFaces()` ever fired; and the `refine_closure` printout (per-`\|S\|` histogram, closure-face count, both blue-diagonal counts, conforming vs hanging-node Euler / bad-incidence / T-junction figures) | **The assert fired — and was the right kind of alarm.** D2's defect 4 made it legitimately possible for a fresh red child to have `\|S\| > 0` on an inherited half-edge, so it was *narrowed*, not removed: it now reads "no split edge may touch a vertex created this round" (new `firstNewVertexGid` parameter). `refine_closure` at HEAD: inverse `red=2639 marked=453 visible=3506 closure=1478`, `\|S\|` hist `[2028,382,202,27]`, blue diagonals **120 / 82** (both populated); `refineLocal` conforming `V=424 E=1266 F=844 Euler=2` with 361 closure faces, against hanging-node `Euler=-201 bad=609 T-junctions=203`. Identical in `[Serial]` and `[Default]`. |
+| Task 3 | Actual message-volume increase on the extended Phase-2 rounds vs the estimated `1/ρ`; and the `refine_splitedges` printout (split-edge count, kept-side-discovered count per rank count, phase-2a total vs refining-only per round) | Phase-2a total vs refining-only: **×6.96 / ×5.03 / ×10.01 / ×16.38** over rounds 1–4, **rank-count independent**. Round 1 `refining=46 splitEdges=138`. Kept-side-discovered `keptOnlyDiscovered` = **0 / 6 / 13 / 24 / 27** at np1–5, i.e. non-vacuity *strengthens* with rank count — the cross-boundary discovery Task 3 exists to provide is genuinely exercised. Global face counts identical at every rank count (458 / 731 / 950 / 1124). The ratio is well above the `1/ρ` estimate and grows with round because ρ (refining fraction) falls as the mesh grows; the cost is bounded in absolute terms, not as a ratio. D1. |
+| Task 4 | Closure-face fraction vs mask fraction, and the `\|S\|`-pattern histogram, per rank count | Measured at np1–5 (job `f3QUMwrCeAU7`). **Closure fraction is flat in the round and near-flat in the rank count**: round 1 **0.438** at every np; round 2 0.456 / 0.455 / 0.460 / 0.464 / 0.455; round 3 0.461 / 0.469 / 0.450 / 0.452 / 0.461. Round 1's mask is 46 of 320 faces = **0.144**, so closure fraction ≈ **3× mask fraction** — the O(perimeter) scaling, and the reason D7's 16-round run sees it *decline* to 0.0623 once the marked region stops growing as fast as the mesh. `\|S\|` histogram round 1 `[335,108,15,0]` at every np; round 3 e.g. `[1278,388,82,18]` at np1, `[1263,370,97,12]` at np5. Every round `euler=2` at every rank count; the control fails every round with growing defects (414 → 1031 → ~1470). |
+| Task 5 | How many `dest` entries the sibling-cohesion fixup moved (both the adversarial `dest` and Zoltan2's); pre/post `loadBalance` max face count and max weighted load vs ideal | Adversarial `dest = gid % size` scatters **essentially every** sibling group: **248 fixups against 242 groups** at np2, then 306 / 318 / 318 at np3–5. Zoltan2 needed no help — it splits siblings **unaided**, 4 / 20 / 14 / 25–26 fixups at np2–5, confirming `Tessera_Zoltan2Balancer.hpp:180`. `loadBalance` cuts maxFaces 1232 → 251 at np5, and lands the **weighted** load within **0.6 %** of ideal at every rank count (447.0 vs 446.5 at np2; 184.0 vs 182.8 at np5) against a 2× bound — so the per-parent weighting is what makes the sibling fixup load-neutral: it moves faces without moving weight. D5. |
+| Task 6 | Actual on-disk size delta for a conforming vs hanging-node file | **The +32 B/face prediction is exact.** Closure payload 39104 B / 1222 faces, 38208 / 1194, 39040 / 1220 — **32.000 B per visible face at three different rank counts**, and **19.4 %** of the file in all three. D5. |
+| Task 7 | `conforming_operators`: closure-vertex count per rank count (non-vacuity), closed-fan and 1-ring mismatch counts split closure/interior, closure-vertex vs interior-vertex `applyStencil` max error, the same split for the accumulated-area error, and the vertex-area vs face-area totals. `conforming_determinism`: the per-component agreement breakdown (counts / `\|S\|` histogram / red layer / visible layer / closure vertices) against the `MPI_COMM_SELF` reference at each rank count, plus `blueDiagMismatch` and `parentMissing` — the numbers risk point 10 turns on. `conforming_quality`: per-round marked count, F, min angle, max radius ratio, closure count and fraction over 16 rounds, split by closure pattern `\|S\|` and against the red layer that feeds them, plus the worst-of-all-rounds figures against the bounds | `conforming_operators`: `closureVerts` **311 / 301 / 322 / 318 / 318** at np1–5 (an empty set is a hard failure by design), `fanBad=0` and `ringBad=0` split closure/interior, `stencilMaxErr` and `areaMaxErr` at closure vertices **identical to interior** (0 exactly on Serial, ~7e-18 on HIP), `vArea == fArea` to 9 digits. D6. `conforming_determinism` case A: counts / `\|S\|` hist / red layer / closureVerts / `parentMissing=0` **all agree at every rank count** — `V=676 E=2022 F=1348`, `\|S\|` hist `[1820,60,20,0]`, `closureVerts=74`, byte-identical np1–5; the **visible layer** agrees at np1–4 with `blueDiagMismatch=0` and at np5 differs with `blueDiagMismatch=4` (4 of 20 blue parents flip) — the number risk point 10 turns on, now Decision 11. D6. `conforming_quality`: **collected by D7, tabulated in Decision 12** — the headline is that the red layer feeding the closure is *dead flat* at `Q`=1.0278 / 54.397° across all 16 rounds, green is flat at 1.5672 from round 1, `\|S\|`=3 is never realised on this workload, and blue is the sole mover, saturating at 2.5254 by round 11 and flat through 16. |
 
 ---
 
@@ -1663,6 +1748,30 @@ so collect them from the run output rather than re-running:
   np1–5 × {SERIAL, HIP} × {`[Serial]`, `[Default]`} reduce to exactly **16 distinct
   lines** — every measured quantity, including all the new per-pattern ones, is
   byte-identical at every rank count on both backends — at 11–16 s per instance.
+- **2026-08-05 — Decision 13: `Conforming` stays the `Mesh` default.** Decision 3
+  chose it, Decision 5 accepted that Task 7 would flip it *before* anything had ever
+  been executed, and Task 8 held the escape hatch: revert to `HangingNode2to1` if
+  conforming could not be made green. **The hatch is not used.** At HEAD the ship
+  gate is 140/140 and the diagnostic tier 62/62 — 202 instances over 28
+  registrations, zero failures, zero tests relabelled or excluded, on both backends
+  at ranks 1–5. Conforming is green at *more* rank counts and with *stronger*
+  assertions than the hanging-node path had before this work, so the precondition for
+  reverting never arose and the safer default is also the verified one.
+
+  Two limits are accepted with the default rather than blocking it, both recorded in
+  README *Known Issues* because they are user-visible:
+
+  * **The visible layer is rank-count dependent up to blue closure diagonals**
+    (Decision 11). Practical consequence: do not compare a conforming mesh's visible
+    face set bitwise across rank counts — compare the red layer, or compare by
+    position. Everything provably a function of the global mesh is invariant and
+    asserted as such.
+  * **A distributed mesh must be re-haloed between two `refine()` calls.** This is
+    pre-existing and mode-independent, but Task 8 made it sharper and much more
+    prominent: the consequence is a **throw from inside the next `refine()`**, not
+    merely an inert `haloExchange()`. It accounted for **six** of Task 8's nine
+    defects. It is a library-contract wart, not a conforming-mode defect, and is the
+    strongest candidate for the next round of work — see the Milestone-2 note.
 - **2026-07-31 — Decision 4: transient red–green–blue closure**, not
   newest-vertex bisection and not red-only propagation. Red-only propagation
   degenerates to uniform refinement; bisection replaces the red engine wholesale
@@ -1816,3 +1925,27 @@ so collect them from the run output rather than re-running:
   reproducer, and a local no-communication fix proposed); and risk point 10 — nothing
   gid-keyed is rank-count independent, because gids come from an `MPI_Exscan`, which
   narrows the closure's determinism claim (Decisions 6 and 7).
+- 2026-08-05 — **Task 8 complete; conforming refinement is done.** Sub-tasks D0–D8
+  (see [conforming-refinement-debug.md](conforming-refinement-debug.md)) took the
+  feature from *never executed* to green: at HEAD the ship gate is **140/140** and
+  the diagnostic tier **62/62** — 202 instances over 28 registrations, both backends,
+  ranks 1–5, zero failures. `format-check` clean on all 34 touched files under
+  clang-format v21 and v19. **Nine defects**, of which three were in the library and
+  all three in the red engine's handling of a persistent hanging node: the
+  this-round-only split-edge map that risk point 9 predicted (Decision 8/9), plus two
+  *pre-existing* ones it unmasked — a coincident duplicate midpoint across a hanging
+  node, and 2:1 propagation being blind across one — and, separately, `refine()`
+  minting edge gids from a local exscan so the two sides of a boundary edge disagreed
+  (Decision 10). The other six were test-side and **six occurrences were one defect**:
+  a missing re-halo between back-to-back `refine()` calls. Of the ten risk points, 9
+  and 10 fired, 4 fired only indirectly, and the other seven never did — Task 5's
+  sibling fixup and `repairClosureCohesion()` passed on the first run that reached
+  them. Two limits are accepted rather than fixed: the visible layer is rank-count
+  dependent up to blue diagonals, because no purely local rule can be rank-count
+  stable on the data the closure has (Decision 11, geometric tie-break deferred with
+  a design for it), and defects 2–3 above remain in `HangingNode2to1` by construction.
+  No test was relabelled or weakened; `conforming_quality` was **promoted** into the
+  gate after its bound was measured to saturate (Decision 12), and three assertions
+  were strengthened. `Conforming` **stays the default** (Decision 13). Decisions 8–13
+  and the deferred-measurements table were added; the design's persistent-split-edge,
+  edge-gid and determinism sections were rewritten here and in `docs/design.md`.

@@ -317,29 +317,24 @@ make -j $(nproc)
   Note this permutes the local face ordering, and hence which gid each of the
   next round's children is assigned, so a *gid-derived* refinement mask selects a
   different (equally valid) face set than it would without the re-halo.
-- **Conforming refinement is the `Mesh` default and is still being verified.** The
-  whole `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
-  `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented and
-  registered across the suite. Verification is under way in a single dedicated pass
-  and is nearly complete: every conforming test — `refine_conforming`,
-  `refine_closure`, `conforming_migrate`, `conforming_operators`,
-  `conforming_determinism`, `conforming_quality`, `markquality_conforming` — is now
-  green on SERIAL and HIP at **ranks 1–5** over multiple successive adaptive rounds,
-  and the shape-quality bounds are measured rather than assumed: the worst radius
-  ratio saturates by round 11 and is flat through round 16 while the mesh grows 5.7×.
-  What remains is the closing full-gate run. Until the pass completes,
-  treat conforming mode as verified-but-not-yet-signed-off
-  — and note that because it is the default, a `Mesh<...>` spelled with seven
-  template arguments gets it. A consumer that wants the previous behaviour should
-  spell `RefinementMode::HangingNode2to1` explicitly, which every pre-existing test
-  in the gate now does. Reverting the default is the documented escape hatch if the
-  pass cannot make conforming green. Under `HangingNode2to1` a partial refine mask
-  leaves T-junctions bounded to a 2:1 level jump, so the owned-only Euler number
-  equals 2 only for a uniform refine; that is the *contract* of the mode, not a
-  defect. Current status and evidence:
-  [tasks/conforming-refinement-debug.md](tasks/conforming-refinement-debug.md);
-  design: [tasks/conforming-refinement.md](tasks/conforming-refinement.md) and
-  `docs/design.md` → *Adaptive refinement*.
+- **Conforming refinement is the `Mesh` default.** *(Not a defect — recorded here
+  because it changes what a default-spelled `Mesh` does.)* The whole
+  `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
+  `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented,
+  registered across the suite, and **verified**: the ship gate is 140/140 and the
+  diagnostic tier 62/62 on SERIAL and HIP at **ranks 1–5**, over multiple successive
+  adaptive rounds, and the shape-quality bounds are measured rather than assumed (the
+  worst radius ratio saturates by round 11 and is flat through round 16 while the mesh
+  grows 5.7×). Because it is the default, a `Mesh<...>` spelled with seven template
+  arguments gets conforming refinement; a consumer that wants the previous behaviour
+  must spell `RefinementMode::HangingNode2to1` explicitly, which every pre-existing
+  test in the gate now does. Under `HangingNode2to1` a partial refine mask leaves
+  T-junctions bounded to a 2:1 level jump, so the owned-only Euler number equals 2
+  only for a uniform refine; that is the *contract* of the mode, not a defect. The two
+  genuine limits of conforming mode are the entries above and below this one. Design:
+  [tasks/conforming-refinement.md](tasks/conforming-refinement.md) and
+  `docs/design.md` → *Adaptive refinement*; verification evidence:
+  [tasks/conforming-refinement-debug.md](tasks/conforming-refinement-debug.md).
 - **In `Conforming` mode the visible mesh is rank-count dependent up to blue
   closure diagonals.** Refining the same mesh with the same mask on a different
   number of ranks can produce a visible triangulation that differs in *which

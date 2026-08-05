@@ -118,14 +118,30 @@
       "Bash(xargs -I{} sh -c 'echo \"=== {} ===\"; grep -E \"tests passed|failed|Total Test|100% tests\" {}')",
       "Bash(awk 'NR>=368 && NR<=378 {printf \"%d:%s\\\\n\", NR, $0}' README.md)",
       "Bash(python3 -)",
-      "Bash(python3 -c \"import json;json.load\\(open\\('.claude/settings.json'\\)\\);print\\('settings.json valid'\\)\")"
+      "Bash(python3 -c \"import json;json.load\\(open\\('.claude/settings.json'\\)\\);print\\('settings.json valid'\\)\")",
+      "Bash(grep -n \"^inline int\\\\|^int \\\\|^template <class MeshT>\\\\s*$\\\\|^int check\\\\|inline int check\\\\|^.*int check21\\\\|checkMidpoint\\\\|eulerOwned\\\\|^template\" tests/MeshInvariants.hpp)",
+      "Bash(bash ../run_cmake_toulumne.sh)",
+      "Bash(clang-format --dry-run -Werror src/Tessera_Types.hpp src/Tessera_Geometry.hpp tests/test_data_model.cpp)",
+      "Read(//opt/**)",
+      "Read(//opt/rocm-6.4.2/lib/llvm/bin/**)",
+      "Bash(bash /tmp/tessera_build.sh)",
+      "Bash(ctest -N)",
+      "Bash(bash -lc 'export SPACK_USER_CONFIG_PATH=$HOME/.spack/tuolumne; . /usr/WS2/stewartj/spack/share/spack/setup-env.sh; spack env activate ~/spack_envs/tuolumne_trilinos/; cd /g/g20/stewartj/research-bridges/tessera-dev/Tessera/build-tuolumne && make -j 32 2>&1 | grep -Ei \"^.*error|Error \" | head -20; echo \"BUILD_DONE\"')",
+      "Bash(bash -lc 'export SPACK_USER_CONFIG_PATH=$HOME/.spack/tuolumne; . /usr/WS2/stewartj/spack/share/spack/setup-env.sh; spack env activate ~/spack_envs/tuolumne_trilinos/; cd build-tuolumne && make -j 32 2>&1 | tail -40')",
+      "Bash(bash -lc 'export SPACK_USER_CONFIG_PATH=$HOME/.spack/tuolumne; . /usr/WS2/stewartj/spack/share/spack/setup-env.sh && spack env activate ~/spack_envs/tuolumne_trilinos/ && cd build-tuolumne && cmake . >/dev/null && make -j 32 2>&1 | grep -E \"error|Error|FAILED\" | head -40; echo \"EXIT:$?\"')",
+      "Bash(bash -lc ' *)",
+      "Bash(git stash *)",
+      "Bash(bash -lc 'cd /g/g20/stewartj/research-bridges/tessera-dev/Tessera/build-tuolumne; for B in SERIAL HIP; do echo -n \"$B: \"; ctest -N -L unit -R $B | grep -c \"Test *#\"; done')",
+      "Bash(bash -lc 'cd /g/g20/stewartj/research-bridges/tessera-dev/Tessera/build-tuolumne *)",
+      "Bash(bash -lc 'cd build-tuolumne *)"
     ],
     "additionalDirectories": [
       "/g/g20/stewartj/research-bridges/Canopy/build-tuolumne",
       "/g/g20/stewartj/spack-packages/unm/spack-packages/spack_pkgs/spack_repo/compass/packages/canopy",
       "/g/g20/stewartj/spack_envs/tuolumne_trilinos",
       "/g/g20/stewartj/research-bridges/tessera-dev/Tessera",
-      "/g/g20/stewartj/spack-packages/unm/spack-packages/spack_pkgs/spack_repo/compass/packages/tessera"
+      "/g/g20/stewartj/spack-packages/unm/spack-packages/spack_pkgs/spack_repo/compass/packages/tessera",
+      "/g/g20/stewartj/.spack/tuolumne"
     ]
   }
 }

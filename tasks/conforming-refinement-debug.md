@@ -25,6 +25,10 @@
 
 ---
 
+> **Task 8 is complete as of 2026-08-05 (D0–D8 all done).** Gate 140/140, unit
+> 62/62, zero open failures. Nothing here is a live work item; the file is now
+> evidence and handoff. The two follow-ups it identifies are named at the end of D8.
+
 ## Status
 
 | # | Task | Status |
@@ -37,10 +41,11 @@
 | D5 | Downstream conforming tests (`conforming_migrate`, `io`, `markquality_conforming`) | **Done** (2026-08-04) |
 | D6 | `conforming_operators` and `conforming_determinism` | **Done** (2026-08-04) |
 | D7 | `conforming_quality` — calibrate the provisional bounds | **Done** (2026-08-05) |
-| D8 | Full gate at ranks 1–5, both tiers, `format-check`; close out Task 8 | Not started |
+| D8 | Full gate at ranks 1–5, both tiers, `format-check`; close out Task 8 | **Done** (2026-08-05) |
 
-**Open failures.** After D6, **none.** All 28 registrations have a verdict and
-**all 28 pass** at ranks 1–5 on both backends. D1, D2, D3, D5, D6 and D7 are fixed.
+**Open failures.** **None**, confirmed by D8's full-gate and full-unit runs at HEAD
+(140/140 and 62/62). All 28 registrations pass at ranks 1–5 on both backends.
+D1, D2, D3, D5, D6 and D7 are fixed.
 
 One recorded **design limit**, not a failure: in `Conforming` mode the *visible*
 layer is rank-count dependent up to blue closure diagonals (np1–4 agree, np5 flips
@@ -50,14 +55,17 @@ such, and `conforming_determinism` now asserts the sharper "the visible layer
 differs *only* through blue diagonals". Decision 11 in
 [tasks/conforming-refinement.md](conforming-refinement.md); README *Known Issues*.
 
-Remaining work is D8 (close out). D7 answered the last open question: the shape
-bound **is** fixed in the round count — `maxQ` saturates at 2.5254 by round 11 and
-is flat through round 16 — so `conforming_quality` is recalibrated, extended to 16
-rounds, and **promoted into the gate** (Decision 12).
+D7 answered the last open question: the shape bound **is** fixed in the round count —
+`maxQ` saturates at 2.5254 by round 11 and is flat through round 16 — so
+`conforming_quality` is recalibrated, extended to 16 rounds, and **promoted into the
+gate** (Decision 12).
 
-**Note for D8: the tier counts changed.** Promoting `conforming_quality`'s two
-registrations moves 10 instances from `unit` to `regression`, so D8's recount starts
-from **140 `regression` + 62 `unit`**, not 130 + 72.
+**Final tier counts, confirmed by D8 at HEAD: 140 `regression` + 62 `unit` = 202
+instances over 28 registrations.** D7's promotion of `conforming_quality`'s two
+registrations moved 10 instances from `unit` to `regression` (the tiers were 130 + 72
+before it), and D7's predicted split was exact. Against the pre-conforming baseline
+at `f50a91b^` — 70 `regression` + 28 `unit` = 98 instances over 19 registrations —
+this work added **9 registrations and 104 instances**.
 
 ---
 
@@ -1201,7 +1209,14 @@ D8's full gate is the confirmation at HEAD — and it will now *include* this te
 
 ## D8 — Close out Task 8
 
-**Status:** Not started.
+**Status: DONE (2026-08-05).** Gate **140/140** (job `f3QTwKZkEkSK`, 14.3 min), unit
+**62/62** (job `f3QTwKgRBWzK`, 4.9 min), `format-check` clean on every touched file
+under both clang-format binaries. **No code changed** — D8 is a verification and
+close-out task and everything it checked was already green. `Conforming` stays the
+default (Decision 13). **Read *What landed*** for the two harness facts and the one
+number that moved since D2 and is *not* a regression.
+
+**Original checklist follows.**
 
 1. `flux batch scripts/tuolumne/run_regression_minset.flux` — the real gate,
    `regression` × {SERIAL, HIP} × ranks **1–5**. Green.
@@ -1227,7 +1242,132 @@ D8's full gate is the confirmation at HEAD — and it will now *include* this te
    `.claude/settings.json` and `systems/tuolumne/spack.yaml` also had uncommitted
    modifications at the start of D0; check whether they should land.
 
-**What landed.** *(fill in)*
+**What landed.**
+
+**No code changed.** Every check D8 was told to run came back green on the first
+attempt, so this is a measurement and close-out record.
+
+**1–2. Both tiers, at HEAD.**
+
+| run | job | result | wall |
+|---|---|---|---|
+| `regression` × {SERIAL, HIP} × ranks 1–5 | `f3QTwKZkEkSK` | **140/140**, 0 failed | 14.3 min (842 s\*proc) |
+| `ctest -L unit` | `f3QTwKgRBWzK` | **62/62**, 0 failed | 4.9 min (293 s\*proc) |
+
+**202 instances over 28 registrations, zero failures.** The two jobs ran
+**concurrently on separate pdebug nodes** (D4's harness fact, reconfirmed), so both
+tiers cost 14 minutes of wall clock, not 19. Cost is dominated by
+`conforming_quality`, which holds all eight of the slowest slots at 10.5–12.6 s;
+nothing else exceeds ~8 s. This also retires D4's recorded caveat that 14 of the 15
+`unit` registrations still had their evidence from D0's np1–4 sweep rather than from
+current HEAD — `ctest -L unit` covers them at ranks 1–5 at HEAD now.
+
+**A harness trap that cost the first submission, and is not in the list above.**
+`run_regression_minset.flux` and `run_unit_minset.flux` both locate the resolver via
+`source "${TESSERA_REPO}/scripts/lib/tessera_env.sh"` under `set -u`, so **the
+submitting shell must export `TESSERA_REPO`** or the job dies in 7.6 s with
+`TESSERA_REPO: unbound variable` (job `f3QTvj6QXJ2b`). The resolver itself
+self-locates — `tessera_env.sh:32` falls back to its own directory — but the batch
+script needs the variable to *find* the resolver, so the fallback cannot help.
+Earlier sessions had it exported and never saw this. Submit with:
+
+```bash
+export TESSERA_REPO=/g/g20/stewartj/research-bridges/tessera-dev/Tessera
+flux batch scripts/tuolumne/run_regression_minset.flux
+```
+
+The scripts were left alone — this is environment plumbing, not a gate-definition
+issue, and the gate definition is single-sourced and must not be edited casually.
+
+**3. `format-check`.** The whole-tree target fails on **`src/Tessera_Geometry.hpp`
+only** (3 violations, lines 184/185/209), exactly as this brief predicted. Confirmed
+pre-existing rather than assumed: that file is **not** in the conforming work's diff
+(`git diff f50a91b^..HEAD`) and was last touched by `5dcb202`, which precedes Task 1.
+All **34** `.cpp`/`.hpp` files the conforming work touched (Tasks 1–8) are clean under
+**both** binaries — v21.1.8 (`/usr/bin`) and v19.0.0 (`/opt/rocm-6.4.2/llvm/bin`),
+0 violations each. Checking the two versions separately matters because they disagree
+about this codebase: v21 is what the `format-check` target uses and v19 is what a
+ROCm-flavoured shell picks up first.
+
+**4. Test totals.** `ctest -N -L` at HEAD: **140 `regression` + 62 `unit` = 202
+instances**, over **14 + 14 = 28 registrations** — matching D7's handoff prediction
+exactly. Before the conforming work (at `f50a91b^`) the suite was **70 `regression` +
+28 `unit` = 98 instances over 19 registrations** (7 `regression` + 12 `unit`), so this
+work added **9 registrations and 104 instances** — more than doubling the instance
+count, with the gate itself going 7 → 14 registrations and 70 → 140 instances. The
+nine new registrations are `refinement_mode` and `refine_closure` (`unit`), and
+`refine_splitedges`, `refine_conforming`, `conforming_migrate`,
+`conforming_operators`, `conforming_determinism`, `conforming_quality` and
+`markquality_conforming` (`regression`). Recorded in `tasks/conforming-refinement.md`'s
+*Status* section and *Report back*, and in the `CLAUDE.md` task-log row. Worth noting
+the `unit` tier is **not** symmetric across backends — 34 SERIAL + 28 HIP — because
+two of its registrations, `global_reduce` (5 instances) and `staleslice_guard` (1),
+are **SERIAL-only**, which is exactly the 6-instance gap. The gate tier *is*
+symmetric, 70 + 70.
+
+**5. The default flip: `Conforming` stays.** Decision 13 in
+`tasks/conforming-refinement.md`. The escape hatch existed for "if conforming cannot
+be made green"; conforming is green at 202/202 with *stronger* assertions than the
+hanging-node path had before this work, so its precondition never arose. The two
+accepted limits are recorded in README *Known Issues* rather than being reasons to
+revert: the blue-diagonal rank-count dependence (Decision 11), and the re-halo
+contract — which is **pre-existing and mode-independent**, so reverting the default
+would not have addressed it.
+
+**6. *Report back* filled in**, including the deferred-measurements table, which now
+carries a results column for all six tasks. Task 4's row is the only measurement D8
+had to actually collect (job `f3QUMwrCeAU7`, `refine_conforming` at np1–5) — the rest
+were already in D1/D5/D6/D7. The Task 4 result is worth having: **the closure
+fraction is flat in the round and near-flat in the rank count** (round 1 is 0.438 at
+every np; rounds 2–3 stay in 0.450–0.469 across all five rank counts) and equals
+**≈3× the mask fraction** (round 1 marks 46 of 320 faces = 0.144). Task 2's row also
+answers a question in the negative-sounding direction that is worth stating plainly:
+the `closeFaces()` "red child of a refined face has `|S| = 0`" assert **did fire**,
+and correctly — D2's defect 4 made a fresh red child's `|S| > 0` legitimate, so the
+assert was *narrowed* rather than deleted.
+
+**7. Housekeeping.** The `.core` crash dump was already gone; `*.core` is now
+gitignored so the next MPI abort cannot be committed (`*.out` already was, which is
+why none of the job logs show up as untracked). Both start-of-D0 modifications
+landed. `systems/tuolumne/spack.yaml` **had to** land: it adds the `repos:` block that
+the live env carries, and CLAUDE.md's invariant is that env snapshots stay in sync —
+verified by diffing the snapshot against
+`~/spack_envs/tuolumne_trilinos/spack.yaml` (identical after the change, divergent
+before). It also documents the `SPACK_USER_CONFIG_PATH` / `$CLUSTER` non-login-shell
+trap in a comment header, which is the same trap this file's *How to build and run*
+section warns about. `.claude/settings.json` landed as-is at the user's explicit
+direction, after I flagged that two of its entries (`Bash(bash -lc ' *)` and
+`Bash(git stash *)`) are blanket wildcards in a committed allowlist and that the
+first permits arbitrary command execution for any checkout.
+
+**One number moved since D2, and it is not a regression.** `refine_conforming`
+round 3 at np1 now reports `F=2372` where D2 recorded `F=2386` (and `|S|` hist
+`[1278,388,82,18]` vs `[1286,392,84,16]`). Cause: **D3** added the identity-`migrate()`
++ `haloExchange()` re-halo to this test's round loop, and this test's mask is
+**gid-derived** (`gidMask`), so the permuted face ordering assigns round-2 children
+different gids and round 3 marks a different — equally valid — face set. That is D1's
+documented benign side effect, and it does not contradict D3's "byte-identical before
+and after" claim, which was about the *edge-gid change* measured in isolation against
+a stashed build, not about the re-halo landing in the same commit. Round 3 is
+`euler=2` at every rank count with the closure fraction unchanged at 0.450–0.469, and
+the control still fails every round with growing defects. **Do not read D2's round-3
+numbers as the current expected values** — D2 predates the re-halo.
+
+**Two follow-ups this work identifies, neither in scope here.** Both are already
+tracked in README *Known Issues* and in the design's decision record; naming them
+together is the useful handoff:
+
+1. **Factor the halo rebuild out of `migrate()` into a standalone `rebuildHalo()`
+   that `refine()` calls.** This is the highest-value one: it caused **six of Task 8's
+   nine defects**, it throws from *inside* the next `refine()` rather than failing
+   visibly at the call the user got wrong, and every multi-round driver has to know
+   the identity-`migrate()` idiom to work at all.
+2. **Carry the split edge's squared length in Phase 2's existing coordinator reply**,
+   which is what a geometric blue tie-break needs to be rank-count stable (Decision
+   11). One extra field on a round trip that already happens — the same shape as
+   Decision 10's fix. The implementation of the tie-break itself is preserved at
+   `/tmp/geometric-tiebreak-d6-keep.patch` (not committed, and on scratch that may be
+   reaped — D6's Decision 11 has the full reasoning if it is gone).
 
 ---
 
@@ -1235,6 +1375,51 @@ D8's full gate is the confirmation at HEAD — and it will now *include* this te
 
 *(append-only)*
 
+- **2026-08-05 — D8. Task 8 is closed and conforming refinement is done.** Gate
+  **140/140** (`f3QTwKZkEkSK`, 14.3 min) and `ctest -L unit` **62/62**
+  (`f3QTwKgRBWzK`, 4.9 min) at HEAD — **202 instances over 28 registrations, both
+  backends, ranks 1–5, zero failures.** **No code changed**; every check came back
+  green first attempt. The two jobs ran **concurrently on separate pdebug nodes**, so
+  both tiers cost 14 min of wall clock rather than 19. `format-check`: the only tree
+  violation is `src/Tessera_Geometry.hpp`, *proved* pre-existing rather than assumed
+  (absent from `git diff f50a91b^..HEAD`, last touched by `5dcb202`, which precedes
+  Task 1); all **34** touched source files are clean under **both** clang-format
+  v21.1.8 (`/usr/bin`) and v19.0.0 (`/opt/rocm-6.4.2/llvm/bin`) — worth checking both
+  because they disagree about this codebase. Totals moved **98 → 202 instances** and
+  **19 → 28 registrations** (the gate itself 70 → 140 and 7 → 14), i.e. this work more
+  than doubled the instance count; D7's predicted 140/62 split was exact. **`Conforming` stays the default (Decision 13)** — the
+  escape hatch's precondition ("if conforming cannot be made green") never arose, and
+  neither accepted limit is a reason to revert, since the re-halo one is
+  *mode-independent and pre-existing*. **Harness trap worth remembering, which cost
+  the first submission:** the committed batch runners `source
+  "${TESSERA_REPO}/scripts/lib/tessera_env.sh"` under `set -u`, so **the submitting
+  shell must export `TESSERA_REPO`** or the job dies in 7.6 s with `unbound variable`
+  (`f3QTvj6QXJ2b`); the resolver self-locates at `tessera_env.sh:32`, but the script
+  needs the variable to *find* the resolver, so that fallback can't help. **The one
+  number that moved since D2 is not a regression:** `refine_conforming` round 3 at np1
+  is now `F=2372`, not D2's `F=2386`, because **D3** added the re-halo to this test's
+  round loop and its mask is **gid**-derived — D1's documented permutation effect. This
+  does not contradict D3's "byte-identical" claim, which was about the edge-gid change
+  measured against a stashed build, not the re-halo landing in the same commit; *treat
+  a gid-masked test's per-round counts as valid-but-arbitrary, and don't read D2's
+  round-3 numbers as current expected values.* Deferred measurements: only Task 4's
+  needed collecting (`f3QUMwrCeAU7`) — **closure fraction is flat in the round and
+  near-flat in the rank count** (0.438 at every np in round 1; 0.450–0.469 across all
+  five rank counts in rounds 2–3) and is **≈3× the mask fraction** (46 of 320 faces =
+  0.144), the O(perimeter) scaling that D7's 16 rounds then show *declining* to 0.0623.
+  Task 2's row resolves in the direction easy to misreport: the `closeFaces()`
+  "`|S| = 0` for a fresh red child" assert **did fire**, correctly, and was *narrowed*
+  by D2 rather than deleted. Housekeeping: `*.core` now gitignored (dump already gone);
+  `systems/tuolumne/spack.yaml` **had** to land — it carries the live env's `repos:`
+  block and CLAUDE.md requires snapshots stay in sync, verified by diffing against
+  `~/spack_envs/tuolumne_trilinos/spack.yaml`; `.claude/settings.json` landed as-is at
+  the user's explicit direction after I flagged that `Bash(bash -lc ' *)` in a
+  committed allowlist is effectively pre-approved arbitrary command execution. **Two
+  follow-ups, in priority order:** (1) factor the halo rebuild into a standalone
+  `rebuildHalo()` that `refine()` calls — it caused **six of Task 8's nine defects**
+  and throws from *inside* the next `refine()` rather than at the call the user got
+  wrong; (2) carry the split edge's squared length in Phase 2's existing coordinator
+  reply so a geometric blue tie-break becomes possible (Decision 11).
 - **2026-08-05 — D7.** `conforming_quality` recalibrated from measurement, extended
   from 8 rounds to **16**, and **promoted to `regression` × {SERIAL, HIP} × ranks
   1–5** with the user's explicit confirmation. Green 10/10, 11–16 s per instance
