@@ -17,6 +17,7 @@
 #include "Tessera_Distribute.hpp"
 #include "Tessera_Fields.hpp"
 #include "Tessera_HaloExchange.hpp"
+#include "Tessera_HaloRebuild.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_Profiling.hpp"
 #include "Tessera_RefinementMode.hpp"
@@ -40,7 +41,7 @@ namespace Tessera
 {
 
 // ============================================================================
-// Mesh migration + general (non-replicated) 1-deep halo rebuild (Step 7)
+// Mesh migration (Step 7)
 // ============================================================================
 //
 // migrate() applies an externally-computed face assignment: each OWNED face is
@@ -62,28 +63,20 @@ namespace Tessera
 // destination vertex/edge follow and a ghost rebuild, which the host orchestration
 // expresses directly.
 //
-// Rounds:
+// Rounds. Only S and A are migration proper; G and B/C/D are the general halo
+// rebuild, which lives in Tessera_HaloRebuild.hpp because refine() needs it too
+// (see that header for what each does). The entire interface between the two
+// halves is the three gid-keyed maps faceById / vById / eById that round A fills.
 //   S  (RefinementMode::Conforming only) Sibling-cohesion fixup on `dest`. See
 //      the block comment at the fixup in migrate(); purely local, no comm.
-//   G  Gather referenced-but-non-held tuples. A freshly-refined mesh can hold an
-//      owned face whose vertex/edge is owned elsewhere and held nowhere locally
-//      (refine() ships a midpoint's gid, not its position, and drops the ghost
-//      layer). Each rank advertises its OWNED vertex/edge tuples to a gid
-//      coordinator (gid % size) and pulls any missing reference back, so round A
-//      sees a self-contained 1-ring. A no-op when every reference is already held.
+//   G  detail::gatherReferencedTuples() — recover any vertex/edge an owned face
+//      references but this rank does not hold, so round A can move a face with
+//      its full vertex/edge pack.
 //   A  Move each owned face + its 3 vertices + 3 edges to dest (three allToAllV).
 //      The receiver's owned faces are the faces it received; its candidate
 //      vertices/edges are their (deduped) endpoints.
-//   B  Ownership + ghost discovery via coordinators. Each owned face advertises
-//      (vertex, faceGid, thisRank) to the vertex coordinator and (edge, thisRank)
-//      to the edge coordinator. A coordinator sets owner = lowest advertising rank
-//      and (vertices only) returns to that owner the list of incident faces owned
-//      by OTHER ranks — the ghost faces the owner must pull.
-//   C  Ghost fetch. Each vertex owner requests the remote incident faces from
-//      their owners; the owner replies with the face tuple plus its 3 vertex and
-//      3 edge tuples (owners stamped), completing every owned vertex's 1-ring.
-//   D  Assemble owned-first local AoSoAs, rebuild the vertex 1-ring CSR, the key
-//      side tables, and the three halo plans (buildKindPlan). The mesh is left
+//   B/C/D  detail::finishHaloAndAssemble() — ownership, ghost fetch, and the
+//      owned-first assembly with the three halo plans. The mesh is left
 //      halo-consistent (ghost values are the owners' values); a subsequent
 //      haloExchange() re-syncs the field pack over the new plans.
 //
@@ -97,59 +90,8 @@ namespace Tessera
 // another rank; that metadata is not used by the 1-ring invariants and is left
 // as-is).
 
-namespace detail
-{
-
-//! Fixed-size byte image of a Cabana tuple so whole-tuple payloads can travel over
-//! allToAllV (Cabana::Tuple is not trivially copyable, but its byte image is — the
-//! same assumption the device migrate primitive makes with MPI_Type_contiguous).
-template <class Tup>
-struct TupleBlob
-{
-    unsigned char bytes[sizeof( Tup )];
-};
-template <class Tup>
-TupleBlob<Tup> toBlob( const Tup& t )
-{
-    TupleBlob<Tup> b;
-    std::memcpy( b.bytes, &t, sizeof( Tup ) );
-    return b;
-}
-template <class Tup>
-Tup fromBlob( const TupleBlob<Tup>& b )
-{
-    Tup t;
-    std::memcpy( &t, b.bytes, sizeof( Tup ) );
-    return t;
-}
-
-//! Deterministic coordinator rank for a single global id (vertex or edge).
-inline int gidCoordRank( GlobalId g, int comm_size )
-{
-    return static_cast<int>( g % static_cast<GlobalId>( comm_size ) );
-}
-
-//! (vertex gid, an incident face's gid, that face's owner) advertisement.
-struct VtxInc
-{
-    GlobalId vg;
-    GlobalId faceGid;
-    Rank owner;
-};
-//! (vertex gid, resolved owner) ownership reply / (edge gid, resolved owner).
-struct GidOwn
-{
-    GlobalId gid;
-    Rank owner;
-};
-//! (edge gid, an incident face's owner) advertisement.
-struct EdgeInc
-{
-    GlobalId eg;
-    Rank owner;
-};
-
-} // namespace detail
+// detail::TupleBlob / gidCoordRank / VtxInc / GidOwn / EdgeInc live in
+// Tessera_HaloRebuild.hpp, alongside the rounds that consume them.
 
 //! What migrate() had to do beyond applying `dest` verbatim. Returned rather
 //! than logged so a caller/test can assert on it; ignoring it is fine, so every
@@ -277,14 +219,12 @@ MigrateStats migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                       const std::vector<Rank>& dest )
 {
     TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_MIGRATE );
-    using memory_space = typename MeshT::memory_space;
-    constexpr int Dim = MeshT::dim;
     using VMT = typename MeshT::vertex_member_types;
     using EMT = typename MeshT::edge_member_types;
     using FMT = typename MeshT::face_member_types;
-    using VTuple = typename Cabana::AoSoA<VMT, Kokkos::HostSpace>::tuple_type;
-    using ETuple = typename Cabana::AoSoA<EMT, Kokkos::HostSpace>::tuple_type;
-    using FTuple = typename Cabana::AoSoA<FMT, Kokkos::HostSpace>::tuple_type;
+    using VTuple = detail::HostVertexTuple<MeshT>;
+    using ETuple = detail::HostEdgeTuple<MeshT>;
+    using FTuple = detail::HostFaceTuple<MeshT>;
 
     const int R = mesh.rank();
     const int size = mesh.commSize();
@@ -390,78 +330,20 @@ MigrateStats migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     for ( int i = 0; i < ne; ++i )
         heldE[e_gid( i )] = he.getTuple( i );
 
-    // Gather referenced-but-non-held vertex/edge tuples from their true owner via
-    // a gid coordinator (gid % size): every rank advertises its OWNED tuples to
-    // the coordinator, then any rank missing a gid its owned faces reference
-    // requests it and the coordinator replies the full tuple. Same coordinator
-    // idiom the cross-rank refine()/invariant checks use (MeshInvariants.hpp,
-    // test_markquality_edge.cpp's maxOwnedEdgeLength). Callers that already
-    // materialize every reference -- distribute()+haloExchange(), readMesh() --
-    // need nothing and skip the gather entirely.
+    // Round G. Recover any vertex/edge an owned face references but this rank does
+    // not hold, so round A below can move a face with its full vertex/edge pack.
     {
-        TESSERA_SCOPED_TIMER_DETAILED(
-            ::Tessera::Profiling::TIMER_MIGRATE_GATHER );
-        std::set<GlobalId> needV, needE;
+        std::vector<GlobalId> refV, refE;
+        refV.reserve( static_cast<std::size_t>( nof ) * 3 );
+        refE.reserve( static_cast<std::size_t>( nof ) * 3 );
         for ( int f = 0; f < nof; ++f )
             for ( int k = 0; k < 3; ++k )
             {
-                if ( heldV.find( f_verts( f, k ) ) == heldV.end() )
-                    needV.insert( f_verts( f, k ) );
-                if ( heldE.find( f_edges( f, k ) ) == heldE.end() )
-                    needE.insert( f_edges( f, k ) );
+                refV.push_back( f_verts( f, k ) );
+                refE.push_back( f_edges( f, k ) );
             }
-        long long localNeed =
-            static_cast<long long>( needV.size() + needE.size() );
-        long long globalNeed = 0;
-        MPI_Allreduce( &localNeed, &globalNeed, 1, MPI_LONG_LONG, MPI_SUM,
-                       comm );
-
-        auto gather =
-            [&]( auto& held, const std::set<GlobalId>& need, auto ownerOf )
-        {
-            using Held = typename std::decay<decltype( held )>::type;
-            using Tup = typename Held::mapped_type;
-            struct Rec
-            {
-                GlobalId gid;
-                detail::TupleBlob<Tup> blob;
-            };
-            // Advertise every locally-OWNED tuple to its coordinator.
-            std::vector<std::vector<Rec>> adv( size );
-            for ( const auto& kv : held )
-                if ( ownerOf( kv.second ) == static_cast<Rank>( R ) )
-                    adv[detail::gidCoordRank( kv.first, size )].push_back(
-                        { kv.first, detail::toBlob( kv.second ) } );
-            auto advGot = allToAllV( comm, adv );
-            std::map<GlobalId, detail::TupleBlob<Tup>> coord;
-            for ( const auto& r : advGot.data )
-                coord[r.gid] = r.blob;
-
-            // Request each needed gid from its coordinator; it replies the tuple.
-            std::vector<std::vector<GlobalId>> req( size );
-            for ( GlobalId g : need )
-                req[detail::gidCoordRank( g, size )].push_back( g );
-            auto reqGot = allToAllV( comm, req );
-            std::vector<std::vector<Rec>> rep( size );
-            for ( int s = 0; s < size; ++s )
-            {
-                const GlobalId* p = reqGot.from( s );
-                const int c = reqGot.count( s );
-                for ( int i = 0; i < c; ++i )
-                    rep[s].push_back( { p[i], coord.at( p[i] ) } );
-            }
-            auto repGot = allToAllV( comm, rep );
-            for ( const auto& r : repGot.data )
-                held[r.gid] = detail::fromBlob( r.blob );
-        };
-
-        if ( globalNeed > 0 )
-        {
-            gather( heldV, needV, []( const VTuple& t )
-                    { return Cabana::get<VertexField::Owner>( t ); } );
-            gather( heldE, needE, []( const ETuple& t )
-                    { return Cabana::get<EdgeField::Owner>( t ); } );
-        }
+        detail::gatherReferencedTuples( comm, R, size, refV, refE, heldV,
+                                        heldE );
     }
 
     // ======================================================================
@@ -471,7 +353,6 @@ MigrateStats migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     std::map<GlobalId, FTuple> faceById;     // this rank's new owned faces
     std::map<GlobalId, VTuple> vById;        // vertices referenced locally
     std::map<GlobalId, ETuple> eById;        // edges referenced locally
-    std::map<GlobalId, Rank> vOwner, eOwner; // resolved owners (filled below)
     {
         TESSERA_SCOPED_TIMER_DETAILED(
             ::Tessera::Profiling::TIMER_MIGRATE_MOVE );
@@ -512,363 +393,12 @@ MigrateStats migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     }
 
     // ======================================================================
-    // Round B — ownership (lowest-rank) + ghost discovery via coordinators.
+    // Rounds B, C, D — ownership, ghost fetch, owned-first assembly + plans.
     // ======================================================================
-    // Advertise each owned face's vertex/edge incidences (advertiser == owner).
-    std::vector<std::vector<detail::VtxInc>> toVC( size );
-    std::vector<std::vector<detail::EdgeInc>> toEC( size );
-    for ( const auto& fkv : faceById )
-    {
-        const GlobalId fg = fkv.first;
-        const FTuple& t = fkv.second;
-        for ( int k = 0; k < 3; ++k )
-        {
-            const GlobalId vg = Cabana::get<FaceField::Verts>( t, k );
-            const GlobalId eg = Cabana::get<FaceField::Edges>( t, k );
-            toVC[detail::gidCoordRank( vg, size )].push_back(
-                { vg, fg, static_cast<Rank>( R ) } );
-            toEC[detail::gidCoordRank( eg, size )].push_back(
-                { eg, static_cast<Rank>( R ) } );
-        }
-    }
-    auto vAdv = allToAllV( comm, toVC );
-    auto eAdv = allToAllV( comm, toEC );
-
-    // Vertex coordinator: owner = min advertiser; reply owner to each advertiser
-    // and hand the owner the list of incident faces owned by OTHER ranks.
-    std::map<GlobalId, std::vector<detail::VtxInc>> byV;
-    for ( const auto& m : vAdv.data )
-        byV[m.vg].push_back( m );
-    std::vector<std::vector<detail::GidOwn>> vOwnReply( size );
-    std::vector<std::vector<detail::VtxInc>> ghostNeed( size );
-    for ( const auto& kv : byV )
-    {
-        const GlobalId vg = kv.first;
-        Rank owner = size;
-        std::set<Rank> advertisers;
-        for ( const auto& inc : kv.second )
-        {
-            owner = std::min( owner, inc.owner );
-            advertisers.insert( inc.owner );
-        }
-        for ( Rank r : advertisers )
-            vOwnReply[r].push_back( { vg, owner } );
-        for ( const auto& inc : kv.second )
-            if ( inc.owner != owner )
-                ghostNeed[owner].push_back( inc );
-    }
-    auto vOwnGot = allToAllV( comm, vOwnReply );
-    auto needGot = allToAllV( comm, ghostNeed );
-    for ( const auto& m : vOwnGot.data )
-        vOwner[m.gid] = m.owner;
-
-    // Edge coordinator: owner = min advertiser; reply owner to each advertiser.
-    std::map<GlobalId, std::vector<Rank>> byE;
-    for ( const auto& m : eAdv.data )
-        byE[m.eg].push_back( m.owner );
-    std::vector<std::vector<detail::GidOwn>> eOwnReply( size );
-    for ( const auto& kv : byE )
-    {
-        Rank owner = size;
-        std::set<Rank> advertisers;
-        for ( Rank r : kv.second )
-        {
-            owner = std::min( owner, r );
-            advertisers.insert( r );
-        }
-        for ( Rank r : advertisers )
-            eOwnReply[r].push_back( { kv.first, owner } );
-    }
-    auto eOwnGot = allToAllV( comm, eOwnReply );
-    for ( const auto& m : eOwnGot.data )
-        eOwner[m.gid] = m.owner;
-
-    // ======================================================================
-    // Round C — fetch ghost faces (+ their vertices/edges) from face owners.
-    // ======================================================================
-    std::map<GlobalId, Rank> neededFace; // ghost faceGid -> its owner
-    for ( const auto& m : needGot.data )
-        if ( faceById.find( m.faceGid ) == faceById.end() )
-            neededFace[m.faceGid] = m.owner;
-    std::vector<std::vector<GlobalId>> reqFace( size );
-    for ( const auto& kv : neededFace )
-        reqFace[kv.second].push_back( kv.first );
-    auto reqGot = allToAllV( comm, reqFace );
-
-    // Serve requests: reply the face tuple + its 3 vertex/edge tuples (owners
-    // stamped from this rank's resolved maps) to the requesting rank.
-    std::vector<std::vector<detail::TupleBlob<FTuple>>> repF( size );
-    std::vector<std::vector<detail::TupleBlob<VTuple>>> repV( size );
-    std::vector<std::vector<detail::TupleBlob<ETuple>>> repE( size );
-    for ( int s = 0; s < size; ++s )
-    {
-        const GlobalId* p = reqGot.from( s );
-        const int c = reqGot.count( s );
-        for ( int i = 0; i < c; ++i )
-        {
-            FTuple ft = faceById.at( p[i] );
-            Cabana::get<FaceField::Owner>( ft ) = static_cast<Rank>( R );
-            repF[s].push_back( detail::toBlob( ft ) );
-            for ( int k = 0; k < 3; ++k )
-            {
-                const GlobalId vg = Cabana::get<FaceField::Verts>( ft, k );
-                const GlobalId eg = Cabana::get<FaceField::Edges>( ft, k );
-                VTuple vt = vById.at( vg );
-                Cabana::get<VertexField::Owner>( vt ) = vOwner.at( vg );
-                repV[s].push_back( detail::toBlob( vt ) );
-                ETuple et = eById.at( eg );
-                Cabana::get<EdgeField::Owner>( et ) = eOwner.at( eg );
-                repE[s].push_back( detail::toBlob( et ) );
-            }
-        }
-    }
-    auto ghF = allToAllV( comm, repF );
-    auto ghV = allToAllV( comm, repV );
-    auto ghE = allToAllV( comm, repE );
-
-    // Ingest ghosts. Ghost faces are new; ghost vertices/edges may repeat locally
-    // held ones (dedup by gid). Owners for ghosts come stamped in their tuples.
-    std::map<GlobalId, FTuple> ghostFaceById;
-    for ( const auto& b : ghF.data )
-    {
-        FTuple t = detail::fromBlob( b );
-        ghostFaceById[Cabana::get<FaceField::Gid>( t )] = t;
-    }
-    for ( const auto& b : ghV.data )
-    {
-        VTuple t = detail::fromBlob( b );
-        const GlobalId vg = Cabana::get<VertexField::Gid>( t );
-        if ( vById.find( vg ) == vById.end() )
-        {
-            vById.emplace( vg, t );
-            vOwner[vg] = Cabana::get<VertexField::Owner>( t );
-        }
-    }
-    for ( const auto& b : ghE.data )
-    {
-        ETuple t = detail::fromBlob( b );
-        const GlobalId eg = Cabana::get<EdgeField::Gid>( t );
-        if ( eById.find( eg ) == eById.end() )
-        {
-            eById.emplace( eg, t );
-            eOwner[eg] = Cabana::get<EdgeField::Owner>( t );
-        }
-    }
-
-    // ======================================================================
-    // Round D — assemble owned-first local AoSoAs + CSR + keys + halo plans.
-    // ======================================================================
-    // Owned-first ordering (owned then ghost, each ascending gid) per kind.
-    auto order_of = [&]( const std::vector<GlobalId>& all,
-                         const std::map<GlobalId, Rank>& owner, int& n_owned )
-    {
-        std::vector<GlobalId> owned, ghost;
-        for ( GlobalId g : all )
-            ( owner.at( g ) == R ? owned : ghost ).push_back( g );
-        std::sort( owned.begin(), owned.end() );
-        std::sort( ghost.begin(), ghost.end() );
-        n_owned = static_cast<int>( owned.size() );
-        std::vector<GlobalId> ord = owned;
-        ord.insert( ord.end(), ghost.begin(), ghost.end() );
-        return ord;
-    };
-
-    std::vector<GlobalId> vAll, eAll;
-    for ( const auto& kv : vById )
-        vAll.push_back( kv.first );
-    for ( const auto& kv : eById )
-        eAll.push_back( kv.first );
-    int nOwnedV = 0, nOwnedE = 0;
-    std::vector<GlobalId> vord = order_of( vAll, vOwner, nOwnedV );
-    std::vector<GlobalId> eord = order_of( eAll, eOwner, nOwnedE );
-
-    // Faces: owned (received) first, then ghosts (fetched), each ascending gid.
-    std::vector<GlobalId> fOwned, fGhost;
-    for ( const auto& kv : faceById )
-        fOwned.push_back( kv.first );
-    for ( const auto& kv : ghostFaceById )
-        fGhost.push_back( kv.first );
-    std::sort( fOwned.begin(), fOwned.end() );
-    std::sort( fGhost.begin(), fGhost.end() );
-    const int nOwnedF = static_cast<int>( fOwned.size() );
-    std::vector<GlobalId> ford = fOwned;
-    ford.insert( ford.end(), fGhost.begin(), fGhost.end() );
-
-    const int nlv = static_cast<int>( vord.size() );
-    const int nle = static_cast<int>( eord.size() );
-    const int nlf = static_cast<int>( ford.size() );
-
-    // gid -> final local index (dense vectors sized to the local max gid; every
-    // gid indexed here is held locally, so it is within range).
-    auto make_g2l = [&]( const std::vector<GlobalId>& ord )
-    {
-        GlobalId mx = 0;
-        for ( GlobalId g : ord )
-            mx = std::max( mx, g );
-        std::vector<LocalIndex> g2l( static_cast<std::size_t>( mx ) + 1,
-                                     invalid_local );
-        for ( int li = 0; li < static_cast<int>( ord.size() ); ++li )
-            g2l[ord[li]] = li;
-        return g2l;
-    };
-    std::vector<LocalIndex> v2l = make_g2l( vord );
-    std::vector<LocalIndex> e2l = make_g2l( eord );
-    std::vector<LocalIndex> f2l = make_g2l( ford );
-
-    // INVALIDATION: the resize/deep_copy calls below, the key-View
-    // reassignment, and the CSR rebuild reallocate and reassign this mesh's
-    // storage, invalidating every slice/CSR/key-View handed out before this
-    // call. The halo plans are replaced (not merely cleared) further down for
-    // the same reason. Re-slice from the mesh after migrate() returns.
-    //
-    // Vertex AoSoA (tuple carries position + user fields; owner set explicitly).
-    {
-        TESSERA_SCOPED_TIMER_DETAILED(
-            ::Tessera::Profiling::TIMER_MIGRATE_ASSEMBLE );
-        Cabana::AoSoA<VMT, Kokkos::HostSpace> lv( "lv", nlv );
-        auto own = Cabana::slice<VertexField::Owner>( lv );
-        for ( int li = 0; li < nlv; ++li )
-        {
-            lv.setTuple( li, vById.at( vord[li] ) );
-            own( li ) = vOwner.at( vord[li] );
-        }
-        mesh.resizeVertices( nlv );
-        Cabana::deep_copy( mesh.vertices(), lv );
-    }
-    {
-        TESSERA_SCOPED_TIMER_DETAILED(
-            ::Tessera::Profiling::TIMER_MIGRATE_ASSEMBLE );
-        Cabana::AoSoA<EMT, Kokkos::HostSpace> le( "le", nle );
-        auto own = Cabana::slice<EdgeField::Owner>( le );
-        for ( int li = 0; li < nle; ++li )
-        {
-            le.setTuple( li, eById.at( eord[li] ) );
-            own( li ) = eOwner.at( eord[li] );
-        }
-        mesh.resizeEdges( nle );
-        Cabana::deep_copy( mesh.edges(), le );
-    }
-    {
-        TESSERA_SCOPED_TIMER_DETAILED(
-            ::Tessera::Profiling::TIMER_MIGRATE_ASSEMBLE );
-        Cabana::AoSoA<FMT, Kokkos::HostSpace> lf( "lf", nlf );
-        auto own = Cabana::slice<FaceField::Owner>( lf );
-        for ( int li = 0; li < nlf; ++li )
-        {
-            const GlobalId g = ford[li];
-            lf.setTuple( li, li < nOwnedF ? faceById.at( g )
-                                          : ghostFaceById.at( g ) );
-            // Owned faces belong to this rank; ghost faces keep the owner their
-            // sender stamped into the tuple.
-            if ( li < nOwnedF )
-                own( li ) = static_cast<Rank>( R );
-        }
-        mesh.resizeFaces( nlf );
-        Cabana::deep_copy( mesh.faces(), lf );
-    }
-    mesh.setOwnedCounts( nOwnedV, nOwnedE, nOwnedF );
-
-    // Rebuild vertex 1-ring CSR (local indices) over ALL local faces/edges.
-    {
-        std::vector<int> off( nlv + 1, 0 );
-        for ( int li = 0; li < nlf; ++li )
-        {
-            const FTuple& t = ( li < nOwnedF ) ? faceById.at( ford[li] )
-                                               : ghostFaceById.at( ford[li] );
-            for ( int k = 0; k < 3; ++k )
-                ++off[v2l[Cabana::get<FaceField::Verts>( t, k )] + 1];
-        }
-        for ( int i = 0; i < nlv; ++i )
-            off[i + 1] += off[i];
-        std::vector<LocalIndex> nbr( off.back() );
-        std::vector<int> cur( off.begin(), off.end() );
-        for ( int li = 0; li < nlf; ++li )
-        {
-            const FTuple& t = ( li < nOwnedF ) ? faceById.at( ford[li] )
-                                               : ghostFaceById.at( ford[li] );
-            for ( int k = 0; k < 3; ++k )
-                nbr[cur[v2l[Cabana::get<FaceField::Verts>( t, k )]]++] =
-                    static_cast<LocalIndex>( li );
-        }
-        mesh.rebuildVertexFaces( off, nbr, "vertex_faces" );
-    }
-    {
-        std::vector<int> off( nlv + 1, 0 );
-        for ( int li = 0; li < nle; ++li )
-        {
-            const ETuple& t = eById.at( eord[li] );
-            for ( int j = 0; j < 2; ++j )
-                ++off[v2l[Cabana::get<EdgeField::Verts>( t, j )] + 1];
-        }
-        for ( int i = 0; i < nlv; ++i )
-            off[i + 1] += off[i];
-        std::vector<LocalIndex> nbr( off.back() );
-        std::vector<int> cur( off.begin(), off.end() );
-        for ( int li = 0; li < nle; ++li )
-        {
-            const ETuple& t = eById.at( eord[li] );
-            for ( int j = 0; j < 2; ++j )
-                nbr[cur[v2l[Cabana::get<EdgeField::Verts>( t, j )]]++] =
-                    static_cast<LocalIndex>( li );
-        }
-        mesh.rebuildVertexEdges( off, nbr, "vertex_edges" );
-    }
-
-    // Rebuild key side tables.
-    {
-        Kokkos::View<EdgeKey*, memory_space> ek(
-            Kokkos::view_alloc( Kokkos::WithoutInitializing, "edge_keys" ),
-            nle );
-        auto h_ek = Kokkos::create_mirror_view( ek );
-        for ( int li = 0; li < nle; ++li )
-        {
-            const ETuple& t = eById.at( eord[li] );
-            h_ek( li ) = makeEdgeKey( Cabana::get<EdgeField::Verts>( t, 0 ),
-                                      Cabana::get<EdgeField::Verts>( t, 1 ) );
-        }
-        Kokkos::deep_copy( ek, h_ek );
-        mesh.setEdgeKeys( ek );
-
-        Kokkos::View<FaceKey*, memory_space> fk(
-            Kokkos::view_alloc( Kokkos::WithoutInitializing, "face_keys" ),
-            nlf );
-        auto h_fk = Kokkos::create_mirror_view( fk );
-        for ( int li = 0; li < nlf; ++li )
-        {
-            const FTuple& t = ( li < nOwnedF ) ? faceById.at( ford[li] )
-                                               : ghostFaceById.at( ford[li] );
-            h_fk( li ) = makeFaceKey( Cabana::get<FaceField::Verts>( t, 0 ),
-                                      Cabana::get<FaceField::Verts>( t, 1 ),
-                                      Cabana::get<FaceField::Verts>( t, 2 ) );
-        }
-        Kokkos::deep_copy( fk, h_fk );
-        mesh.setFaceKeys( fk );
-    }
-
-    // Halo plans: ghosts are the trailing (owner != R) entries, already ascending
-    // by gid, matching the buildKindPlan alignment contract.
-    auto ghosts_of = [&]( const std::vector<GlobalId>& ord, int n_owned,
-                          const std::map<GlobalId, Rank>& owner )
-    {
-        std::vector<std::pair<GlobalId, Rank>> g;
-        for ( int li = n_owned; li < static_cast<int>( ord.size() ); ++li )
-            g.push_back( { ord[li], owner.at( ord[li] ) } );
-        return g;
-    };
-    std::map<GlobalId, Rank> fOwnerMap;
-    for ( GlobalId g : fOwned )
-        fOwnerMap[g] = static_cast<Rank>( R );
-    for ( const auto& kv : ghostFaceById )
-        fOwnerMap[kv.first] = Cabana::get<FaceField::Owner>( kv.second );
-
-    // INVALIDATION: the local entity count and ghost set changed above, so the
-    // previous halo plans are stale; replace (not merely clear) them here.
-    halo.vplan = detail::buildKindPlan<memory_space>(
-        comm, R, size, ghosts_of( vord, nOwnedV, vOwner ), v2l );
-    halo.eplan = detail::buildKindPlan<memory_space>(
-        comm, R, size, ghosts_of( eord, nOwnedE, eOwner ), e2l );
-    halo.fplan = detail::buildKindPlan<memory_space>(
-        comm, R, size, ghosts_of( ford, nOwnedF, fOwnerMap ), f2l );
+    // Shared verbatim with rebuildHalo(); the three maps round A just filled are
+    // the entire interface. INVALIDATION: this reallocates the AoSoAs, key Views
+    // and CSRs and replaces the halo plans (see finishHaloAndAssemble()).
+    detail::finishHaloAndAssemble( mesh, halo, faceById, vById, eById );
 
     return stats;
 }

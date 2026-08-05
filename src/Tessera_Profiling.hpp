@@ -86,18 +86,21 @@ static constexpr const char* TIMER_REFINE_REBUILD = "refine_local_rebuild";
 static constexpr const char* TIMER_REFINE_UNCLOSE = "refine_unclose";
 static constexpr const char* TIMER_REFINE_CLOSE = "refine_close";
 
-// Level 2 — migrate() rounds.
+// Level 2 — migrate()'s own rounds (the move half).
 // RefinementMode::Conforming only: the local pre-move pass that makes every
 // closure sibling follow the lowest-gid sibling's destination.
 static constexpr const char* TIMER_MIGRATE_SIBLING = "migrate_sibling_cohesion";
-static constexpr const char* TIMER_MIGRATE_GATHER = "migrate_round_g_gather";
 static constexpr const char* TIMER_MIGRATE_MOVE = "migrate_round_a_move";
-static constexpr const char* TIMER_MIGRATE_OWNERSHIP =
-    "migrate_round_b_ownership";
-static constexpr const char* TIMER_MIGRATE_GHOSTFETCH =
-    "migrate_round_c_ghostfetch";
-static constexpr const char* TIMER_MIGRATE_ASSEMBLE =
-    "migrate_round_d_assemble";
+
+// Level 2 — rebuildHalo() and its rounds (the halo half). Shared by migrate()
+// and refine(), so the keys are not migrate-specific: rounds G and B/C/D are
+// charged here whichever caller drove them. TIMER_HALO_REBUILD covers only the
+// standalone rebuildHalo() entry point, so migrate() does not double-count.
+static constexpr const char* TIMER_HALO_REBUILD = "halo_rebuild";
+static constexpr const char* TIMER_HALO_GATHER = "halo_round_g_gather";
+static constexpr const char* TIMER_HALO_OWNERSHIP = "halo_round_b_ownership";
+static constexpr const char* TIMER_HALO_GHOSTFETCH = "halo_round_c_ghostfetch";
+static constexpr const char* TIMER_HALO_ASSEMBLE = "halo_round_d_assemble";
 
 // Level 2 — distribute() sub-phases.
 static constexpr const char* TIMER_DISTRIBUTE_CSR = "distribute_csr_rebuild";

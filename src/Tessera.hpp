@@ -24,6 +24,7 @@
 #include "Tessera_HDF5Reader.hpp"
 #include "Tessera_HDF5Writer.hpp"
 #include "Tessera_HaloExchange.hpp"
+#include "Tessera_HaloRebuild.hpp"
 #include "Tessera_Icosphere.hpp"
 #include "Tessera_IoCommon.hpp"
 #include "Tessera_MarkQuality.hpp"
