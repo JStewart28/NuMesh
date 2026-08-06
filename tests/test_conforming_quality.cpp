@@ -55,15 +55,25 @@
 //   |S|=0 (RED, the closure's INPUT)  maxQ 1.0278, minAngle 54.397 deg
 //                                     -- IDENTICAL in all 16 rounds.
 //   |S|=1 (green)                     maxQ 1.5672 from round 1, never moves.
-//   |S|=2 (blue)                      maxQ 1.7759 (r6) -> 2.2344 (r8) ->
-//                                     2.5254 (r11), then FLAT through r16.
+//   |S|=2 (blue)                      maxQ 1.7759 (r6) -> 2.2344 (r8), then
+//                                     FLAT through r16.
 //   |S|=3 (red-closure)               never realised on this workload.
 //   closure fraction                  peaks 0.1864 at r6, declines to 0.0623.
-//   worst amplification Q/Q(parent)   2.4906, flat from r11.
+//   worst amplification Q/Q(parent)   2.2310, flat from r8.
+//
+// RE-MEASURED after the blue tie-break became GEOMETRIC (Decision 15). The rule
+// takes the SHORTER diagonal, so blue's worst shape improved and it now saturates
+// three steps earlier: D7 measured a third step to 2.5254 at r11 with
+// amplification 2.4906; both are gone. Everything else -- red, green, the closure
+// fraction, min angle, and every F and |S| count -- is UNCHANGED, which is the
+// expected signature: the red layer is not a function of the diagonal. The bounds
+// below are deliberately NOT tightened to the new worst; they still hold with
+// more margin, and re-tightening a gate bound to a just-measured number buys
+// nothing but a future false failure.
 //
 // The blue family is the only one that moves, and it moves in DISCRETE STEPS
-// separated by several flat rounds, then saturates: rounds 11-16 are identical
-// while F grows 4348 -> 24608 and the marked set grows 384 -> 2388. That is the
+// separated by several flat rounds, then saturates: rounds 8-16 are identical
+// while F grows 1672 -> 24608 and the marked set grows 134 -> 2388. That is the
 // signature of a maximum over a FINITE set being progressively discovered, not
 // of unbounded growth -- the closure can only emit (red similarity class) x
 // (which edges are split) x (which blue diagonal), and each new combination the
@@ -105,13 +115,15 @@ using namespace Tessera;
 
 // ---- MEASURED quality bounds (D7; see the header note for the 16-round data) --
 //
-// Each is the 16-round measured worst plus ~10%. The measured worst is in the
+// Each was D7's 16-round measured worst plus ~10%. The measured worst is in the
 // comment, so a future change that moves one of these is visible as a diff
-// against a number, not against a guess.
+// against a number, not against a guess. Decision 15's geometric blue tie-break
+// IMPROVED two of them (D7's value in parentheses); the bounds are deliberately
+// not re-tightened onto the new worst.
 static constexpr double kMinAngleDeg = 24.0;     //!< measured 25.987
-static constexpr double kMaxRadiusRatio = 2.8;   //!< measured 2.5254
+static constexpr double kMaxRadiusRatio = 2.8;   //!< 2.2344 (D7 2.5254)
 static constexpr double kMaxClosureFrac = 0.25;  //!< measured 0.1864 (peak, r6)
-static constexpr double kMaxAmplification = 2.8; //!< measured 2.4906
+static constexpr double kMaxAmplification = 2.8; //!< 2.2310 (D7 2.4906)
 //
 // The RED layer is the closure's input. It is a pure 4-way subdivision of
 // icosphere triangles, so its shape is round-independent by construction and
@@ -123,7 +135,10 @@ static constexpr double kRedMaxRadiusRatio = 1.10;
 static constexpr double kRedMinAngleDeg = 50.0;
 //
 // Rounds over which the worst radius ratio must have STOPPED growing. Measured:
-// the last step is at round 11, so the final 5 of 16 rounds are flat.
+// the last step is at round 8, so the final 8 of 16 rounds are flat. (D7 measured
+// the last step at round 11, which is why the round count is 16 and not 12; the
+// geometric tie-break removed that step but the depth is kept -- a round count
+// chosen to be longer than the observed saturation point is the point.)
 static constexpr int kSaturationRounds = 4;
 
 static constexpr int kRounds = 16;

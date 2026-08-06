@@ -14,10 +14,11 @@
 > **Do them in order: 1 then 2.** Follow-up 1 is independently valuable and materially
 > simplifies follow-up 2 — see *Why 1 before 2* at the end. Do not start 2 first.
 >
-> **Follow-up 1 landed 2026-08-05** (`Tessera_HaloRebuild.hpp`; Decision 14 in
-> [conforming-refinement.md](conforming-refinement.md)). Its section below is kept as
-> the design of record; the progress log at the end says what actually happened and
-> where it differed. Follow-up 2 is ready to start.
+> **Both follow-ups have landed** — 1 on 2026-08-05 (`Tessera_HaloRebuild.hpp`,
+> Decision 14), 2 on 2026-08-06 (geometric blue tie-break, Decision 15). The design
+> sections below are kept as the design of record; the **progress log at the end says
+> what actually happened and where it differed from the design** — read that first if
+> you are here to find out what the code does today.
 
 ---
 
@@ -26,10 +27,14 @@
 | # | Item | Priority | Status |
 |---|------|----------|--------|
 | 1 | Factor the halo rebuild into a standalone `rebuildHalo()` that `refine()` calls | **High** — caused 6 of Task 8's 9 defects | **Done** (2026-08-05) — gate **150/150**, unit **62/62**. See the progress log. |
-| 2 | Carry the split edge's squared length in Phase 2's coordinator reply so the blue tie-break can be geometric | Medium — closes Decision 11 | Not started — **now unblocked**: follow-up 1's round-G postcondition (every vertex an owned face references is held locally with its position) is what option 1 of its open sub-problem needs. |
+| 2 | Carry the split edge's squared length in Phase 2's coordinator reply so the blue tie-break can be geometric | Medium — closes Decision 11 | **Done** (2026-08-06) — `blueDiagMismatch` **0** at np1–5 on both backends (was 4 of 20 blue parents at np5); full sweep **193/193**. Decision 15. See the progress log. |
 
-**Both are recorded in README *Known Issues* and in the Decision record** (Decision 11
-for item 2, Decision 13's second bullet for item 1). If either lands, update those.
+**Both were recorded in README *Known Issues* and in the Decision record** (Decision 11
+for item 2, Decision 13's second bullet for item 1). **Both entries are now deleted** —
+Decisions 14 and 15 resolved them, and neither accepted limit of the `Conforming`
+default survives.
+
+**This file is closed out.** Nothing here is open work.
 
 ---
 
@@ -650,3 +655,69 @@ paying for this.**
   the union of its children's" and option 1 of follow-up 2's persistent-split-edge
   sub-problem is sound with no communication. `rebuildHalo()` is also public API, so
   a `recoverSplitEdges()`-adjacent helper can rely on the postcondition by name.
+
+- 2026-08-06 — **Follow-up 2 landed. This file is closed out.** Recorded as
+  **Decision 15** in [conforming-refinement.md](conforming-refinement.md), which
+  resolves **Decision 11** and the first bullet of **Decision 13**; the README
+  *Known Issues* blue-diagonal entry is deleted outright. The previous session
+  wrote every edit but compiled and ran **nothing**; this session verified it.
+
+  **The acceptance criterion is met, and it is the whole point of the change:**
+  `conforming_determinism` case A reports `vis=ok blueDiagMismatch=0
+  parentMissing=0 blueTie=4` at **np1–5 SERIAL and np1–4 HIP**, in both the
+  `[Serial]` and `[Default]` exec spaces, where Decision 11 measured **4 of 20
+  blue parents flipping at np5**. Full sweep (`run_all_tests.flux`) **193/193** —
+  135 regression + 58 unit instances, zero failures, nothing relabelled.
+
+  **The design was right about the hard part and wrong about one number.**
+
+  1. **The "code complete, unverified" state compiled and passed as written.**
+     None of the seven `closeFaces()` call sites, the `fetchPos` return-type
+     deduction, or the six-parameter signature needed a fix. The predicted
+     first-pass fallout did not materialise. The load-bearing design claim — that
+     Decision 14's round-G postcondition makes the persistent-split-edge case
+     (option 1) solvable with **no communication** — held exactly as argued. The
+     1-then-2 ordering was worth what the file claimed it was.
+  2. **Exact ties are NOT zero, and the doc above asserted they were.** *Exact
+     ties* said to ship the counter and measure. Measured: **4** blue parents tie
+     on `conforming_determinism`'s workload — identical at every rank count and on
+     both backends — and **11 of 202** on `refine_closure`'s inverse case. The
+     already-written prose in `docs/design.md` and in the test's own comment
+     claimed the count was *zero on the test workload*; both were corrected. That
+     was the one substantive error in the handoff, and it was in the documentation
+     rather than the code.
+  3. **The escalation the doc reserved is not needed, for a reason the measurement
+     had to supply.** Delivering the midpoint *position* to break ties by quantised
+     coordinates was contingent on a non-zero tie count — which happened. But
+     `blueDiagMismatch` is **0 anyway**: the gid fallback agrees at every rank
+     count tested, so the escalation would buy nothing measurable. Not
+     implemented. The residual dependence is real in principle, unobserved in
+     practice, and the counter keeps it a measurement instead of an assumption.
+     Note the two 4s are a coincidence, not a correspondence: the 4 parents that
+     flipped at np5 under the old rule are the ones geometry now decides, and the
+     4 that tie are gid-stable.
+  4. **Shape improved, which is the second independent check that the comparison
+     is not inverted.** Re-measured at 16 rounds: blue's worst radius ratio
+     **2.5254 → 2.2344**, worst amplification **2.4906 → 2.2310**, saturating at
+     round **8** instead of 11 and flat through 16. A rule that took the *longer*
+     diagonal would have made `maxQ` worse. Red, green, min angle, closure
+     fraction and every `F` are identical to D7's. Decision 12's **bounds were
+     left alone** (`Q ≤ 2.8`) — they hold with more margin now, and re-tightening
+     a gate bound onto a just-measured number only manufactures a future false
+     failure; only the recorded measurements were updated.
+  5. **Both diagonals stay populated**, so the rule has not collapsed:
+     `refine_closure` inverse 101/101/11, `refine_conforming` 6/9/3 at round 1 to
+     41/41/11 at round 3, and `q0C + q1A` equals the `|S|=2` count exactly at
+     every round checked. SERIAL and HIP are byte-identical at equal rank count —
+     that is the cross-backend float-determinism check the *Risks* section asked
+     for. `F`, `euler`, the `|S|` histogram and the closure fraction are
+     unchanged, which is the signature that says only the diagonal moved.
+  6. **No rebuild was needed for the formatting pass.** `format-check` failed on
+     six files under **both** clang-format v21 and v19 — the identical violation
+     set, so applying the formatter was safe under both. The tested binaries
+     predate the reformat, so equivalence was established by comparing
+     whitespace-stripped files rather than by re-running: five matched exactly and
+     `Tessera_RefineParallel.hpp`'s single difference is clang-format reflowing a
+     string literal across a break, where the concatenated string is unchanged.
+     Worth reusing — it converts "is this reformat safe?" from a 25-minute rebuild
+     plus a 17-minute sweep into one `tr -d '[:space:]' | diff`.

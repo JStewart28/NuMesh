@@ -306,29 +306,14 @@ make -j $(nproc)
   must spell `RefinementMode::HangingNode2to1` explicitly, which every pre-existing
   test in the gate now does. Under `HangingNode2to1` a partial refine mask leaves
   T-junctions bounded to a 2:1 level jump, so the owned-only Euler number equals 2
-  only for a uniform refine; that is the *contract* of the mode, not a defect. The one
-  remaining genuine limit of conforming mode is the entry below this one. Design:
-  [tasks/conforming-refinement.md](tasks/conforming-refinement.md) and
+  only for a uniform refine; that is the *contract* of the mode, not a defect. The
+  visible mesh is now rank-count reproducible as well: the blue closure diagonal is
+  chosen **geometrically** (shorter diagonal, i.e. the midpoint of the longer split
+  edge joins its opposite corner), so nothing about the closure reads an
+  `MPI_Exscan`-derived gid. This closed the last recorded limit of conforming mode.
+  Design: [tasks/conforming-refinement.md](tasks/conforming-refinement.md) and
   `docs/design.md` → *Adaptive refinement*; verification evidence:
   [tasks/conforming-refinement-debug.md](tasks/conforming-refinement-debug.md).
-- **In `Conforming` mode the visible mesh is rank-count dependent up to blue
-  closure diagonals.** Refining the same mesh with the same mask on a different
-  number of ranks can produce a visible triangulation that differs in *which
-  diagonal* some blue closure quads are split along. Measured on the test workload:
-  ranks 1–4 agree exactly, rank 5 differs on 4 of 20 blue parents. Everything else
-  is rank-count invariant and asserted as such — the persistent **red** layer, the
-  `|S|` pattern histogram, the closure-vertex set, and V/E/F — so mesh *size*,
-  refinement decisions, and conformity are reproducible; only the transient
-  closure's diagonal choice is not. Cause: the blue tie-break compares midpoint
-  gids, and those come from an `MPI_Exscan`, so they are agreed across the ranks of
-  one run but are not the same values at a different rank count. A geometric rule
-  would fix it but cannot be evaluated locally (the closure runs on the un-closed
-  red layer, whose corners may name vertices the rank does not hold), so it needs
-  the split edge's length carried in `refine()`'s existing Phase-2 coordinator
-  reply — a tracked follow-up. Consequence for consumers: do not compare a
-  conforming mesh's *visible* face set or a visible-face-gid-keyed field bitwise
-  across rank counts; compare the red layer, or compare by position. Recorded as
-  Decision 11 in [tasks/conforming-refinement.md](tasks/conforming-refinement.md).
 - **`RefinementMode::HangingNode2to1` does not track hanging nodes across refine
   rounds.** Two consequences, both long-standing and neither visible to that mode's
   own tests (which assert non-conformity anyway), found while fixing the conforming

@@ -336,20 +336,38 @@ inside `detail::refineImpl()` under `if constexpr`.
    of a face refined in this round has |S| = 0 unless one of its two inherited
    boundary half-edges is bisected this round, which is possible exactly when its
    parent's edge carried a **reused** midpoint; `closeFaces()` asserts that
-   narrower form. The blue quad's diagonal is tie-broken on the **lower midpoint
-   gid**, which is globally agreed within a run, so the closure does not depend on
-   *which rank owns a face* — it is partition-independent at a fixed rank count.
-   It is **not** independent of the *rank count*: midpoint gids come from an
-   `MPI_Exscan`, so the same red mesh can close with a different blue diagonal
-   under a different partition size (measured: np1–4 agree, np5 flips 4 of 20 blue
-   parents). Everything else about the closure *is* rank-count invariant — the red
-   layer, the `|S|` histogram, the closure-vertex set and V/E/F — and
-   `conforming_determinism` asserts that the visible layer differs *only* through
-   blue diagonals. A geometric rule (equivalently: connect the midpoint of the
-   **longer split edge**) would remove the dependence but cannot be evaluated
-   locally, because the closure runs on the un-closed red layer whose corners may
-   name vertices the rank does not hold; it would need the split edge's length
-   carried in Phase 2's coordinator reply. See Decision 11 in
+   narrower form. The blue quad is split along its **shorter diagonal**, which
+   reduces exactly to *connect the midpoint of the longer split edge to its
+   opposite corner* — with q0 = (A+B)/2 and q1 = (B+C)/2,
+   `|q0−C|² − |A−q1|² = ¾(|C−B|² − |B−A|²)`, so only the two split edges' lengths
+   are needed, never the diagonals'. Because the rule reads **geometry** and no
+   gid, the visible layer is invariant under both a change of partition and a
+   change of **rank count**, alongside the red layer, the `|S|` histogram, the
+   closure-vertex set and V/E/F; `conforming_determinism` asserts all of them.
+
+   The length cannot be computed where it is used: `closeFaces()` runs on the
+   un-closed red layer, whose corners come from closure children's
+   `ClosureParentVerts` and may name vertices the rank does not hold (they are
+   *parent* corners, so a 1-deep halo does not reach them either). So the length
+   is attached to the **edge**: Phase 2's midpoint-gid reply carries the bisected
+   edge's squared length along with the gid, at no extra round — the midpoint
+   owner is by construction the owner of an incident refining face and therefore
+   holds both endpoints. A *persistently* split edge never appears in that round
+   trip (`forEachSubEdge()` advertises it only as its two halves) and gets its
+   length locally instead, from the closure children's own corners, which is sound
+   because after `rebuildHalo()` every vertex an owned face references is held
+   *with its position*. Every producer goes through `edgeLen2Canonical()` so the
+   values are bit-identical wherever computed; two ranks that disagreed on one
+   would cut the same quad differently and crack the mesh. An **exact** length tie
+   falls back to the old lower-midpoint-gid rule and is counted in
+   `ClosureStats::nBlueDiagTie`, so the one residual rank-count dependence is
+   measured rather than assumed away. Ties **do** occur — the icosphere is highly
+   symmetric — but they are a small minority and they did not cost anything
+   measurable: on `conforming_determinism`'s workload 4 blue parents tie at every
+   rank count on both backends, and the chosen diagonal still agreed with the
+   `MPI_COMM_SELF` reference at np1–5 (`blueDiagMismatch=0`). So the residual
+   dependence is real in principle and unobserved in practice; the counter is what
+   keeps that an ongoing measurement. See Decisions 11 and 15 in
    `tasks/conforming-refinement.md`.
 
 The closure creates **no vertices**, so no `MPI_Exscan`, no interpolation, and no

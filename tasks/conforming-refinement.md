@@ -1664,7 +1664,13 @@ per-sub-task *What landed* sections.
   consistent gids. The numbering is hash-scattered rather than rank-contiguous;
   nothing depends on edge-gid locality. Found by Task 8 D3.
 - **2026-08-04 — Decision 11: the blue tie-break stays gid-valued, and the visible
-  layer is documented as rank-count dependent up to blue diagonals.** This settles
+  layer is documented as rank-count dependent up to blue diagonals.**
+  **RESOLVED 2026-08-06 by Decision 15** — the tie-break is now geometric and
+  `blueDiagMismatch` is 0 at np1–5 on both backends. The original analysis is
+  preserved below unchanged, because it is what made the second attempt work: it is
+  the source of both the algebraic identity the new rule uses and the diagnosis
+  ("the length must be attached to the edge, not computed from corner positions")
+  that the reverted attempt could not reach. This settles
   risk point 10 and the open question Decision 6 deferred to Task 8. Measured: the
   visible layer agrees with the `MPI_COMM_SELF` reference at np1–4 and differs at
   np5 by exactly **4 of 20 blue parents**, with the red layer, the `|S|` histogram,
@@ -1791,6 +1797,98 @@ per-sub-task *What landed* sections.
   `migrate_round_{g,b,c,d}_*` → `halo_round_*` since either caller can drive them.
   Also deleted: `refineImpl()` step 3j, the deliberately incomplete best-effort
   owned-vertex 1-ring CSR, which round D now rebuilds completely.
+- **2026-08-06 — Decision 15: the blue diagonal is chosen geometrically, and the
+  length is carried on the edge rather than computed from corner positions.**
+  Follow-up 2 of [halo-rebuild-split-edge-design.md](halo-rebuild-split-edge-design.md);
+  this **resolves Decision 11** and the first bullet of Decision 13. The blue quad
+  is split along its **shorter diagonal**, which by Decision 11's own identity
+  `|q0−C|² − |A−q1|² = ¾(|C−B|² − |B−A|²)` is exactly *connect the midpoint of the
+  longer split edge to its opposite corner* — the two split edges' lengths suffice
+  and the diagonals' are never needed.
+
+  **The one insight that separates this from the attempt D6 reverted** is not the
+  rule; D6 had the rule. It is *where the length lives*. `closeFaces()` runs on the
+  un-closed red layer, whose corners come from closure children's
+  `ClosureParentVerts` and may name vertices the rank does not hold — D6 measured
+  12 missing positions in a single `closeFaces()` call at np2, including original
+  icosphere vertices — and a 1-deep halo cannot help because those are *parent*
+  corners. So nothing is computed at the point of use: the length is **attached to
+  the edge** and delivered with the midpoint gid.
+
+  * `detail::KeyGid` gains a `double len2`, populated by the midpoint owner — which
+    is by construction the owner of an incident *refining* face and therefore holds
+    both endpoints of the edge it is bisecting — and delivered to every co-sharer on
+    Phase 2's **existing** `allToAllV`. **No extra message round**, the same shape as
+    Decision 10's edge-gid fix and as Decision 11 predicted.
+  * A **persistently** split edge never appears in that round trip at all, because
+    `forEachSubEdge()` advertises it only as its two halves. It gets its length
+    **locally** instead (option 1 of the design's three), from the closure children's
+    own corners, next to where `recoverSplitEdges()` reconstructs its midpoint. This
+    is sound only because of Decision 14: after `rebuildHalo()` every vertex an owned
+    face references is held *with its position*. Compose that with sibling
+    co-residency and "a closed parent's corners are the union of its children's" and
+    it needs no communication. **This is the load-bearing reason follow-up 1 came
+    first**, and it held exactly as designed.
+  * Every producer goes through one `edgeLen2Canonical()`, which orders the endpoints
+    by gid before subtracting and computes in `double` regardless of the mesh's
+    `scalar_type`. Two ranks that disagreed on a length by one bit would cut the same
+    quad along different diagonals and crack the mesh. The four producers are the two
+    `refine()` paths, `refineLocalConforming()`, and `checkClosureInverse()`.
+
+  **Exact ties are counted, not resolved by geometry, and they are not zero.** On an
+  exact `len2` equality the rule falls back to the old lower-midpoint-gid comparison
+  and increments a new `ClosureStats::nBlueDiagTie`. The design anticipated ties on a
+  symmetric icosphere and it was right: **4** blue parents tie on
+  `conforming_determinism`'s workload, and 11 of 202 on `refine_closure`'s inverse
+  case. The proposed escalation — deliver the midpoint *position* and compare
+  quantised coordinates — was deliberately **not** implemented, because the measurement
+  it was contingent on came back saying it would buy nothing: `blueDiagMismatch` is
+  **0** even with the 4 ties present, i.e. the gid fallback happens to agree at every
+  rank count tested. The residual rank-count dependence is therefore real in
+  principle and unobserved in practice, and the counter keeps it an ongoing
+  measurement rather than an assumption. `conforming_determinism` case A asserts
+  `blueTie` itself matches the reference and tolerates at most `blueTie` mismatches,
+  so a tie can never silently absorb a real divergence.
+
+  **Measured (the acceptance).** `vis=ok`, `blueDiagMismatch=0`, `parentMissing=0`,
+  `blueTie=4` at np1–5 SERIAL and np1–4 HIP, in both the `[Serial]` and `[Default]`
+  exec spaces — where Decision 11 measured 4 of 20 blue parents flipping at np5.
+  Both diagonals stay populated (a rule that collapsed to one would be inverted):
+  `refine_closure`'s inverse case 101/101/11, `refine_conforming` 6/9/3 at round 1
+  rising to 41/41/11 at round 3, and `q0C + q1A` equals the `|S|=2` count exactly at
+  every round. SERIAL and HIP are byte-identical at equal rank count, which is the
+  cross-backend float-determinism check. `F`, `euler`, the `|S|` histogram and the
+  closure fraction are **unchanged** — the red layer is not a function of the
+  diagonal, and that is the signature that says only the diagonal moved. Full sweep
+  **193/193** (135 regression + 58 unit instances, both backends, SERIAL np1–5 and
+  HIP np1–4).
+
+  **The shape bound improved, and Decision 12's numbers move.** Re-measured at 16
+  rounds: blue's worst radius ratio **2.5254 → 2.2344** and worst amplification
+  **2.4906 → 2.2310**, with saturation now at round **8** instead of 11 and flat
+  through 16. This is the predicted direction and is the second independent check
+  that the comparison is not inverted — the rule takes the *shorter* diagonal, so a
+  rule that got it backwards would have made `maxQ` *worse*. Red, green, min angle,
+  the closure fraction and every `F` are identical to D7's. Decision 12's calibrated
+  **bounds are deliberately left as they are** (`Q ≤ 2.8`, amplification `≤ 2.8`):
+  they still hold with more margin than before, and re-tightening a gate bound onto a
+  freshly measured number buys nothing but a future false failure. Only the
+  *measured* numbers recorded alongside them are updated.
+
+  **`checkClosureInverse` remains the only check that catches a wrong diagonal** —
+  D6's regression reported `euler=2`, the correct `F`, the correct `|S|` histogram and
+  both diagonals populated, and failed that check alone. The `refine_closure` blue
+  unit cases were accordingly rewritten to drive **both** diagonals from geometry (the
+  reference triangle has `|ab|²=1, |bc|²=2, |ca|²=1`, so which pair of edges is split
+  selects the diagonal with no gid relabelling), plus two new sub-cases: `blue/relabel`
+  swaps the midpoint gids and asserts the diagonal does **not** move — that is the
+  direct regression test for the property this change buys — and `blue/tie` drives a
+  synthetic exact tie and asserts both the gid fallback and `nBlueDiagTie == 1`.
+  A missing `len2` for an edge that *is* split prints the edge and parent gid and
+  `Kokkos::abort`s rather than defaulting, which is D6's other lesson: a lookup that
+  returns a default on a miss converts a hard failure into a plausible mesh.
+  `nBlueDiagLowFirst`/`LowSecond` were renamed `nBlueDiagQ0C`/`nBlueDiagQ1A`, since
+  the old names describe a gid comparison that no longer happens.
 - **2026-08-05 — Decision 13: `Conforming` stays the `Mesh` default.** Decision 3
   chose it, Decision 5 accepted that Task 7 would flip it *before* anything had ever
   been executed, and Task 8 held the escape hatch: revert to `HangingNode2to1` if
@@ -1809,6 +1907,10 @@ per-sub-task *What landed* sections.
     face set bitwise across rank counts — compare the red layer, or compare by
     position. Everything provably a function of the global mesh is invariant and
     asserted as such.
+    **RESOLVED 2026-08-06 by Decision 15** — the blue tie-break is geometric, the
+    visible layer agrees at np1–5 on both backends, and the README entry is gone.
+    **Neither accepted limit of the `Conforming` default survives**; the default is
+    now carried by a mesh with no recorded user-visible limit at all.
   * **A distributed mesh must be re-haloed between two `refine()` calls.** This is
     pre-existing and mode-independent, but Task 8 made it sharper and much more
     prominent: the consequence is a **throw from inside the next `refine()`**, not
