@@ -28,31 +28,32 @@
 //      a function of its edge alone. So each face is canonicalised as the
 //      sorted triple of its corners' quantised positions.
 //
-//      This case is what pins the BLUE-DIAGONAL TIE-BREAK, and it is worth
-//      being precise about what it can prove. The tie-break connects the
-//      lower-GID midpoint of the quad to its opposite corner. Its inputs are
-//      globally agreed within a run, so the closure never depends on which rank
-//      owns the face -- but they are gid-valued, and gids are rank-count
-//      dependent as above. The red layer, the |S| histogram, the closure-vertex
-//      set, and V/E/F are all provably rank-count independent and are asserted
-//      to agree exactly.
+//      This case is what pins the BLUE-DIAGONAL TIE-BREAK, which is GEOMETRIC:
+//      the quad is cut along its shorter diagonal, equivalently the midpoint of
+//      the LONGER split edge is joined to its opposite corner. Its inputs are
+//      the two split edges' squared lengths -- a function of the global mesh, not
+//      of any gid -- so the VISIBLE layer is rank-count invariant too, alongside
+//      the red layer, the |S| histogram, the closure-vertex set and V/E/F. All of
+//      them are asserted to agree exactly.
 //
-//      The VISIBLE layer is NOT, and that is a recorded design limit rather than
-//      a bug: it is invariant only up to the blue diagonal. Measured, np1-4 all
-//      agree and np5 flips 4 of 20 blue parents. A geometric tie-break would fix
-//      it and was implemented and measured; it cannot be made local, because the
+//      That was NOT true of the previous rule (connect the lower-GID midpoint):
+//      partition-independent, but gid-valued and so rank-count dependent, since
+//      midpoint gids come from an MPI_Exscan. Measured then: np1-4 agreed and np5
+//      flipped 4 of 20 blue parents, recorded as Decision 11 in
+//      tasks/conforming-refinement.md. Making the geometric rule work needed the
+//      split edge's squared length to travel WITH THE EDGE, in Phase 2's existing
+//      coordinator reply -- it cannot be computed where it is used, because the
 //      closure runs on the un-closed red layer whose corners come from
 //      ClosureParentVerts and may name vertices the rank does not hold (risk
-//      point 4). See Decision 11 in tasks/conforming-refinement.md.
+//      point 4).
 //
-//      So what this case asserts about the visible layer is the sharper
-//      statement that it differs ONLY through blue diagonals -- a difference
-//      with no diagonal mismatch to explain it fails, and so does a diagonal
-//      mismatch that leaves the visible layer identical. Any divergence beyond
-//      the known one is still caught. The breakdown is printed component by
-//      component (plus a direct count of blue parents whose diagonal differs
-//      from the serial reference) so a failure names its own cause instead of
-//      just "the checksums differ".
+//      The one surviving escape is an EXACT geometric tie, where the closure
+//      falls back to the gid rule; ClosureStats::nBlueDiagTie counts those, and
+//      the assertion below tolerates at most that many diagonal mismatches (zero
+//      on this workload). The breakdown is printed component by component (plus a
+//      direct count of blue parents whose diagonal differs from the serial
+//      reference) so a failure names its own cause instead of just "the
+//      checksums differ".
 //
 //   B. CLOSURE IDEMPOTENCE. Re-refining an already-closed mesh with an EMPTY
 //      mask is un-close -> no red split -> re-close, which must be the identity
@@ -228,9 +229,13 @@ struct GeoSig
 {
     long long V = 0, E = 0, F = 0;
     long long hist[4] = { 0, 0, 0, 0 }; //!< |S| histogram, summed over rounds
-    Chk red;                            //!< red layer, by position triple
-    Chk vis;                            //!< visible layer, by position triple
-    Chk closureVerts;                   //!< former hanging nodes, by position
+    //! Blue quads whose two split edges were EXACTLY equal in squared length,
+    //! summed over rounds and reduced over `comm`. Those, and only those, fall
+    //! back to the midpoint-gid rule and so stay rank-count dependent.
+    long long blueTie = 0;
+    Chk red;          //!< red layer, by position triple
+    Chk vis;          //!< visible layer, by position triple
+    Chk closureVerts; //!< former hanging nodes, by position
     //! Blue parents: canonical parent hash -> canonical diagonal hash. Only the
     //! serial reference fills this globally; the distributed run fills its own
     //! local share and looks each entry up in the reference.
@@ -296,17 +301,20 @@ static GeoSig refineAndMeasure( MPI_Comm comm, int& fails )
             refine( mesh, halo, capMask( mesh, pos, zmin[round], fails ) );
         for ( int i = 0; i < 4; ++i )
             sig.hist[i] += res.closure.patternCount[i];
+        sig.blueTie += res.closure.nBlueDiagTie;
 
         // Nothing in between: refine() rebuilds the 1-deep halo itself, so the
         // next round's geometric mask and the measurement below find corner
         // positions locally. This used to need an identity migrate().
     }
 
-    long long h[4] = { sig.hist[0], sig.hist[1], sig.hist[2], sig.hist[3] };
-    long long gh[4] = { 0, 0, 0, 0 };
-    MPI_Allreduce( h, gh, 4, MPI_LONG_LONG, MPI_SUM, comm );
+    long long h[5] = { sig.hist[0], sig.hist[1], sig.hist[2], sig.hist[3],
+                       sig.blueTie };
+    long long gh[5] = { 0, 0, 0, 0, 0 };
+    MPI_Allreduce( h, gh, 5, MPI_LONG_LONG, MPI_SUM, comm );
     for ( int i = 0; i < 4; ++i )
         sig.hist[i] = gh[i];
+    sig.blueTie = gh[4];
 
     // ---- positional signatures -------------------------------------------
     const auto pos = readPositions( mesh );
@@ -442,20 +450,27 @@ static int case_rank_count( int rank, int size, const char* tag )
     if ( !okCounts || !okHist || !okRed || !okCv || parentMissing != 0 )
         ++fails;
 
-    // The VISIBLE layer is rank-count invariant only up to the blue diagonal
-    // tie-break, which compares midpoint gids and so reads an MPI_Exscan
-    // (Decision 11 in tasks/conforming-refinement.md -- a geometric rule was
-    // implemented and measured, and cannot be made local). The assertion is
-    // therefore not "the visible layers agree" but the sharper "they differ ONLY
-    // through blue diagonals", checked in both directions:
-    //   * a visible-layer difference with NO diagonal mismatch to explain it is a
-    //     real failure -- the closure diverged for some other reason;
-    //   * a diagonal mismatch that does NOT show up in the visible layer means
-    //     blueDiag is not measuring what the closure actually emitted.
-    // So any divergence beyond the known one still fails here.
-    if ( !okVis && diagMismatch == 0 )
+    // The VISIBLE layer too, now that the blue tie-break is GEOMETRIC: it reads
+    // the two split edges' squared lengths, which are a function of the mesh
+    // alone, so no diagonal may differ (Decision 11, resolved). The ONE residual
+    // escape is an exact geometric tie, |B-A|^2 == |C-B|^2, where the closure
+    // falls back to the old midpoint-gid rule and so back to an MPI_Exscan.
+    // `blueTie` counts those. MEASURED: 4 on this workload, identical at every
+    // rank count and on both backends, and `blueDiagMismatch` is 0 anyway -- the
+    // gid fallback happens to agree at np1-5, so the residual dependence is real
+    // in principle and unobserved. A diagonal mismatch beyond what the ties can
+    // explain is therefore a hard failure, in both directions:
+    //   * a mismatch while blueTie == 0 means the geometric rule is not being
+    //     evaluated consistently, or a length disagrees between two ranks;
+    //   * a visible-layer difference with NO diagonal mismatch means the closure
+    //     diverged for some other reason entirely.
+    // Only a mismatch bounded by the tie count is tolerated, and even then only
+    // as many as there are ties.
+    if ( dist.blueTie != ref.blueTie )
+        ++fails; // the tie count is itself a geometric quantity
+    if ( diagMismatch > dist.blueTie )
         ++fails;
-    if ( okVis && diagMismatch != 0 )
+    if ( !okVis && diagMismatch == 0 )
         ++fails;
     // Non-vacuity: an all-|S|=0 refinement would make every comparison above
     // trivially true.
@@ -468,13 +483,13 @@ static int case_rank_count( int rank, int size, const char* tag )
         std::printf(
             "  [%s] rank-count-independence %s (np=%d V=%lld E=%lld F=%lld "
             "|S| hist=[%lld,%lld,%lld,%lld] counts=%s hist=%s red=%s vis=%s "
-            "closureVerts=%s(%lld) blueDiagMismatch=%lld parentMissing=%lld)\n",
+            "closureVerts=%s(%lld) blueDiagMismatch=%lld blueTie=%lld "
+            "parentMissing=%lld)\n",
             tag, fails == 0 ? "ok" : "FAIL", size, dist.V, dist.E, dist.F,
             dist.hist[0], dist.hist[1], dist.hist[2], dist.hist[3],
             okCounts ? "ok" : "DIFF", okHist ? "ok" : "DIFF",
-            okRed ? "ok" : "DIFF", okVis ? "ok" : "DIFF-by-blue-diag",
-            okCv ? "ok" : "DIFF", dist.closureVerts.n, diagMismatch,
-            parentMissing );
+            okRed ? "ok" : "DIFF", okVis ? "ok" : "DIFF", okCv ? "ok" : "DIFF",
+            dist.closureVerts.n, diagMismatch, dist.blueTie, parentMissing );
     if ( rank == 0 )
         std::fflush( stdout );
     return fails;

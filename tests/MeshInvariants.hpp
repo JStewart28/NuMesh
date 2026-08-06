@@ -604,13 +604,48 @@ int checkClosureInverse(
         for ( const auto& kv : midpoints )
             midpointOf.emplace( kv.first, kv.second );
 
+        // The blue diagonal is chosen from the two split edges' squared lengths,
+        // so a faithful RE-closure has to reproduce them. It can: the split
+        // edges' endpoints are corners of this rank's own faces and refine()
+        // carries existing vertex positions through verbatim, so recomputing
+        // from the mesh as it now stands through the same edgeLen2Canonical()
+        // gives bit-identical values to the ones the closure consumed. A
+        // missing one is not silently defaulted -- closeFaces() aborts naming
+        // the edge.
+        std::map<Tessera::EdgeKey, double> len2Of;
+        {
+            const std::size_t nv = mesh.numVertices();
+            Cabana::AoSoA<typename MeshT::vertex_member_types,
+                          Kokkos::HostSpace>
+                hv( "hv", nv );
+            Cabana::deep_copy( hv, mesh.vertices() );
+            auto vg = Cabana::slice<Tessera::VertexField::Gid>( hv );
+            auto vp = Cabana::slice<Tessera::VertexField::Position>( hv );
+            std::map<GlobalId, std::size_t> lv;
+            for ( std::size_t i = 0; i < nv; ++i )
+                lv.emplace( vg( i ), i );
+            Tessera::addSplitEdgeLengths(
+                midpointOf, MeshT::dim,
+                [&]( GlobalId g, double* p )
+                {
+                    auto it = lv.find( g );
+                    if ( it == lv.end() )
+                        return false;
+                    for ( int d = 0; d < MeshT::dim; ++d )
+                        p[d] = static_cast<double>( vp( it->second, d ) );
+                    return true;
+                },
+                len2Of );
+        }
+
         // Hand the re-closure a fresh gid block above everything live, exactly
         // as refine() does, so unclose()'s duplicate-gid guard stays meaningful.
         GlobalId base = 0;
         for ( const auto& f : visible )
             base = std::max( base, f.gid );
-        const Tessera::CloseResult cl =
-            Tessera::closeFaces( un.red, midpointOf, base + 1 );
+        const Tessera::CloseResult cl = Tessera::closeFaces(
+            un.red, midpointOf, base + 1, std::vector<char>(),
+            Tessera::invalid_gid, len2Of );
 
         int fails = 0;
 

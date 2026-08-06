@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdio>
 #include <map>
 #include <set>
 #include <vector>
@@ -84,38 +85,55 @@ namespace Tessera
 //     rotated corner triple (A,B,C) = (v[k], v[k+1], v[k+2]), and a rotation of a
 //     CCW triple is CCW, so every child is emitted in the parent's orientation
 //     and faceNormalRaw / CurvatureCriterion keep a consistent outward normal.
-//   * The blue pattern has TWO valid diagonals across the quad (A, p, q, C).
-//     The tie-break is: connect the midpoint with the LOWER GID to its opposite
-//     corner. Midpoint gids are globally agreed (bit-identical on every rank that
-//     shares the bisected edge -- the central guarantee of refine()'s Phase 2),
-//     so this choice does not depend on WHICH RANK OWNS THE FACE: the closure is
-//     partition-independent at a fixed rank count. A tie-break reading a
-//     partition-local quantity (local index, owner rank, iteration order) would
-//     pass every other test and fail only the rank-count topology checksum.
+//   * The blue pattern has TWO valid diagonals across the quad (A, q0, q1, C).
+//     The tie-break is GEOMETRIC: take the SHORTER diagonal. That reduces to a
+//     rule needing only the two split edges' lengths, never the diagonals' --
+//     with q0 = (A+B)/2 and q1 = (B+C)/2,
 //
-//     WHAT THIS RULE DOES NOT GIVE, and it is a real limit, not an oversight
-//     (Task 8 D6, Decision 11 in tasks/conforming-refinement.md): the visible
-//     layer is NOT invariant under a change of RANK COUNT. Midpoint gids come
-//     from an MPI_Exscan, so which gid a midpoint receives is a function of the
-//     partition -- "agreed across the ranks of one run" is not "the same value at
-//     a different rank count". The same red mesh can therefore close with a
-//     different blue diagonal at np5 than at np1 (measured: 4 of 20 blue parents,
-//     np1-4 all agreeing). Everything else IS rank-count invariant and is
-//     asserted as such by test_conforming_determinism case A: the red layer, the
-//     |S| histogram, the closure-vertex set, and V/E/F.
+//         |q0-C|^2 - |A-q1|^2 = (3/4) ( |C-B|^2 - |B-A|^2 ),
 //
-//     A GEOMETRIC rule would fix this and was implemented and measured -- take
-//     the shorter diagonal, which reduces exactly to "connect the midpoint of the
-//     longer split edge" since dQ0C - dAQ1 = (3/4)(|C-B|^2 - |B-A|^2). It cannot
-//     be done locally. The closure runs on the UN-CLOSED red layer, whose corners
-//     come from closure children's ClosureParentVerts, and a child may name a
-//     vertex gid its rank does not hold -- the documented risk point 4. Those
-//     positions are not reachable even with a 1-deep halo (they are parent
-//     corners, not neighbours), so a position-based tie-break aborts at np >= 2.
-//     Since every gid-valued quantity is exscan-derived and positions are
-//     unreachable, no purely local rule can be rank-count stable on the data the
-//     closure currently has. Making one work needs communication: the split
-//     edge's squared length carried in Phase 2's existing coordinator reply.
+//     so "shorter diagonal" is exactly "connect the midpoint of the LONGER split
+//     edge to its opposite corner". It is the standard blue rule and it also
+//     gives the better-shaped children (test_conforming_quality measures it).
+//
+//     WHY LENGTHS ARE PASSED IN RATHER THAN COMPUTED HERE, and it is the whole
+//     reason this rule took two attempts (Task 8 D6, Decision 11 in
+//     tasks/conforming-refinement.md): the closure runs on the UN-CLOSED red
+//     layer, whose corners come from closure children's ClosureParentVerts, and a
+//     child may name a vertex gid its rank does not hold -- the documented risk
+//     point 4. Those are PARENT corners, not neighbours, so a 1-deep halo does
+//     not reach them either (instrumented at np2: one closeFaces() call asked for
+//     12 positions the rank did not have, including original icosphere
+//     vertices). Evaluating the rule from corner positions therefore aborts at
+//     np >= 2. The length must be attached to the EDGE, not derived from the
+//     corners: refine()'s Phase 2 already delivers each split edge's midpoint gid
+//     from the midpoint owner -- which by construction holds both endpoints of
+//     the edge it is bisecting -- to every co-sharer, so it carries the squared
+//     length along in the same message (detail::KeyGid). Persistently split edges
+//     never appear in that round trip and get their length locally, next to
+//     recoverSplitEdges(), from the closure children's own corners.
+//
+//     Lengths must be BIT-IDENTICAL wherever computed or two ranks can pick
+//     different diagonals and crack the mesh, so every producer goes through
+//     edgeLen2Canonical() below.
+//
+//     WHAT THIS BUYS: the diagonal is a function of the mesh GEOMETRY alone, so
+//     the visible layer is invariant under both a change of partition and a
+//     change of RANK COUNT. The previous rule -- connect the lower-GID midpoint
+//     -- was partition-independent but not rank-count independent, because
+//     midpoint gids come from an MPI_Exscan and "agreed across the ranks of one
+//     run" is not "the same value at a different rank count" (measured: the same
+//     red mesh closed with a different blue diagonal on 4 of 20 blue parents at
+//     np5, with np1-4 agreeing). test_conforming_determinism case A asserts the
+//     invariance, and test_refine_closure drives both diagonals from geometry and
+//     pins that RELABELLING the midpoint gids does not move one.
+//
+//     EXACT TIES are not hypothetical -- the icosphere is highly symmetric and
+//     round 1 is the undisturbed icosphere -- so |B-A|^2 == |C-B|^2 falls back to
+//     the old lower-midpoint-gid rule, which is deterministic and
+//     partition-independent though still rank-count dependent. ClosureStats::
+//     nBlueDiagTie counts how often that happens, so the residual dependence is
+//     measured rather than assumed away.
 //   * Face e[3] follows the existing convention e[k] = edge(v[k], v[(k+1)%3])
 //     and is re-derived with the rest of the edge table by the caller.
 //
@@ -169,9 +187,79 @@ struct ClosureStats
     int nClosureChildren = 0;
     //! Blue patterns resolved to each diagonal. Both should be non-zero on a
     //! real mesh; an all-or-nothing split hints the tie-break is not doing work.
-    int nBlueDiagLowFirst = 0;  //!< midpoint of (A,B) had the lower gid
-    int nBlueDiagLowSecond = 0; //!< midpoint of (B,C) had the lower gid
+    int nBlueDiagQ0C = 0; //!< diagonal q0 <-> C, i.e. (A,B) was the longer edge
+    int nBlueDiagQ1A = 0; //!< diagonal q1 <-> A, i.e. (B,C) was the longer edge
+    //! Blue patterns whose two split edges had EXACTLY equal squared length, so
+    //! the geometric rule could not choose and the lower-midpoint-gid fallback
+    //! decided. Those are the only blue diagonals that remain rank-count
+    //! dependent; a zero here means the visible layer is fully rank-count
+    //! invariant on this workload. Counted, not silently tolerated.
+    int nBlueDiagTie = 0;
 };
+
+//! Squared length of the edge (ga, gb) with endpoint positions pa, pb.
+//!
+//! THE ONE CANONICAL PRODUCER of a blue tie-break length. The rule compares two
+//! such values, so they must be bit-identical no matter which rank evaluates
+//! them, in which order that rank holds the two endpoints, or whether the value
+//! travelled through Phase 2's coordinator reply or was recovered locally --
+//! otherwise two ranks can pick different diagonals for the same quad and crack
+//! the mesh. Endpoints are ordered by gid before subtracting so that
+//! independence is manifest rather than argued: IEEE negation is exact, so
+//! (pa-pb)^2 and (pb-pa)^2 already agree, but the ordering keeps the guarantee
+//! if the expression ever grows a term where it would not.
+template <class Scalar>
+inline double edgeLen2Canonical( GlobalId ga, const Scalar* pa, GlobalId gb,
+                                 const Scalar* pb, int dim )
+{
+    const Scalar* lo = pa;
+    const Scalar* hi = pb;
+    if ( gb < ga )
+    {
+        lo = pb;
+        hi = pa;
+    }
+    double s = 0.0;
+    for ( int d = 0; d < dim; ++d )
+    {
+        const double dd =
+            static_cast<double>( hi[d] ) - static_cast<double>( lo[d] );
+        s += dd * dd;
+    }
+    return s;
+}
+
+//! Add a `len2Of` entry for every edge of `splitEdges` whose two endpoints this
+//! rank holds, computed through edgeLen2Canonical() so it is bit-identical to
+//! the value any other rank would produce for the same edge.
+//!
+//! `fetchPos( gid, double p[3] )` returns false when the vertex is not held.
+//! Used for the PERSISTENT split-edge map recoverSplitEdges() rebuilds, whose
+//! keys never travel through refine()'s Phase 2 and so never carry a length in
+//! detail::KeyGid. Those endpoints ARE reachable locally: a closed parent's
+//! corners are the union of its children's corners, closure siblings are
+//! co-resident (repairClosureCohesion()), and after rebuildHalo() every vertex
+//! an owned face references is held WITH ITS POSITION -- see Decision 14.
+//!
+//! A vertex that is nonetheless missing is skipped rather than fatal: the entry
+//! is only ever consumed by the BLUE tie-break, and closeFaces() aborts naming
+//! the edge if it actually needs one that is absent. Silence here therefore
+//! cannot become a wrong diagonal.
+template <class FetchPos>
+inline void addSplitEdgeLengths( const std::map<EdgeKey, GlobalId>& splitEdges,
+                                 int dim, FetchPos&& fetchPos,
+                                 std::map<EdgeKey, double>& len2Of )
+{
+    double pa[3], pb[3];
+    for ( const auto& kv : splitEdges )
+    {
+        const GlobalId a = kv.first.id[0];
+        const GlobalId b = kv.first.id[1];
+        if ( !fetchPos( a, pa ) || !fetchPos( b, pb ) )
+            continue;
+        len2Of[kv.first] = edgeLen2Canonical( a, pa, b, pb, dim );
+    }
+}
 
 //! Number of VISIBLE faces a red face with `nSplit` bisected edges becomes.
 //! |S| = 0 -> 1 (passed through, not a closure child); 1 -> 2 (green);
@@ -261,12 +349,24 @@ struct CloseResult
 //!                     Vertex gids are dense, so a vertex is new iff its gid is
 //!                     at or above this. Only used for the `freshChild` check;
 //!                     invalid_gid (the default) disables it.
-inline CloseResult
-closeFaces( const std::vector<RedFace>& red,
-            const std::map<EdgeKey, GlobalId>& midpointOf,
-            GlobalId firstChildGid,
-            const std::vector<char>& freshChild = std::vector<char>(),
-            GlobalId firstNewVertexGid = invalid_gid )
+//! \param len2Of       EdgeKey -> the WHOLE edge's squared length, from
+//!                     edgeLen2Canonical(), for the same key set as
+//!                     `midpointOf`. This is what the blue diagonal is chosen
+//!                     from; see the header note on the tie-break for why the
+//!                     length cannot be computed here from corner positions.
+//!                     An entry is required only for a BLUE parent's two split
+//!                     edges -- green and red-closure need no tie-break -- and a
+//!                     missing one is a hard abort naming the edge, never a
+//!                     silent fall-back to the gid rule. Defaulted empty so a
+//!                     caller that provably closes no blue face (a single green
+//!                     parent in a unit test) need not build it; any caller that
+//!                     can produce blue must.
+inline CloseResult closeFaces(
+    const std::vector<RedFace>& red,
+    const std::map<EdgeKey, GlobalId>& midpointOf, GlobalId firstChildGid,
+    const std::vector<char>& freshChild = std::vector<char>(),
+    GlobalId firstNewVertexGid = invalid_gid,
+    const std::map<EdgeKey, double>& len2Of = std::map<EdgeKey, double>() )
 {
     CloseResult out;
     out.visible.reserve( red.size() );
@@ -374,21 +474,68 @@ closeFaces( const std::vector<RedFace>& red,
             const GlobalId q0 = mid[rot];             // midpoint of (A,B)
             const GlobalId q1 = mid[( rot + 1 ) % 3]; // midpoint of (B,C)
             // Cut off the corner triangle at B, then split the remaining quad
-            // (A, q0, q1, C) along the diagonal from the LOWER-GID midpoint to
-            // its opposite corner: q0 <-> C, or q1 <-> A.
-            if ( q0 < q1 )
+            // (A, q0, q1, C) along the SHORTER diagonal -- equivalently (see the
+            // header note) connect the midpoint of the LONGER split edge to its
+            // opposite corner: q0 <-> C when (A,B) is longer, else q1 <-> A.
+            auto len2At = [&]( GlobalId x, GlobalId y ) -> double
+            {
+                auto lit = len2Of.find( makeEdgeKey( x, y ) );
+                if ( lit != len2Of.end() )
+                    return lit->second;
+                // Name the edge before dying. D6's version of this returned a
+                // default on a miss and turned a hard failure into a plausible
+                // mesh that failed one check; the version that printed the
+                // missing key was diagnosed in one run.
+                std::fprintf(
+                    stderr,
+                    "Tessera::closeFaces: missing len2 for split edge "
+                    "(%llu,%llu) of blue parent gid %llu\n",
+                    static_cast<unsigned long long>( x ),
+                    static_cast<unsigned long long>( y ),
+                    static_cast<unsigned long long>( p.gid ) );
+                Kokkos::abort(
+                    "Tessera::closeFaces: no squared length for a split "
+                    "edge of a BLUE closure parent. The blue diagonal is "
+                    "chosen geometrically, from the two split edges' "
+                    "lengths, so len2Of must cover every split edge of "
+                    "every blue parent -- an empty or partial map must NOT "
+                    "silently fall back to the midpoint-gid rule, which is "
+                    "not rank-count stable. In the distributed path the "
+                    "length rides along with the midpoint gid in Phase 2's "
+                    "coordinator reply (detail::KeyGid); a persistently "
+                    "split edge gets it locally next to "
+                    "recoverSplitEdges()." );
+                return 0.0; // unreachable; Kokkos::abort() does not return
+            };
+            const double lAB = len2At( A, B );
+            const double lBC = len2At( B, C );
+            bool diagQ0C;
+            if ( lAB != lBC )
+            {
+                diagQ0C = ( lAB > lBC );
+            }
+            else
+            {
+                // Exact geometric tie (a symmetric mesh -- the undisturbed
+                // icosphere has many). Fall back to the old lower-midpoint-gid
+                // rule: deterministic and partition-independent, but gid-valued
+                // and so rank-count dependent, which is what the counter says.
+                diagQ0C = ( q0 < q1 );
+                ++out.stats.nBlueDiagTie;
+            }
+            if ( diagQ0C )
             {
                 child( A, q0, C );
                 child( q0, B, q1 );
                 child( q0, q1, C );
-                ++out.stats.nBlueDiagLowFirst;
+                ++out.stats.nBlueDiagQ0C;
             }
             else
             {
                 child( A, q0, q1 );
                 child( q0, B, q1 );
                 child( A, q1, C );
-                ++out.stats.nBlueDiagLowSecond;
+                ++out.stats.nBlueDiagQ1A;
             }
         }
         else

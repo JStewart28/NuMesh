@@ -96,24 +96,28 @@ struct ClosureTotals
     long long pattern[4] = { 0, 0, 0, 0 };
     long long visible = 0;
     long long closureChildren = 0;
-    long long blueLo1 = 0, blueLo2 = 0;
+    //! Blue quads resolved to each diagonal by the GEOMETRIC tie-break, and
+    //! those whose two split edges were exactly equal in length so the
+    //! midpoint-gid fallback decided.
+    long long blueQ0C = 0, blueQ1A = 0, blueTie = 0;
 };
 
 inline ClosureTotals reduceClosure( const ClosureStats& s )
 {
-    long long local[8] = { s.patternCount[0],   s.patternCount[1],
-                           s.patternCount[2],   s.patternCount[3],
-                           s.nVisible,          s.nClosureChildren,
-                           s.nBlueDiagLowFirst, s.nBlueDiagLowSecond };
-    long long g[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-    MPI_Allreduce( local, g, 8, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD );
+    long long local[9] = {
+        s.patternCount[0], s.patternCount[1], s.patternCount[2],
+        s.patternCount[3], s.nVisible,        s.nClosureChildren,
+        s.nBlueDiagQ0C,    s.nBlueDiagQ1A,    s.nBlueDiagTie };
+    long long g[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    MPI_Allreduce( local, g, 9, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD );
     ClosureTotals t;
     for ( int i = 0; i < 4; ++i )
         t.pattern[i] = g[i];
     t.visible = g[4];
     t.closureChildren = g[5];
-    t.blueLo1 = g[6];
-    t.blueLo2 = g[7];
+    t.blueQ0C = g[6];
+    t.blueQ1A = g[7];
+    t.blueTie = g[8];
     return t;
 }
 
@@ -269,16 +273,16 @@ int case_adaptive( int rank, int size, const char* tag )
                 ct.visible > 0 ? static_cast<double>( ct.closureChildren ) /
                                      static_cast<double>( ct.visible )
                                : 0.0;
-            std::printf( "  [%s] adaptive round%d %s (it=%d F=%lld euler=%lld "
-                         "closure=%lld/%lld=%.3f |S| hist=[%lld,%lld,%lld,%lld]"
-                         " blue lo1/lo2=%lld/%lld | control euler=%lld "
-                         "badInc=%lld tjunc=%lld)\n",
-                         tag, round + 1,
-                         ( glob == 0 && euler == 2 ) ? "ok" : "FAIL",
-                         res.iterations, ct.visible, euler, ct.closureChildren,
-                         ct.visible, frac, ct.pattern[0], ct.pattern[1],
-                         ct.pattern[2], ct.pattern[3], ct.blueLo1, ct.blueLo2,
-                         cc.euler, cc.badIncidence, cc.interiorVerts );
+            std::printf(
+                "  [%s] adaptive round%d %s (it=%d F=%lld euler=%lld "
+                "closure=%lld/%lld=%.3f |S| hist=[%lld,%lld,%lld,%lld]"
+                " blue q0C/q1A/tie=%lld/%lld/%lld | control "
+                "euler=%lld badInc=%lld tjunc=%lld)\n",
+                tag, round + 1, ( glob == 0 && euler == 2 ) ? "ok" : "FAIL",
+                res.iterations, ct.visible, euler, ct.closureChildren,
+                ct.visible, frac, ct.pattern[0], ct.pattern[1], ct.pattern[2],
+                ct.pattern[3], ct.blueQ0C, ct.blueQ1A, ct.blueTie, cc.euler,
+                cc.badIncidence, cc.interiorVerts );
         }
 
         // refine() drops every ghost and clears the halo plans, but its own

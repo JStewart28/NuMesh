@@ -20,13 +20,17 @@
 //        * the exact green / blue / red-closure triangulations;
 //        * winding: every child is CCW in the parent's orientation (checked with
 //          a planar embedding of the parent, where CCW == positive signed area);
-//        * the blue lower-gid diagonal tie-break, exercised in BOTH directions
-//          by relabelling the two midpoint gids;
+//        * the blue GEOMETRIC diagonal tie-break (join the midpoint of the
+//          longer split edge to its opposite corner), driven into BOTH branches
+//          by splitting different edge pairs of the same reference triangle --
+//          not by relabelling gids. Plus the property that buys: relabelling the
+//          two midpoint gids does NOT move the diagonal, and an exact length tie
+//          falls back to the gid rule and is counted in nBlueDiagTie;
 //        * rotation invariance: cyclically relabelling the parent's corners (the
 //          same triangle, a different starting corner) yields the SAME set of
 //          child triangles. This is why the tie-break is partition-independent:
-//          the output is a function of the triangle and the (globally agreed)
-//          midpoint gids alone, not of any local ordering;
+//          the output is a function of the triangle and its edge lengths alone,
+//          not of any local ordering;
 //        * every child carries the parent's level and parent bookkeeping, and
 //          the |S| = 3 red-closure does NOT increment the level;
 //        * unclose() restores the parent exactly from any single child.
@@ -85,6 +89,23 @@ struct PlanarParent
         xy[mbc] = { 0.5, 0.5 };
         xy[mca] = { 0.0, 0.5 };
     }
+    //! Squared length of (x,y) in this embedding, through the LIBRARY's own
+    //! canonical helper -- the same function refine() feeds closeFaces() from,
+    //! so the unit test cannot drift from the distributed path's arithmetic.
+    double len2( GlobalId x, GlobalId y ) const
+    {
+        return edgeLen2Canonical( x, xy.at( x ).data(), y, xy.at( y ).data(),
+                                  2 );
+    }
+    //! The len2Of map closeFaces() consumes, for a list of parent edges.
+    std::map<EdgeKey, double>
+    len2Map( const std::vector<std::pair<GlobalId, GlobalId>>& edges ) const
+    {
+        std::map<EdgeKey, double> m;
+        for ( const auto& e : edges )
+            m[makeEdgeKey( e.first, e.second )] = len2( e.first, e.second );
+        return m;
+    }
     double signedArea( const GlobalId v[3] ) const
     {
         const auto& p0 = xy.at( v[0] );
@@ -138,11 +159,13 @@ struct OnePattern
 
 OnePattern closeOne( const char* what, const RedFace& parent,
                      const std::map<EdgeKey, GlobalId>& midpointOf,
+                     const std::map<EdgeKey, double>& len2Of,
                      GlobalId firstChildGid, int expectSplit,
                      const PlanarParent* planar )
 {
     OnePattern out;
-    out.cl = closeFaces( { parent }, midpointOf, firstChildGid );
+    out.cl = closeFaces( { parent }, midpointOf, firstChildGid,
+                         std::vector<char>(), invalid_gid, len2Of );
 
     if ( out.cl.stats.patternCount[expectSplit] != 1 )
     {
@@ -240,10 +263,16 @@ int case_patterns( const char* tag )
     parent.level = 2;
 
     const PlanarParent planar( a, b, c, mab, mbc, mca );
+    // Every parent edge's squared length, from the embedding. The blue diagonal
+    // is chosen from these, so they are handed in for every pattern (only blue
+    // consults them, but a partial map must never be the reason a tie-break
+    // "works").
+    const std::map<EdgeKey, double> len3 =
+        planar.len2Map( { { a, b }, { b, c }, { c, a } } );
 
     // ---- |S| = 0: emitted unchanged ---------------------------------------
     {
-        auto r = closeOne( "|S|=0", parent, {}, kFirstChild, 0, &planar );
+        auto r = closeOne( "|S|=0", parent, {}, len3, kFirstChild, 0, &planar );
         fails += r.fails;
         fails += expectChildren( "|S|=0", r.cl.visible, { { a, b, c } } );
         if ( r.cl.stats.nClosureChildren != 0 )
@@ -254,58 +283,107 @@ int case_patterns( const char* tag )
     // Rotating so the split edge is edge 0 of (A,B,C) gives (A,m,C),(m,B,C).
     {
         auto r = closeOne( "green/ab", parent, { { makeEdgeKey( a, b ), mab } },
-                           kFirstChild, 1, &planar );
+                           len3, kFirstChild, 1, &planar );
         fails += r.fails;
         fails += expectChildren( "green/ab", r.cl.visible,
                                  { { a, mab, c }, { mab, b, c } } );
     }
     {
         auto r = closeOne( "green/bc", parent, { { makeEdgeKey( b, c ), mbc } },
-                           kFirstChild, 1, &planar );
+                           len3, kFirstChild, 1, &planar );
         fails += r.fails;
         fails += expectChildren( "green/bc", r.cl.visible,
                                  { { b, mbc, a }, { mbc, c, a } } );
     }
     {
         auto r = closeOne( "green/ca", parent, { { makeEdgeKey( c, a ), mca } },
-                           kFirstChild, 1, &planar );
+                           len3, kFirstChild, 1, &planar );
         fails += r.fails;
         fails += expectChildren( "green/ca", r.cl.visible,
                                  { { c, mca, b }, { mca, a, b } } );
     }
 
-    // ---- |S| = 2 (blue): both diagonals ------------------------------------
-    // Unsplit edge (c,a) => (A,B,C) = (a,b,c), q0 = mid(a,b), q1 = mid(b,c).
-    // q0 < q1 connects q0 to its opposite corner C = c.
+    // ---- |S| = 2 (blue): both diagonals, driven by GEOMETRY ----------------
+    //
+    // The reference triangle is right-angled at a, with |ab|^2 = 1, |bc|^2 = 2,
+    // |ca|^2 = 1. The rule joins the midpoint of the LONGER split edge to its
+    // opposite corner, so WHICH PAIR of edges is split selects the diagonal --
+    // both branches are reached without touching a single gid.
+    //
+    // (1) split (a,b) and (b,c). Unsplit edge (c,a) => (A,B,C) = (a,b,c),
+    //     q0 = mid(a,b) (len^2 1), q1 = mid(b,c) (len^2 2). (B,C) is the longer
+    //     split edge, so the diagonal is q1 <-> A = a.
+    //
+    //     Note mab < mbc here, so the OLD lower-midpoint-gid rule would have
+    //     taken the OTHER diagonal (q0 <-> C). This case is therefore what pins
+    //     that the tie-break reads lengths and not gids.
     {
         auto r = closeOne(
-            "blue/lowfirst", parent,
+            "blue/q1A", parent,
             { { makeEdgeKey( a, b ), mab }, { makeEdgeKey( b, c ), mbc } },
-            kFirstChild, 2, &planar );
+            len3, kFirstChild, 2, &planar );
         fails += r.fails;
         fails += expectChildren(
-            "blue/lowfirst", r.cl.visible,
-            { { a, mab, c }, { mab, b, mbc }, { mab, mbc, c } } );
-        if ( r.cl.stats.nBlueDiagLowFirst != 1 ||
-             r.cl.stats.nBlueDiagLowSecond != 0 )
+            "blue/q1A", r.cl.visible,
+            { { a, mab, mbc }, { mab, b, mbc }, { a, mbc, c } } );
+        if ( r.cl.stats.nBlueDiagQ0C != 0 || r.cl.stats.nBlueDiagQ1A != 1 ||
+             r.cl.stats.nBlueDiagTie != 0 )
             ++fails;
     }
-    // Same geometry, midpoint gids swapped so q1 < q0: the diagonal must flip to
-    // q1 <-> A. This is the ONLY thing that distinguishes a correct tie-break
-    // from one that always picks the first diagonal.
+    // (2) split (b,c) and (c,a). Unsplit edge (a,b) => (A,B,C) = (b,c,a),
+    //     q0 = mid(b,c) (len^2 2), q1 = mid(c,a) (len^2 1). (A,B) is longer now,
+    //     so the diagonal is q0 <-> C = a.
+    {
+        auto r = closeOne(
+            "blue/q0C", parent,
+            { { makeEdgeKey( b, c ), mbc }, { makeEdgeKey( c, a ), mca } },
+            len3, kFirstChild, 2, &planar );
+        fails += r.fails;
+        fails += expectChildren(
+            "blue/q0C", r.cl.visible,
+            { { b, mbc, a }, { mbc, c, mca }, { mbc, mca, a } } );
+        if ( r.cl.stats.nBlueDiagQ0C != 1 || r.cl.stats.nBlueDiagQ1A != 0 ||
+             r.cl.stats.nBlueDiagTie != 0 )
+            ++fails;
+    }
+    // (3) RELABELLING THE MIDPOINT GIDS MUST NOT MOVE THE DIAGONAL. This is the
+    //     regression test for the property the geometric rule buys: the same
+    //     geometry as (1) with the two midpoint gids swapped, so q1 < q0 and the
+    //     old rule flips. The emitted triangles must be (1)'s, modulo the
+    //     relabel -- still q1 <-> A.
     {
         const GlobalId lo = 101, hi = 102; // mid(a,b) = hi, mid(b,c) = lo
         const PlanarParent pl( a, b, c, hi, lo, mca );
         auto r = closeOne(
-            "blue/lowsecond", parent,
+            "blue/relabel", parent,
             { { makeEdgeKey( a, b ), hi }, { makeEdgeKey( b, c ), lo } },
-            kFirstChild, 2, &pl );
+            pl.len2Map( { { a, b }, { b, c } } ), kFirstChild, 2, &pl );
         fails += r.fails;
         fails +=
-            expectChildren( "blue/lowsecond", r.cl.visible,
+            expectChildren( "blue/relabel", r.cl.visible,
                             { { a, hi, lo }, { hi, b, lo }, { a, lo, c } } );
-        if ( r.cl.stats.nBlueDiagLowFirst != 0 ||
-             r.cl.stats.nBlueDiagLowSecond != 1 )
+        if ( r.cl.stats.nBlueDiagQ0C != 0 || r.cl.stats.nBlueDiagQ1A != 1 ||
+             r.cl.stats.nBlueDiagTie != 0 )
+            ++fails;
+    }
+    // (4) EXACT TIE. Equal split-edge lengths (synthetic here; the icosphere
+    //     produces them for real) must fall back to the lower-midpoint-gid rule
+    //     -- mab < mbc, so q0 <-> C -- and must be COUNTED, so the residual
+    //     rank-count dependence is measured rather than assumed away.
+    {
+        std::map<EdgeKey, double> tie;
+        tie[makeEdgeKey( a, b )] = 1.0;
+        tie[makeEdgeKey( b, c )] = 1.0;
+        auto r = closeOne(
+            "blue/tie", parent,
+            { { makeEdgeKey( a, b ), mab }, { makeEdgeKey( b, c ), mbc } }, tie,
+            kFirstChild, 2, &planar );
+        fails += r.fails;
+        fails += expectChildren(
+            "blue/tie", r.cl.visible,
+            { { a, mab, c }, { mab, b, mbc }, { mab, mbc, c } } );
+        if ( r.cl.stats.nBlueDiagQ0C != 1 || r.cl.stats.nBlueDiagQ1A != 0 ||
+             r.cl.stats.nBlueDiagTie != 1 )
             ++fails;
     }
 
@@ -315,7 +393,7 @@ int case_patterns( const char* tag )
                            { { makeEdgeKey( a, b ), mab },
                              { makeEdgeKey( b, c ), mbc },
                              { makeEdgeKey( c, a ), mca } },
-                           kFirstChild, 3, &planar );
+                           len3, kFirstChild, 3, &planar );
         fails += r.fails;
         fails += expectChildren( "redclosure", r.cl.visible,
                                  { { a, mab, mca },
@@ -349,7 +427,9 @@ int case_patterns( const char* tag )
                 p.v[0] = parent.v[rot];
                 p.v[1] = parent.v[( rot + 1 ) % 3];
                 p.v[2] = parent.v[( rot + 2 ) % 3];
-                const auto cl = closeFaces( { p }, maps[s], kFirstChild );
+                const auto cl =
+                    closeFaces( { p }, maps[s], kFirstChild,
+                                std::vector<char>(), invalid_gid, len3 );
                 const auto got = triangleSet( cl.visible );
                 if ( rot == 0 )
                     ref = got;
@@ -366,11 +446,12 @@ int case_patterns( const char* tag )
 
     // ---- translateMask: a parent is marked iff ANY child was ---------------
     {
-        const auto cl = closeFaces( { parent },
-                                    { { makeEdgeKey( a, b ), mab },
-                                      { makeEdgeKey( b, c ), mbc },
-                                      { makeEdgeKey( c, a ), mca } },
-                                    kFirstChild );
+        const auto cl =
+            closeFaces( { parent },
+                        { { makeEdgeKey( a, b ), mab },
+                          { makeEdgeKey( b, c ), mbc },
+                          { makeEdgeKey( c, a ), mca } },
+                        kFirstChild, std::vector<char>(), invalid_gid, len3 );
         const UncloseResult un = unclose( cl.visible );
         for ( int which = 0; which < 4; ++which )
         {
@@ -424,6 +505,20 @@ int case_inverse( const char* tag )
     Cabana::AoSoA<typename MeshT::face_member_types, Kokkos::HostSpace> hf(
         "hf", nf );
     Cabana::deep_copy( hf, mesh.faces() );
+    // Vertex positions, for the blue diagonal's squared lengths. Vertex gid ==
+    // local index on a freshly built serial mesh.
+    Cabana::AoSoA<typename MeshT::vertex_member_types, Kokkos::HostSpace> hv(
+        "hv", nv );
+    Cabana::deep_copy( hv, mesh.vertices() );
+    auto v_pos = Cabana::slice<VertexField::Position>( hv );
+    auto fetchPos = [&]( GlobalId g, double* p )
+    {
+        if ( static_cast<int>( g ) >= nv )
+            return false;
+        for ( int d = 0; d < 3; ++d )
+            p[d] = v_pos( static_cast<int>( g ), d );
+        return true;
+    };
 
     // The base mesh is entirely red (buildIcosphere calls
     // initClosureFaceMembers), so its visible layer IS its red layer.
@@ -489,7 +584,10 @@ int case_inverse( const char* tag )
     // close -> unclose must reproduce the red layer bit-for-bit.
     const GlobalId firstChild = nextGid;
     const std::size_t predicted = countClosureChildren( red, midpointOf );
-    const CloseResult cl = closeFaces( red, midpointOf, firstChild );
+    std::map<EdgeKey, double> len2Of;
+    addSplitEdgeLengths( midpointOf, 3, fetchPos, len2Of );
+    const CloseResult cl = closeFaces(
+        red, midpointOf, firstChild, std::vector<char>(), invalid_gid, len2Of );
     const UncloseResult un = unclose( cl.visible );
 
     if ( static_cast<std::size_t>( cl.stats.nClosureChildren ) != predicted )
@@ -564,12 +662,13 @@ int case_inverse( const char* tag )
     }
 
     std::printf( "  [%s] inverse %s (red=%zu marked=%d visible=%d closure=%d "
-                 "|S| hist=[%d,%d,%d,%d] blue diag lo1/lo2=%d/%d)\n",
+                 "|S| hist=[%d,%d,%d,%d] blue diag q0C/q1A/tie=%d/%d/%d)\n",
                  tag, fails == 0 ? "ok" : "FAIL", red.size(), nMarked,
                  cl.stats.nVisible, cl.stats.nClosureChildren,
                  cl.stats.patternCount[0], cl.stats.patternCount[1],
                  cl.stats.patternCount[2], cl.stats.patternCount[3],
-                 cl.stats.nBlueDiagLowFirst, cl.stats.nBlueDiagLowSecond );
+                 cl.stats.nBlueDiagQ0C, cl.stats.nBlueDiagQ1A,
+                 cl.stats.nBlueDiagTie );
     return fails;
 }
 

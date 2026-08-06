@@ -579,6 +579,25 @@ void refineLocalConforming( MeshT& mesh, const std::vector<char>& refineFace,
     // the numbering below is unaffected.
     std::map<EdgeKey, GlobalId> midpointOf = un.splitEdges;
     std::vector<std::array<int, 2>> midEnd; // new vertex -> (endpoint a, b)
+
+    // Whole-edge squared lengths over the same key set, for the closure's blue
+    // diagonal tie-break. Computed through edgeLen2Canonical() from double
+    // positions, exactly as the distributed path does, so the two engines pick
+    // the same diagonal for the same quad — refine_closure covers this path and
+    // would otherwise silently diverge from refine_conforming.
+    std::map<EdgeKey, double> len2Of;
+    auto fetchPos = [&]( GlobalId g, double* p ) -> bool
+    {
+        if ( static_cast<int>( g ) >= nv ) // gid == local index here
+            return false;
+        for ( int d = 0; d < Dim; ++d )
+            p[d] = static_cast<double>( v_pos( static_cast<int>( g ), d ) );
+        return true;
+    };
+    // The seeded PERSISTENT entries: their endpoints are red-face corners, so
+    // they predate this call and are held.
+    addSplitEdgeLengths( un.splitEdges, Dim, fetchPos, len2Of );
+
     auto midpoint = [&]( GlobalId a, GlobalId b ) -> GlobalId
     {
         const EdgeKey key = makeEdgeKey( a, b );
@@ -588,6 +607,12 @@ void refineLocalConforming( MeshT& mesh, const std::vector<char>& refineFace,
         const GlobalId g =
             static_cast<GlobalId>( nv + static_cast<int>( midEnd.size() ) );
         midpointOf.emplace( key, g );
+        double pa[3], pb[3];
+        if ( !fetchPos( a, pa ) || !fetchPos( b, pb ) )
+            Kokkos::abort(
+                "Tessera::refineLocal: a bisected edge's endpoint is "
+                "not a pre-existing vertex of this mesh." );
+        len2Of[key] = edgeLen2Canonical( a, pa, b, pb, Dim );
         midEnd.push_back(
             { static_cast<int>( a ), static_cast<int>( b ) } ); // gid == index
         return g;
@@ -641,7 +666,7 @@ void refineLocalConforming( MeshT& mesh, const std::vector<char>& refineFace,
     // ---- step 3b: close every kept red face with a bisected edge -----------
     const CloseResult cl =
         closeFaces( newRed, midpointOf, nextRedGid, freshChild,
-                    static_cast<GlobalId>( nv ) );
+                    static_cast<GlobalId>( nv ), len2Of );
     const std::vector<VisibleFace>& newVis = cl.visible;
     const int newNv = nv + static_cast<int>( midEnd.size() );
     const int newNf = static_cast<int>( newVis.size() );

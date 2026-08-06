@@ -68,7 +68,11 @@ namespace Tessera
 //      ordering, and a rank holding only the KEPT side of a bisected edge still
 //      learns the midpoint gid. That last part is what makes RefineResult::
 //      midpoints a complete split-edge map, which the conforming closure needs
-//      (Task 4); ownership and hence every assigned gid are unaffected.
+//      (Task 4); ownership and hence every assigned gid are unaffected. That
+//      same reply also carries the bisected edge's SQUARED LENGTH, which the
+//      conforming closure's blue diagonal tie-break is chosen from and cannot
+//      compute where it is used — see detail::KeyGid and the tie-break note in
+//      Tessera_RefineClosure.hpp.
 //   3. Edge ownership: each refined edge is owned by the lowest incident (child)
 //      face owner, so owned counts remain a global partition (for Euler).
 //
@@ -123,7 +127,9 @@ struct RefineResult
     long long phase2AdvertsRefining = 0;
     //! RefinementMode::Conforming only: this rank's closure diagnostics for the
     //! step-3b pass — the |S| histogram over the post-split red layer, the
-    //! visible / closure-child counts, and the two blue-diagonal tallies. Left
+    //! visible / closure-child counts, the two blue-diagonal tallies and the
+    //! count of blue quads whose two split edges were EXACTLY equal in length,
+    //! so the geometric tie-break fell back to midpoint gids. Left
     //! zeroed in RefinementMode::HangingNode2to1 (there is no closure layer).
     //! Published so a test can report the closure-face fraction and the pattern
     //! distribution without instrumenting the library at the call site.
@@ -173,11 +179,24 @@ struct CosharerMsg
     EdgeKey key;
     Rank cosharer;
 };
-//! (edge, assigned midpoint gid) delivered from owner to co-sharer.
+//! (edge, assigned midpoint gid, the WHOLE edge's squared length) delivered from
+//! owner to co-sharer.
+//!
+//! `len2` rides along for the conforming closure's BLUE diagonal tie-break,
+//! which is geometric and needs the two split edges' lengths (see the tie-break
+//! note in Tessera_RefineClosure.hpp). It cannot be computed where it is used:
+//! closeFaces() runs on the un-closed red layer, whose corners may name vertices
+//! the rank does not hold. It CAN be computed here for free — the midpoint owner
+//! is by construction the owner of an incident REFINING face, so it holds both
+//! endpoints of the edge it is bisecting (Phase 3a already relies on exactly
+//! that to interpolate the midpoint) — and this message already goes to every
+//! co-sharer, so carrying it adds no round. Same shape as the edge-gid fix
+//! (Decision 10).
 struct KeyGid
 {
     EdgeKey key;
     GlobalId gid;
+    double len2;
 };
 //! (edge, incident child-face owner, incident child-face level) for edge
 //! ownership + level in the refined mesh. On the coordinator's REPLY the `gid`
@@ -557,7 +576,43 @@ RefineResult refineImpl( MeshT& mesh,
             midGid[myMid[i]] = static_cast<GlobalId>(
                 globalV + baseOff + static_cast<long long>( i ) );
 
-        // deliver owned midpoint gids to co-sharers (refining or kept).
+        // Positions of a held vertex, as doubles, for the closure's blue
+        // tie-break. Everything that produces a `len2` — here, the persistent
+        // recovery below, and the equivalent in refineLocalConforming() — goes
+        // through this same double representation and edgeLen2Canonical(), so the
+        // values are bit-identical wherever they are computed. Two ranks that
+        // disagreed on one would pick different diagonals for the same quad.
+        auto fetchPos = [&]( GlobalId g, double* p ) -> bool
+        {
+            auto it = gid2lv.find( g );
+            if ( it == gid2lv.end() )
+                return false;
+            for ( int d = 0; d < Dim; ++d )
+                p[d] = static_cast<double>( v_pos( it->second, d ) );
+            return true;
+        };
+
+        //! EdgeKey -> the WHOLE edge's squared length, over exactly `midGid`'s
+        //! key set. Consumed by closeFaces() for the blue diagonal.
+        std::map<EdgeKey, double> len2Of;
+        for ( const EdgeKey& key : myMid )
+        {
+            double pa[3], pb[3];
+            if ( !fetchPos( key.id[0], pa ) || !fetchPos( key.id[1], pb ) )
+                Kokkos::abort(
+                    "Tessera::refine: the owner of a midpoint does not hold "
+                    "both endpoints of the edge it is bisecting. Midpoint "
+                    "ownership is 'lowest incident REFINING-face owner', and "
+                    "that face has the whole edge, so this is impossible "
+                    "unless "
+                    "the mesh entered refine() without the vertices its owned "
+                    "faces reference (see rebuildHalo())." );
+            len2Of[key] =
+                edgeLen2Canonical( key.id[0], pa, key.id[1], pb, Dim );
+        }
+
+        // deliver owned midpoint gids — and the bisected edge's squared length —
+        // to co-sharers (refining or kept).
         std::vector<std::vector<detail::KeyGid>> toShare( size );
         for ( const EdgeKey& key : myMid )
         {
@@ -565,11 +620,14 @@ RefineResult refineImpl( MeshT& mesh,
             if ( it == myCosharers.end() )
                 continue;
             for ( Rank c : it->second )
-                toShare[c].push_back( { key, midGid[key] } );
+                toShare[c].push_back( { key, midGid[key], len2Of[key] } );
         }
         auto shared = allToAllV( comm, toShare );
         for ( const auto& m : shared.data )
+        {
             midGid[m.key] = m.gid;
+            len2Of[m.key] = m.len2;
+        }
 
         // Union the PERSISTENT split-edge map in. "This edge is bisected" is a
         // property of the red layer, not of one round: a kept face closed in an
@@ -583,6 +641,17 @@ RefineResult refineImpl( MeshT& mesh,
         // No key can collide -- forEachSubEdge() never advertises one.
         for ( const auto& kv : persistentSplit )
             midGid.emplace( kv.first, kv.second );
+
+        // ...and their squared lengths with them. forEachSubEdge() advertises a
+        // persistently split edge only as its two HALVES, so its own key never
+        // reaches a coordinator and no KeyGid can carry its length — yet a kept
+        // face with one is exactly the "must be closed again" case (Decision 8),
+        // so blue can arise with one or both split edges persistent. The
+        // endpoints are reachable with no communication: they are corners of an
+        // owned red face, and after rebuildHalo() every vertex an owned face
+        // references is held WITH ITS POSITION (Decision 14) — which is why
+        // follow-up 1 had to land before this could.
+        addSplitEdgeLengths( persistentSplit, Dim, fetchPos, len2Of );
 
         // Publish the split-edge map: every edge of an owned face that is
         // bisected in the red layer, with its (globally agreed) midpoint gid.
@@ -729,7 +798,7 @@ RefineResult refineImpl( MeshT& mesh,
                 TESSERA_SCOPED_TIMER_VERBOSE(
                     ::Tessera::Profiling::TIMER_REFINE_CLOSURE_PATTERNS );
                 cl = closeFaces( newRed, midGid, childGid, freshChild,
-                                 static_cast<GlobalId>( globalV ) );
+                                 static_cast<GlobalId>( globalV ), len2Of );
             }
             result.closure = cl.stats;
             newVis = std::move( cl.visible );
