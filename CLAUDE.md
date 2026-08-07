@@ -25,26 +25,7 @@ flux batch ../scripts/tuolumne/run_regression_minset.flux
 Override build settings without editing committed files: create
 `scripts/<system>/profile.local.sh` (gitignored) before sourcing the resolver.
 
----
-
-## Background / task logs
-
-Multi-phase or ongoing problems live in `tasks/`, one file per topic. Use the
-template at [tasks/TEMPLATE.md](tasks/TEMPLATE.md). **At the start of a session
-touching an active task, read the task file first and append progress as work
-lands.**
-
-Current task logs:
-
-| Task | File | Status |
-|------|------|--------|
-| Milestone 1 — distributed triangle mesh | [tasks/milestone1_mesh.md](tasks/milestone1_mesh.md) | Complete (Steps 0–10b done; regression gate 70/70, unit 28/28) |
-| Halo rebuild + geometric blue tie-break | [tasks/halo-rebuild-split-edge-design.md](tasks/halo-rebuild-split-edge-design.md) | **Complete** (2026-08-06) — both follow-ups landed, nothing open. **(1)** The halo rebuild is factored out of `migrate()` into `src/Tessera_HaloRebuild.hpp` as a public `rebuildHalo( mesh, halo )` that `refine()` now calls, so a second `refine()` and a `haloExchange()` both just work — that wart caused **six of Task 8's nine defects**. Gate **150/150** (new `refine_rehalo`), unit **62/62**; Decision 14. **(2)** The blue closure diagonal is now chosen **geometrically** (shorter diagonal = midpoint of the longer split edge joins its opposite corner), with the squared length carried on Phase 2's existing coordinator reply — it cannot be computed where it is used. This closes Decision 11: `blueDiagMismatch` is **0** at np1–5 on both backends, where it was 4 of 20 blue parents at np5. Full sweep **193/193**; blue's worst radius ratio also *improved* 2.5254 → 2.2344; Decision 15. Depended on (1)'s round-G postcondition, as designed. |
-| Conforming refinement | [tasks/conforming-refinement.md](tasks/conforming-refinement.md) (design) + [tasks/conforming-refinement-debug.md](tasks/conforming-refinement-debug.md) (Task 8 sub-tasks D0–D8) | **Complete** (2026-08-05) — Tasks 1–8 done, D0–D8 done. Gate **150/150** and `ctest -L unit` **62/62** at HEAD: 212 instances over 29 registrations, {SERIAL, HIP} × ranks 1–5, zero failures, no test relabelled or weakened. `Conforming` **stays the `Mesh` default** (Decision 13). Shape quality is measured, not assumed (Decision 12): over 16 rounds the worst radius ratio saturates by round 11 and is flat through 16, so `conforming_quality` was recalibrated and **promoted into the gate**. Two accepted design limits were recorded in README *Known Issues* and **both are now resolved**: *a distributed mesh must be re-haloed between two `refine()` calls* (**Decision 14**, 2026-08-05 — `refine()` calls `rebuildHalo()` itself), and *the visible layer is rank-count dependent up to blue closure diagonals* (**Decision 15**, 2026-08-06 — the tie-break is geometric, the length carried on the edge rather than computed from corner positions, which is what the reverted first attempt got wrong). Neither README entry remains. |
-
----
-
-## Repository layout — `systems/` vs `docs/`
+## Repository layout
 
 | Directory | Holds |
 |---|---|
@@ -182,12 +163,6 @@ explicitly in CI — the HIP gate is Tuolumne-only.
 
 **Promoting a test into the gate** requires explicit confirmation: confirm which
 backends and ranks the test should run at before setting `TIER regression`.
-
----
-
-## Plans
-
-Plan-mode plan files are saved to `./plans/` in this repo.
 
 ---
 
