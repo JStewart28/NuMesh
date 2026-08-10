@@ -192,6 +192,62 @@ Canopy. The halo is described by a **`HaloExchangePlan`** (per-peer index maps +
 buffer pools); any operation that changes the local entity count or ghost set
 invalidates the plan, which is rebuilt before the next sync.
 
+### Gather and scatter-add
+
+The halo is used in **both directions**, and the two directions are deliberately
+different shapes. `haloExchange()` is the **gather**: owner → ghost, overwrite,
+and the MPI element is one whole AoSoA tuple. `haloScatterAdd()`
+(`Tessera_HaloScatterAdd.hpp`) is the **scatter-add**: ghost → owner, `+=`, and
+the MPI element is one entry of a single named field. Together they are the
+standard distributed-assembly pair — assemble a per-vertex quantity by iterating
+**owned** faces, scatter-add so each owner holds the true global sum, then gather
+if downstream kernels read ghosts.
+
+The reverse direction needs no new plan. `HaloExchangePlan` is symmetric by
+construction (`send_idx` are owned local indices, `recv_idx` are ghost local
+indices, with the per-peer alignment guaranteed by the builder on both sides), so
+the scatter-add is the same plan read backwards: pack from `recv_idx` and send
+along `recv_peers`, receive along `send_peers` and accumulate into `send_idx`.
+The pools swap roles and are reserved accordingly.
+
+**Why the reverse is field-templated while the forward one is whole-tuple.**
+Overwriting a ghost with its owner's tuple is correct for every member at once —
+`Gid`, `Owner`, `Level` and the connectivity gids included — which is what makes
+one opaque `MPI_Type_contiguous` of `sizeof(tuple_type)` the right element for a
+gather. Accumulating is not: summing `Gid` or `Owner` is meaningless and summing
+connectivity gids is corrupting. So the reverse operation must name the one field
+it accumulates, and it is templated on the Cabana member index (scalar or
+fixed-array member, the latter accumulated componentwise). That asymmetry is the
+only structural difference between the two.
+
+Three properties are stated in the header and pinned by
+`tests/test_halo_scatter_add.cpp` rather than left to be discovered. Ghost slots
+are **left untouched**, so the mesh is not halo-consistent for the field on
+return — zeroing them inside the call would charge every caller for a broadcast
+that only some want. Consequently the operation is **not idempotent**: a second
+call re-sends the same ghost partials and double-counts. And the summation order
+is fixed by **peer order**: peers are visited in ascending rank (the plan is
+packed from an ordered `std::map`) and the accumulate is serialized one kernel
+per peer, so a run is bitwise reproducible but two runs at *different rank
+counts* are not, because the partition into partial sums differs — the same
+caveat that applies to a floating-point `globalSum`.
+
+The per-peer kernel launch is what makes the accumulate **race-free without
+atomics**. `send_idx` may name the same owned entity once per peer, so a single
+flat `parallel_for` over the whole receive buffer would race; within one peer's
+contiguous slice the builder emits one entry per shared entity, so a per-peer
+kernel cannot. Paying for a peer loop on the host is strictly cheaper than
+atomics on a GPU, and the serialization it imposes is the same thing that fixes
+the summation order above.
+
+The alternative available before this existed — have every rank iterate every
+face incident on each of its owned vertices, which is what
+`reduceVertexFromFaces()` does — recomputes instead of communicating. That works
+for a one-ring gather-style reduce whose incident faces happen to be in the halo,
+but it does not generalize: it silently gives the wrong answer the moment an
+incident face is not locally held, and it requires a redundant recomputation on
+every ghosting rank.
+
 ### Halo depth
 
 The ghost layer is **configurable in depth**. At depth *d* every owned vertex's

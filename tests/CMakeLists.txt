@@ -796,3 +796,36 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_latlon_sphere.cpp
 )
+
+# Ghost scatter-add -- the reverse halo (tasks/halo-scatter-add.md). haloExchange()
+# is a pure gather (owner -> ghost, overwrite); haloScatterAdd() is the missing
+# reverse (ghost -> owner, +=) without which any per-vertex quantity assembled by
+# iterating OWNED faces -- vertex areas, vertex normals, a per-element residual --
+# leaves the owner of a boundary vertex holding a PARTIAL sum. Ground truth for
+# every value check comes from the REPLICATED reference mesh plus distribute()'s
+# own faceOwner input, re-deriving ownership and each rank's local set
+# independently, so a self-consistent wrong answer cannot pass; the reference's
+# predicted per-rank local counts are themselves asserted against the real mesh.
+# Covers the exact integer ghost multiplicity, the face-loop assembly (the case
+# that fails with a plain haloExchange), a double[3] field componentwise, the
+# three contract properties (ghosts untouched, non-idempotence pinned to a
+# computed double-counted value, bitwise determinism within a run), the
+# gather/scatter round trip that catches a swapped send_idx/recv_idx, the
+# kind-named edge and face wrappers, the empty single-rank plan, and depth 2.
+#
+# TIER regression, ranks 1-5, both backends: gate promotion is pre-authorized
+# for this task by tasks/halo-scatter-add.md.
+tessera_add_test(
+    NAME     halo_scatter_add
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_halo_scatter_add.cpp
+)
+tessera_add_test(
+    NAME     halo_scatter_add
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_halo_scatter_add.cpp
+)

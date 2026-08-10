@@ -1,6 +1,8 @@
 # Ghost scatter-add (the reverse halo)
 
-**Status:** NOT STARTED.
+**Status:** COMPLETE. Implemented in `src/Tessera_HaloScatterAdd.hpp`,
+tested by `tests/test_halo_scatter_add.cpp` (TIER `regression`, SERIAL + HIP,
+ranks 1-5, 10/10 green).
 
 **Verified against `08dd346`** (branch `conforming-refinement`) — the code this task
 cites was re-read at that commit.
@@ -210,3 +212,30 @@ ordering diagram in [halo-depth.md](halo-depth.md).
 
 - 2026-08-07 — Task written, then re-checked against `08dd346` after pulling
   `../tessera`. Nothing implemented.
+- 2026-08-10 — **Implemented.** `src/Tessera_HaloScatterAdd.hpp` holds
+  `haloScatterAdd()` plus the three kind-named wrappers, folded into
+  `<Tessera.hpp>`; the component count comes from
+  `Cabana::MemberTypeAtIndex<FieldIndex, AoSoAType::member_types>` so scalar and
+  `Scalar[N]` members share one code path, and the unpack is one kernel per peer
+  as specified (no atomics, deterministic order). Profiling key
+  `halo_scatter_add` added at level 1. `tests/test_halo_scatter_add.cpp` covers
+  all ten checks and is registered at TIER `regression`, SERIAL + HIP, ranks 1-5:
+  **10/10 green** on Tuolumne (`f3RTZQhQ98t7`). Ground truth is the replicated
+  reference mesh plus `faceOwner`, with `distribute()`'s ownership and local-set
+  rules re-derived independently; the reference's predicted per-rank local counts
+  are asserted against the real mesh so the reference itself cannot drift. At np3
+  the multiplicity sums are V=251/E=658/F=409 against N=162/480/320, rising to
+  V=331 at depth 2, so no check is vacuous.
+  - **One deliberate deviation from check 2 as written.** The task said to loop
+    **local** faces; local (owned + ghost) faces double-count, because a ghost
+    face is an owned face on another rank and would contribute twice, and the
+    stated expected value (the true *global* incident-face count) is then wrong.
+    The test loops **owned** faces, which is the assembly pattern the operation
+    exists for and which does produce the stated value. Check 3 follows the same
+    correction.
+  - Check 10 needed no skip path: halo depth had already landed.
+  - Check 4 is asserted more strongly than specified — every ghost slot must be
+    **bitwise unchanged** across the scatter, not merely `<=` the owner's — with
+    the `strictly less at ranks >= 2` clause kept as the non-vacuity guard.
+  - The full gate was not re-run: nothing existing changed mechanically (one new
+    header, one new profiling constant, one umbrella include, one new test).

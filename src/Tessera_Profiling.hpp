@@ -69,6 +69,7 @@ static constexpr const char* TIMER_BUILD_LATLON = "build_latlon_sphere";
 static constexpr const char* TIMER_PARTITION = "partition";
 static constexpr const char* TIMER_DISTRIBUTE = "distribute";
 static constexpr const char* TIMER_HALO_EXCHANGE = "halo_exchange";
+static constexpr const char* TIMER_HALO_SCATTER_ADD = "halo_scatter_add";
 static constexpr const char* TIMER_REFINE = "refine";
 static constexpr const char* TIMER_MIGRATE = "migrate";
 static constexpr const char* TIMER_LOAD_BALANCE = "load_balance";

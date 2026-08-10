@@ -101,6 +101,57 @@ haloExchange( mesh, halo );                         // re-sync the field pack (r
 writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
 ```
 
+### Halo: gather and scatter-add
+
+`haloExchange()` is a **gather** — owner → ghost, overwrite, the whole AoSoA tuple
+at once. `haloScatterAdd()` is its **reverse** — ghost → owner, `+=`, one named
+field per call — and it is what makes distributed assembly correct. Any per-vertex
+quantity assembled by iterating **owned faces** (vertex areas, vertex normals, a
+face→vertex gradient scatter, a per-element residual) leaves the owner of a
+partition-boundary vertex holding only a *partial* sum, with every ghost copy
+holding a different partial; the reverse accumulate pushes those partials home.
+
+```cpp
+#include <Tessera.hpp>   // Tessera_HaloScatterAdd.hpp
+
+constexpr std::size_t Area = Tessera::userVertexField<0>();   // e.g. Scalar
+// ... loop OWNED faces, adding each face's contribution to its three corners'
+//     LOCAL slots (a corner of an owned face may be a ghost) ...
+haloScatterAddVertices<Area>( mesh, halo );   // owned slots now hold the global sum
+haloExchange( mesh, halo );                   // ONLY if ghosts are read downstream
+
+// Edge and face fields via the sibling wrappers, or the plan-level primitive:
+haloScatterAddEdges<Tessera::userEdgeField<0>()>( mesh, halo );
+haloScatterAddFaces<Tessera::userFaceField<0>()>( mesh, halo );
+haloScatterAdd<Field>( mesh.comm(), mesh.vertices(), halo.vplan );
+```
+
+`FieldIndex` is any Cabana member index — a core field
+(`VertexField::Position`) or a user field — of scalar or fixed-array
+(`Scalar[3]`, accumulated componentwise) shape. Unlike `haloExchange(mesh, halo)`
+it is **not** an all-three-kinds call: an accumulate names a field, and a field
+belongs to one entity kind. Three contract properties:
+
+1. **Ghost slots are left untouched.** Afterwards an owned entry holds the
+   complete global sum while every ghost copy still holds that rank's local
+   partial, so the mesh is **not halo-consistent** for that field — follow with
+   `haloExchange()` if downstream kernels read ghosts. Ghosts are deliberately
+   not zeroed inside the call, so a caller that only reads owned values does not
+   pay for a second collective.
+2. **Calling it twice double-counts.** It is not idempotent, precisely because of
+   (1): the second call re-sends the same ghost partials. This is the standard
+   scatter-add contract, and it is pinned by the test.
+3. **The summation order is fixed by peer order, not by rank count.** Peers are
+   visited in ascending rank on both sides and the accumulate is serialized per
+   peer (one kernel per peer, which is also how the unpack avoids atomics), so
+   within one run the floating-point result is deterministic and bitwise
+   reproducible. It is **not** bitwise identical across rank counts, because the
+   partition into partial sums differs — do not write a cross-rank bitwise
+   comparison of an assembled field (the same caveat as `globalSum`).
+
+Not provided: a caller-supplied reduction operator (min/max/custom) and
+multi-field packing. One field per call; three fields is three calls.
+
 ### Mesh generators
 
 Tessera ships two closed-surface generators. Both produce a **triangle soup** —
