@@ -829,3 +829,40 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_halo_scatter_add.cpp
 )
+
+# Face->face adjacency through shared edges (tasks/face-adjacency.md). "Which
+# faces share an edge with this face" is not derivable locally: EdgeField::Faces
+# holds GIDS that migrate() carries verbatim and that may name faces this rank
+# does not hold, and a vertex-incidence walk only finds a co-resident neighbour,
+# which a 1-deep VERTEX halo does not guarantee. buildFaceAdjacency() reuses
+# refine()'s edge coordinator and returns two halves -- a local-index CSR for a
+# GEOMETRIC consumer (valid only when numNonResident == 0) and always-valid
+# nbrGid/nbrOwner arrays for a TOPOLOGICAL one.
+#
+# Ground truth for the headline case is derived from the REPLICATED icosphere
+# soup with a plain std::map<EdgeKey, vector<gid>> -- not from Tessera -- so a
+# self-consistent wrong answer cannot pass. Covers exact ordered row equality
+# against that reference, degree 3 and the closed-surface identity
+# (3F == 2E == 960 at subdiv 2), symmetry, rank-count invariance (rows are
+# gid-sorted, so the comparison is an exact list comparison), numNonResident
+# being exact in BOTH directions, the Conforming post-refine case including that
+# no retired red parent appears anywhere, the HangingNode2to1 case where a
+# T-junction is deliberately NOT a shared edge, a hand-built non-manifold soup
+# that must throw naming the EdgeKey, and the generation guard.
+#
+# TIER regression, ranks 1-5, both backends: gate promotion is pre-authorized
+# for this task by tasks/face-adjacency.md.
+tessera_add_test(
+    NAME     face_adjacency
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_face_adjacency.cpp
+)
+tessera_add_test(
+    NAME     face_adjacency
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_face_adjacency.cpp
+)

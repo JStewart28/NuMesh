@@ -386,6 +386,73 @@ normals and vertex areas, whose conventions stay in the caller:
 reduceVertexFromFaces( mesh, geom, faceSlice, vertSlice, MyAreaOrNormalOp{} );
 ```
 
+**Face→face adjacency through shared edges** — a CSR of every local face's
+edge-neighbours, built collectively. `Tessera_FaceAdjacency.hpp`.
+
+```cpp
+auto adj = buildFaceAdjacency( mesh );   // FaceAdjacency<MemSpace>; COLLECTIVE
+```
+
+This cannot be derived locally, for two independent reasons, which is why it is a
+collective builder rather than a walk over the connectivity the mesh already
+holds. `EdgeField::Faces` holds the **global ids** of an edge's incident faces,
+and `migrate()` carries them verbatim without repair — a gid is not a usable
+neighbour handle. And a vertex-incidence walk only finds a neighbour that happens
+to be co-resident: the local face set is *owned faces plus faces incident on an
+owned vertex*, so an owned face all three of whose corners are ghosts can have
+edge-neighbours that are not held locally at all. The 1-deep **vertex** halo does
+not guarantee edge-neighbour co-residency. `buildFaceAdjacency` therefore reuses
+`refine()`'s **edge coordinator** (`edgeCoordRank` + `allToAllV`) rather than the
+halo, and adds no new communication mechanism.
+
+**The return type has two halves, and which one you may use is the precondition
+split to read first:**
+
+| Half | Always valid? | For |
+|---|---|---|
+| `nbrGid`, `nbrOwner` — flat Views parallel to `csr.get().neighbors` | **Yes**, resident or not | A **topological** consumer: mark growth by neighbour rings, an independent set of edge flips, any conflict-resolution pass that *communicates* with the neighbour's owner. Works at halo depth 1 with no further precondition. |
+| `csr` — `GenerationHandle<CsrAdjacency>` of local face indices | Only where the neighbour is resident; `invalid_local` otherwise | A **geometric** consumer, one that reads the neighbour's vertex positions. It must **check `numNonResident == 0`**, not assume it. |
+
+`numNonResident` is the count of owned-row entries that are `invalid_local`,
+summed over this rank. Zero means every owned face's neighbours are co-resident,
+so `csr` may be used directly; a deeper halo (`distribute(..., depth >= 2)`)
+makes that likely but does not guarantee it in general. Ghost rows are excluded
+from the count, because they are best-effort by contract.
+
+```cpp
+// Rows for OWNED faces are complete: every true edge-neighbour appears, as a
+// local index if resident and as invalid_local if not. Rows for GHOST faces are
+// best-effort and may be SHORT -- do not iterate them.
+const auto& csr = adj.csr.get();
+if ( adj.numNonResident == 0 ) { /* geometric consumer may use csr */ }
+```
+
+Rows are sorted ascending by neighbour **global id**, not by local index, so the
+row order is rank-count invariant and two runs at different rank counts compare
+as exact lists rather than as sets. Non-manifold input (three or more distinct
+faces on one edge, which `buildFromTriangleSoup` will accept) throws
+`std::runtime_error` naming the offending `EdgeKey` — collectively, so every rank
+throws rather than one deadlocking the rest. Generation-guarded exactly like
+`VertexStencil`: rebuild after any
+`distribute`/`migrate`/`refine`/`splitEdges`/`loadBalance`.
+
+Two mode notes, both contract rather than defect. On a `Conforming` mesh the face
+AoSoA stores **only the visible (closed) faces** — retired red parents exist only
+inside `refine()` and are never stored — so adjacency over the local faces *is*
+adjacency over the visible faces, with nothing to skip, and every face's degree
+is exactly 3 on a closed surface. Under `HangingNode2to1` a **T-junction is not a
+shared edge**: the coarse side holds `(a,b)` while the fine side holds `(a,m)` and
+`(m,b)`, three distinct edges with one incidence each, so a face on either side
+of a T-junction has degree **< 3**. That mode keeps no record of which edges carry
+a hanging node (see *Known Issues*), so there is nothing to match `(a,m)` against
+`(a,b)` with. A consumer needing neighbours across a refinement front wants a
+`Conforming` mesh.
+
+Not provided, deliberately: growing a refinement mask by neighbour rings (that is
+the consumer's loop over this CSR plus a mark exchange it already has), vertex→
+vertex or face→vertex adjacency (both already exist or are derivable), and
+incremental maintenance across a topology edit.
+
 **Global scalar reductions** — single-sourced `MPI_Allreduce` wrappers over
 `mesh.comm()`. Each takes a per-rank scalar and returns the global result on
 every rank: **Tessera owns the collective, the caller owns the local value.** All
@@ -430,11 +497,15 @@ long long F = globalOwnedFaces( mesh );
 long long X = globalOwnedEuler( mesh );   // V - E + F; 2 for a closed conforming surface
 ```
 
-**Validity.** `MeshGeometry` and `VertexStencil` are generation-guarded like mesh
-slices (see *Slice/handle validity*): both are stamped with the mesh generation at
-build time and abort on use after a topology op. **Rebuild them with
-`buildMeshGeometry`/`buildVertexStencil` after any `distribute`/`migrate`/`refine`/
-`loadBalance`**; they survive `haloExchange` (topology-preserving). Note also that a
+**Validity.** `MeshGeometry`, `VertexStencil` and `FaceAdjacency` are
+generation-guarded like mesh slices (see *Slice/handle validity*): each is stamped
+with the mesh generation at build time and aborts on use after a topology op.
+**Rebuild them with
+`buildMeshGeometry`/`buildVertexStencil`/`buildFaceAdjacency` after any
+`distribute`/`migrate`/`refine`/`loadBalance`**; they survive `haloExchange`
+(topology-preserving). `FaceAdjacency`'s `nbrGid`/`nbrOwner` are bare Views
+parallel to the guarded CSR and are only meaningful together with it, so the guard
+on the CSR is the guard on all three. Note also that a
 solver's *operator consistency* at irregular (non-valence-6) vertices is a property
 of the weights, not the apply — document and convergence-test that on the caller's
 weight-builder; `applyStencil` is exact arithmetic and is correctness-tested against
@@ -546,8 +617,9 @@ make -j $(nproc)
   because it changes what a default-spelled `Mesh` does.)* The whole
   `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
   `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented,
-  registered across the suite, and **verified**: the ship gate is 190/190 (180/180
-  when this was written; the ten `latlon_sphere` entries came later) and the
+  registered across the suite, and **verified**: the ship gate is 210/210 (180/180
+  when this was written; the ten `latlon_sphere`, ten `halo_scatter_add` and ten
+  `face_adjacency` entries came later) and the
   diagnostic tier 62/62 on SERIAL and HIP at **ranks 1–5**, over multiple successive
   adaptive rounds, and the shape-quality bounds are measured rather than assumed (the
   worst radius ratio saturates by round 11 and is flat through round 16 while the mesh
@@ -576,7 +648,15 @@ make -j $(nproc)
   already there, leaving two coincident vertices. A uniform mask hits neither.
   `RefinementMode::Conforming` fixes both, because it can recover the persistent
   split-edge map locally from the closure bookkeeping; `HangingNode2to1` keeps no
-  such record and would need a new face field or an extra message round.
+  such record and would need a new face field or an extra message round. The same
+  missing record is why `buildFaceAdjacency()` reports a face on either side of a
+  T-junction as having **fewer than 3** edge-neighbours in that mode — `(a,b)`,
+  `(a,m)` and `(m,b)` are three distinct edges with one incidence each, and there
+  is nothing to match them against each other with. Measured on a subdivision-2
+  icosphere refined with the mask `gid % 3 == 0`, identical at ranks 1–5 on both
+  backends: of 1266 edges, 657 have two incidences and **609 are T-junction
+  edges**. Pinned by `tests/test_face_adjacency.cpp` case 7, which deliberately
+  does not assert degree 3.
 - **Edge user fields are reset by `refine()`/`refineLocal()`/`splitEdges()`.** Edges
   are re-derived from the new face connectivity, so any per-edge user data is
   re-initialized (M1 carries no edge user state through AMR or remeshing). Vertex and

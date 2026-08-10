@@ -20,6 +20,7 @@
 #include "Tessera_Distribute.hpp"
 #include "Tessera_EdgeSplit.hpp"
 #include "Tessera_EditFamily.hpp"
+#include "Tessera_FaceAdjacency.hpp"
 #include "Tessera_FieldReduce.hpp"
 #include "Tessera_Fields.hpp"
 #include "Tessera_Geometry.hpp"

@@ -1,6 +1,8 @@
 # Face→face adjacency through shared edges
 
-**Status:** NOT STARTED.
+**Status:** IMPLEMENTED. `src/Tessera_FaceAdjacency.hpp`, `tests/test_face_adjacency.cpp`
+(TIER `regression`, SERIAL + HIP, ranks 1–5). README *Geometry & stencil
+operators* and `docs/design.md` → *Face adjacency* document it.
 
 **Verified against `08dd346`** (branch `conforming-refinement`) — the code this task
 cites was re-read at that commit.
@@ -207,3 +209,71 @@ conflict-resolution passes. See the ordering diagram in
 
 - 2026-08-07 — Task written, then re-checked against `08dd346` after pulling
   `../tessera`. Nothing implemented.
+- 2026-08-10 — Implemented on `conforming-refinement` at `fe13fd5`.
+  `src/Tessera_FaceAdjacency.hpp` (`FaceAdjacency<MemorySpace>` +
+  `buildFaceAdjacency`) exactly as specified: advertise/coordinate/assemble/
+  resolve/sort through `detail::edgeCoordRank` + `allToAllV`, no new
+  communication mechanism, host build then deep-copy, CSR stamped with
+  `mesh.generation()`/`generationPtr()`. `tests/test_face_adjacency.cpp` covers
+  checks 1–10 and is green at SERIAL and HIP, ranks 1–5; the full gate is green
+  at 200/200 with nothing relabelled.
+
+  **Three departures from the task text, each recorded here because each is a
+  decision rather than an omission.**
+
+  1. **Conforming mode needs no filtering, and the task's step for it is moot.**
+     A `Conforming` mesh's face AoSoA stores *only* the visible faces — the
+     retired red parents live entirely inside one `refine()` call, which
+     un-closes, splits and re-closes before returning, and are never stored. So
+     "build adjacency over the visible faces, skipping retired parents when
+     advertising" is what iterating the local faces already does. There is no
+     `ownedVisibleFaces()` in the library (it is a `tests/MeshInvariants.hpp`
+     helper); the mesh's own face set is the visible set. Check 6 asserts the
+     consequence rather than assuming it: no retired parent gid appears as a row
+     owner or as a neighbour gid, with the retired set recovered via
+     `unclose()`.
+
+  2. **Under `HangingNode2to1` a T-junction face has FEWER than 3 neighbours,
+     not more.** Check 7's premise is inverted. Adjacency is exact `EdgeKey`
+     equality, so the coarse side's `(a,b)` and the fine side's `(a,m)`/`(m,b)`
+     are three distinct edges with one incidence each and match nothing. Getting
+     "more than 3" would require the split-edge map, and `HangingNode2to1` keeps
+     no such record (README → *Known Issues*) — there is nothing local *or*
+     remote to match `(a,m)` against `(a,b)` with, which is the same asymmetry
+     that stops that mode bounding the level jump across a hanging node. Check 7
+     therefore asserts what the task actually wanted from it: degree 3 is *not*
+     required, symmetry holds (via exact ordered equality with a reference
+     gathered from the real mesh), the distinct edge set equals
+     `globalOwnedEdges`, the row total equals twice the number of two-incidence
+     edges, and — for non-vacuity — T-junctions really exist. Measured at
+     subdiv 2 with mask `gid % 3 == 0`, identical at ranks 1–5 on both backends:
+     1266 edges, 657 two-incidence, **609 one-incidence (T-junction)**, row sum
+     1314.
+
+  3. **Two robustness choices the task did not specify.** Coordinator
+     advertisements are **deduplicated by face gid** before the incidence count,
+     without which a *replicated* multi-rank mesh (every rank advertising every
+     face, straight out of the builder) reads every manifold edge as
+     `2·comm_size`-fold and aborts. And the non-manifold failure is made
+     **collective** — offender's rank by `MPI_Allreduce(MAX)`, key by
+     `MPI_Bcast`, then every rank throws the same message — since a throw on the
+     coordinator alone would deadlock everyone else in the following
+     `allToAllV`. Check 8 builds its three-faces-on-one-edge soup on
+     `MPI_COMM_SELF` so the case is identical at every rank count.
+
+  Ghost rows are derived from the **local face→edge incidence** rather than from
+  `EdgeField::Faces`: pairing up the local faces that reference the same edge gid
+  yields entries whose gid, owner *and* local index are all read from the face
+  AoSoA and are therefore all true, whereas `EdgeField::Faces` can name a face
+  nothing on this rank holds (the task's own reason 1). Still best-effort, still
+  "do not iterate".
+
+  **Measured** (subdiv-2 icosphere, `distribute(depth=1)`, identical on SERIAL
+  and HIP). Coarse case: row sum 960 == 3·320 == 2·480 at every rank count, and
+  the owned-row fingerprint is bit-identical at ranks 1–5
+  (`checksum=306241244554`). `numNonResident` is 0 at np1 and genuinely nonzero
+  beyond — global 24 (np2), 64 (np4), 96 (np5) — so check 5's both-directions
+  assertion is exercised rather than trivially true, which is the whole reason
+  the return type has two halves. Conforming case: the adaptive round emits 1390
+  (np1) to 1489 (np5) closure children globally with 125–627 retired parents per
+  rank, so the retired-parent assertion is not vacuous.

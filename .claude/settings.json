@@ -133,7 +133,9 @@
       "Bash(git stash *)",
       "Bash(bash -lc 'cd /g/g20/stewartj/research-bridges/tessera-dev/Tessera/build-tuolumne; for B in SERIAL HIP; do echo -n \"$B: \"; ctest -N -L unit -R $B | grep -c \"Test *#\"; done')",
       "Bash(bash -lc 'cd /g/g20/stewartj/research-bridges/tessera-dev/Tessera/build-tuolumne *)",
-      "Bash(bash -lc 'cd build-tuolumne *)"
+      "Bash(bash -lc 'cd build-tuolumne *)",
+      "Bash(jobs)",
+      "Bash(bash -lc 'export SPACK_USER_CONFIG_PATH=$HOME/.spack/tuolumne; . scripts/lib/tessera_env.sh >/dev/null 2>&1; cd build-tuolumne && cmake . >/dev/null && make -j 32 tessera_test_global_reduce_SERIAL tessera_test_global_reduce_HIP 2>&1 | tail -40')"
     ],
     "additionalDirectories": [
       "/g/g20/stewartj/research-bridges/Canopy/build-tuolumne",

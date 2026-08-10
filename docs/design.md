@@ -297,6 +297,134 @@ field with a small error localized on partition boundaries — an error that mov
 when the rank count changes and that no structural invariant detects. Depth makes
 the requirement dischargeable; the throw makes it checked.
 
+## Face adjacency
+
+`buildFaceAdjacency(mesh)` (`Tessera_FaceAdjacency.hpp`) answers "which faces
+share an edge with this face" for every local face. It is **collective**, and
+the reason it has to be is the whole design note.
+
+### Why it cannot be derived locally
+
+Two independent reasons, either of which alone would be enough:
+
+1. **`EdgeField::Faces` holds global ids, not handles.** The edge AoSoA carries
+   the (at most two) incident faces of each edge as `GlobalId`s. Those gids may
+   name faces this rank does not hold, and `migrate()` carries them **verbatim
+   without repair** — the second incidence of a boundary edge is filled by
+   whichever rank materialized the edge, from *its* local face set. A gid is not
+   a usable neighbour handle, and an unrepaired one is not even reliably a true
+   incidence.
+2. **A vertex-incidence walk only finds co-resident neighbours.** The local face
+   set is *owned faces plus faces incident on an owned vertex*, so an owned face
+   all three of whose corners are ghosts can have edge-neighbours that are not
+   locally held at all. The 1-deep **vertex** halo does not guarantee
+   edge-neighbour co-residency; that is the same gap `refine()` documents, and
+   the same gap `CurvatureCriterion` hits when it needs the neighbour across an
+   edge to compute a dihedral.
+
+So there was no way to ask the question, and both operations that need it —
+growing a refinement mark by neighbour rings, so an indicator-driven AMR scheme
+does not refine isolated slivers, and any conflict-resolution pass over faces
+(choosing an independent set of edge flips, say) — were inexpressible.
+
+### It reuses `refine()`'s edge coordinator, not a new mechanism
+
+Tessera already routes every cross-rank per-edge decision through the
+deterministic coordinator rank `edgeCoordRank(EdgeKey) = hash % nranks`, precisely
+*because* of reason 2 above: the 2:1 balance, the midpoint-gid assignment, the
+edge-gid assignment, `CurvatureCriterion`'s dihedral, and
+`MeshInvariants`'s `checkConforming` all do it. The machinery was built and
+correct; it was simply not exposed as an adjacency query. `buildFaceAdjacency`
+mirrors `refine()` Phase 2 exactly and adds **no new communication**: each
+**owned** face advertises `(EdgeKey, faceGid, faceOwner)` to its three edges'
+coordinators (routing by the hash, disambiguation by the full `EdgeKey`, as
+everywhere else); each coordinator groups by `EdgeKey` and replies to every
+advertiser with the *other* incident face. One advertisement is a boundary edge
+and yields no reply. Ghost faces are not advertised, so the traffic is exactly
+three messages per owned face and one reply each. The build then runs on the host
+with ordered containers and deep-copies — the same locus and idiom as
+`buildVertexStencil()` and the halo builder.
+
+Two details in the coordinator are worth recording. Advertisements are
+**deduplicated by face gid** before counting, not merely tallied: on a replicated
+mesh (straight out of the builder, before `distribute()`) every rank advertises
+every face, so tallying advertisements would read a perfectly manifold edge as
+`2·comm_size`-fold. And an edge with **more than two distinct** incident faces is
+non-manifold input — which `buildFromTriangleSoup()` accepts, keeping the first
+two incidences and dropping the rest — so it fails loudly naming the offending
+`EdgeKey` rather than silently truncating. That failure is made **collective**
+(the offender's rank agreed by `MPI_Allreduce(MAX)`, its key broadcast, then every
+rank throws the same `std::runtime_error`), because a throw on the coordinator
+alone would deadlock every other rank in the following `allToAllV`.
+
+### The return type has two halves, and that is the design decision
+
+A CSR of local face indices is what a kernel wants, but reason 2 means an owned
+face's edge-neighbour may not be locally held. Returning `invalid_local` and
+saying nothing would recreate the silent-incompleteness failure mode a short
+stencil row has — a plausible field with a small error localized on partition
+boundaries that moves when the rank count changes. Returning gids only would be
+complete but unusable on device. So `FaceAdjacency` returns **both**: the
+generation-guarded local-index `csr`, the always-valid `nbrGid`/`nbrOwner` arrays
+parallel to it, and a `numNonResident` count of the owned-row entries that are
+`invalid_local`.
+
+**The precondition split follows from that.** A *topological* consumer — mark
+growth, conflict resolution, anything that communicates with the neighbour's
+owner — uses `nbrGid`/`nbrOwner` only: it sends to `nbrOwner`, names the face by
+`nbrGid`, and never needs the neighbour locally, so it works at halo depth 1 with
+no further precondition. A *geometric* consumer — one that reads the neighbour's
+vertex positions — must go through `csr` and must **check `numNonResident == 0`**
+rather than assume it. A deeper halo makes that likely but does not guarantee it
+in general, which is exactly why the counter exists instead of a documented
+assumption.
+
+Rows are sorted ascending by neighbour **global id** rather than by local index.
+That is what makes the row order a pure function of global ids, hence rank-count
+invariant, hence comparable across rank counts as an exact **list** rather than a
+set — and that in turn is what lets the test compare against a reference derived
+from the replicated soup instead of from Tessera.
+
+Ghost rows are filled best-effort and are documented as *do not iterate*. They
+come from the local face→edge incidence rather than from `EdgeField::Faces`, and
+that choice is about not lying: pairing up the local faces that reference the same
+edge gid yields entries whose gid, owner **and** local index are all read from the
+face AoSoA and are therefore all true, whereas `EdgeField::Faces` can name a face
+nothing on this rank holds and whose owner is unknown (reason 1). A ghost's true
+neighbour that is not resident simply does not appear, and the row is short with no
+`invalid_local` to mark the gap — which is precisely what "best-effort" means and
+why `numNonResident` excludes them.
+
+### Refinement modes
+
+**Conforming mode holds no surprise, and the reason is worth stating because the
+obvious worry is unfounded.** A `Conforming` mesh's face AoSoA stores **only the
+visible (closed) faces**; the retired red parents exist solely inside `refine()`,
+which un-closes, splits and re-closes within one call, and are never stored. So
+adjacency over the local faces *is* adjacency over the visible faces, with nothing
+to skip and no way for a consumer to be handed a row for a face that is not part
+of the current triangulation. Degree is exactly 3 on a closed surface.
+
+**Under `HangingNode2to1`, a T-junction is not a shared edge.** Adjacency is exact
+`EdgeKey` equality: the coarse side of a hanging node holds `(a,b)` while the fine
+side holds `(a,m)` and `(m,b)` — three distinct edges with one incidence each — so
+a face on either side has degree **< 3**. That is the mode contract showing
+through, not a defect: `HangingNode2to1` keeps no record of which edges carry a
+hanging node (README → *Known Issues*), so there is nothing local *or* remote to
+match `(a,m)` against `(a,b)` with. `Conforming` can do it because
+`recoverSplitEdges()` reconstructs the persistent split-edge map from the closure
+bookkeeping, which is the same asymmetry that bounds the level jump across a
+hanging node in one mode and not the other. A consumer needing geometric
+neighbours across a refinement front wants a `Conforming` mesh.
+
+### Non-goals
+
+Growing a refinement mask by neighbour rings is the *consumer's* loop over this
+CSR plus a mark-exchange collective it already has, and is deliberately not
+shipped. Vertex→vertex and face→vertex adjacency already exist or are derivable.
+And the adjacency is **rebuilt**, not maintained incrementally across a topology
+edit, like every other derived structure — the generation guard enforces that.
+
 ## Global reductions
 
 `Tessera_Reduction.hpp` holds the scalar collectives — `globalMin`, `globalMax`,
