@@ -1,6 +1,6 @@
 # Global reductions beyond `globalMin`
 
-**Status:** NOT STARTED. Smallest of the eleven gap tasks; a good first one.
+**Status:** DONE (2026-08-09). See the progress log at the bottom.
 
 **Verified against `08dd346`** (branch `conforming-refinement`) — the code this task
 cites was re-read at that commit.
@@ -188,3 +188,75 @@ diagram in [halo-depth.md](halo-depth.md).
 
 - 2026-08-07 — Task written, then re-checked against `08dd346` after pulling
   `../tessera`. Nothing implemented.
+
+- 2026-08-09 — Implemented in full.
+
+  **Step 1.** `detail::mpiTypeOf`'s `if`-chain over `std::is_same` replaced by a
+  `detail::MpiType<T>` specialization set (`double`, `float`, `int`, `long`,
+  `long long`, `unsigned int`, `unsigned long`, `unsigned long long`, `short`,
+  `char`), exposed as a static function because `MPI_Datatype` handles are not
+  guaranteed constant expressions. The unmatched primary template carries a
+  dependent-false `static_assert` via `detail::AlwaysFalse<T>`. `mpiTypeOf<T>()`
+  survives as a one-line forward, so no call site churned.
+
+  Verified by hand (not committed as a test, per the exit criterion) with a
+  throwaway TU calling `globalSum( mesh, (long double)1.0 )`:
+
+  ```
+  Tessera_Reduction.hpp:47:20: error: static assertion failed due to requirement
+  'AlwaysFalse<long double>::value': Tessera: no MPI_Datatype mapping for this
+  scalar type. Add a detail::MpiType specialization in Tessera_Reduction.hpp if
+  the type is genuinely needed (note that long double has no portable MPI
+  mapping).
+     47 |     static_assert( AlwaysFalse<T>::value,
+        |                    ^~~~~~~~~~~~~~~~~~~~~
+  ...in instantiation of 'Tessera::detail::mpiTypeOf<long double>'
+  ...in instantiation of 'Tessera::globalSum<FakeMesh, long double>'
+  1 error generated.
+  ```
+
+  One error, naming the type and the fix. `long long` compiles and runs
+  correctly (test 2 below).
+
+  **Step 2.** `globalSum`, `globalMax`, `globalAllFinite` added. `globalMin`,
+  `globalMax`, `globalSum` all route through one new
+  `detail::meshAllreduce( mesh, local, MPI_Op )`, so the Allreduce itself is
+  written once. `globalAllFinite` is `MPI_LAND` on an `int`.
+
+  **Step 3.** `globalOwnedVertices/Edges/Faces/Euler` added to the library.
+  `tests/MeshInvariants.hpp`'s four became one-line forwards (names kept, zero
+  test churn) and hand-roll no `MPI_Allreduce`. One library internal duplicated
+  one of the four — `Tessera_RefineParallel.hpp`'s owned-vertex sum feeding the
+  midpoint-gid exscan base — and now calls `globalOwnedVertices( mesh )`. The
+  remaining library `MPI_Allreduce` sites are *not* among the four (acquisition
+  and need-count early exits, the mark-propagation fixpoint guard, a face-gid
+  MAX, `exscanCount`'s paired Allreduce+Exscan) and were left alone.
+
+  **Name collision, worth knowing.** Adding `globalSum`/`globalMax` to namespace
+  `Tessera` broke three test files that defined their own two-argument
+  `globalSum(long long, MPI_Comm)` / `globalMax(...)` helpers in the global
+  namespace under `using namespace Tessera;` — the new templates deduce
+  `MeshT = long long, Scalar = MPI_Comm` and win overload resolution whenever the
+  non-template needs a conversion, then fail in the body on `mesh.comm()`. The
+  local helpers in `test_conforming_migrate.cpp`,
+  `test_conforming_determinism.cpp` and `test_halo_depth.cpp` were renamed to
+  `commSum`/`commMax` (they are comm-based, not mesh-based). The single-argument
+  helpers in the other conforming tests do not collide and were left as they are.
+
+  **Tests.** `test_global_reduce.cpp` rewritten to cover all ten listed checks,
+  and re-registered at TIER `regression`, backends SERIAL and HIP, ranks 1-5
+  (pre-authorized by this task). The three original `globalMin` checks are kept
+  verbatim as check 10. Every extremum and the one dissenting rank sit away from
+  rank 0 where the pattern allows; the finiteness negatives build the local
+  verdict with a real `std::isfinite` sweep over an array holding the poisoned
+  value, one run each for `NaN`, `+Inf`, `-Inf`. Checks 8 and 9 run against a
+  distributed subdivision-2 icosphere before and after a uniform `refine()`.
+
+  All 10 registrations pass (SERIAL and HIP, np1-5). Full regression gate green
+  with nothing relabelled.
+
+  **Docs.** README's API section documents the four new collectives, the
+  verdict-not-data contract, and the `globalSum` floating-point reproducibility
+  caveat in the same place. `docs/design.md` gains a *Global reductions* section.
+  Nothing added to README *Future Optimizations* — reproducible summation stays
+  out of scope, and the task requires asking before adding an entry there.

@@ -135,7 +135,7 @@ inline int globalFails( MPI_Comm comm, int local )
     return g;
 }
 
-inline long long globalSum( MPI_Comm comm, long long local )
+inline long long commSum( MPI_Comm comm, long long local )
 {
     long long g = 0;
     MPI_Allreduce( &local, &g, 1, MPI_LONG_LONG, MPI_SUM, comm );
@@ -269,9 +269,9 @@ int checkKRingRows( MeshT& mesh, int k, const char* tag )
 template <class MeshT>
 long long globalGhostVertices( MeshT& mesh )
 {
-    return globalSum( mesh.comm(),
-                      static_cast<long long>( mesh.numVertices() ) -
-                          static_cast<long long>( mesh.numOwnedVertices() ) );
+    return commSum( mesh.comm(),
+                    static_cast<long long>( mesh.numVertices() ) -
+                        static_cast<long long>( mesh.numOwnedVertices() ) );
 }
 
 template <class MeshT>
@@ -282,7 +282,7 @@ long long globalHaloPlanSize( MeshT& mesh,
     for ( const auto* p : { &halo.vplan, &halo.eplan, &halo.fplan } )
         local += static_cast<long long>( p->totalSend() ) +
                  static_cast<long long>( p->totalRecv() );
-    return globalSum( mesh.comm(), local );
+    return commSum( mesh.comm(), local );
 }
 
 //! Flattened (totalSend, totalRecv, send_idx..., recv_idx...) of the three
@@ -396,7 +396,7 @@ long long countCorruptGhosts( MeshT& mesh )
     for ( std::size_t i = mesh.numOwnedVertices(); i < mesh.numVertices(); ++i )
         if ( pos( i, 0 ) == Scalar( -1234.5 ) )
             ++bad;
-    return globalSum( mesh.comm(), bad );
+    return commSum( mesh.comm(), bad );
 }
 
 //! Rank-count-independent summary of a distribution: the three global owned

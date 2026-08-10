@@ -341,18 +341,26 @@ tessera_add_test(
     SOURCES  test_reduce_faces.cpp
 )
 
-# Global scalar reduction (globalMin): min placed at different ranks confirms a
-# real collective; single-rank identity. Host-side MPI wrapper, SERIAL-only
-# (no device kernels), over 1-5 ranks.
+# ── Regression tier (ship gate: label regression x {SERIAL,HIP} x ranks 1-5) ────
+
+# Global scalar collectives (globalMin/globalMax/globalSum/globalAllFinite) and
+# the owned-count reductions. Extrema and the dissenting rank are placed away
+# from rank 0 so a rank-0 shortcut cannot pass; the owned-count checks run on a
+# real distributed icosphere before and after a uniform refine.
 tessera_add_test(
     NAME     global_reduce
     BACKEND  SERIAL
-    TIER     unit
+    TIER     regression
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_global_reduce.cpp
 )
-
-# ── Regression tier (ship gate: label regression x {SERIAL,HIP} x ranks 1-5) ────
+tessera_add_test(
+    NAME     global_reduce
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_global_reduce.cpp
+)
 
 # Distributed mesh + deterministic ownership + 1-deep halo (Step 5). First
 # end-to-end gate test: partition -> distribute -> ownership/1-ring invariants ->

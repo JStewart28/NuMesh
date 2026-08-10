@@ -223,11 +223,48 @@ normals and vertex areas, whose conventions stay in the caller:
 reduceVertexFromFaces( mesh, geom, faceSlice, vertSlice, MyAreaOrNormalOp{} );
 ```
 
-**Global scalar reduction** — a single-sourced `MPI_Allreduce(MPI_MIN)` over
-`mesh.comm()`, e.g. for an adaptive-timestep min-reduce:
+**Global scalar reductions** — single-sourced `MPI_Allreduce` wrappers over
+`mesh.comm()`. Each takes a per-rank scalar and returns the global result on
+every rank: **Tessera owns the collective, the caller owns the local value.** All
+are collective — every rank must call them.
 
 ```cpp
-Scalar dt = globalMin( mesh, local_dt_estimate );
+Scalar dt     = globalMin( mesh, local_dt_estimate );   // adaptive timestep
+Scalar cfl    = globalMax( mesh, local_cfl_estimate );  // CFL-style bound
+Scalar volume = globalSum( mesh, local_volume );        // enclosed volume
+bool   ok     = globalAllFinite( mesh, local_verdict ); // NaN/Inf tripwire
+```
+
+`globalAllFinite` is an `MPI_Allreduce(MPI_LAND)` returning true iff *every* rank
+passed true, so every rank aborts on the step that produced the NaN rather than
+one rank diverging silently. It takes a **verdict, not data** — the local
+"everything I hold is finite" sweep is the caller's Kokkos reduction over
+whichever fields it cares about, which is knowledge Tessera does not have. There
+is deliberately no device-side all-finite helper.
+
+> **`globalSum` floating-point reproducibility — read this before writing a
+> cross-rank test.** `MPI_SUM` is not associative in floating point, so a
+> `double` result is **not** bitwise reproducible across rank counts, nor across
+> runs on a GPU partial-sum path. A quantity carried for the whole run (an
+> enclosed volume, a reduced minimum edge length) will differ in its low bits
+> between a 4-rank and a 5-rank run, and anything scaling off it — an adaptive
+> timestep — diverges from there. **Integer sums are exact and reproducible.**
+> Do not write a cross-rank bitwise comparison over a floating-point `globalSum`.
+> Fixed-order/compensated summation is out of scope.
+
+The scalar type is mapped to its `MPI_Datatype` by a specialization set; an
+arithmetic type with no mapping (e.g. `long double`) is a **compile** error, not
+a runtime MPI error.
+
+**Global entity counts** — owned entities partition the global mesh, so a SUM of
+the owned counts is the global count. Reduced as `long long`, exact since
+integer:
+
+```cpp
+long long V = globalOwnedVertices( mesh );
+long long E = globalOwnedEdges( mesh );
+long long F = globalOwnedFaces( mesh );
+long long X = globalOwnedEuler( mesh );   // V - E + F; 2 for a closed conforming surface
 ```
 
 **Validity.** `MeshGeometry` and `VertexStencil` are generation-guarded like mesh

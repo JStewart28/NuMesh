@@ -184,6 +184,40 @@ field with a small error localized on partition boundaries — an error that mov
 when the rank count changes and that no structural invariant detects. Depth makes
 the requirement dischargeable; the throw makes it checked.
 
+## Global reductions
+
+`Tessera_Reduction.hpp` holds the scalar collectives — `globalMin`, `globalMax`,
+`globalSum`, `globalAllFinite` — plus the owned-entity count reductions
+(`globalOwnedVertices/Edges/Faces/Euler`). Each is one `MPI_Allreduce` on
+`mesh.comm()` and nothing else.
+
+The split is the design: **Tessera owns the collective, the caller owns the local
+value.** Tessera cannot know which fields a given consumer cares about, so it
+never computes the per-rank scalar. This is most visible in `globalAllFinite`,
+which takes a **verdict rather than data** — the caller's own Kokkos sweep
+decides "is everything I hold finite", and the collective only turns that local
+verdict into a global one so every rank aborts on the same step. There is
+deliberately no device-side all-finite helper; the missing half is the caller's
+by construction, not by omission.
+
+The owned counts are single-sourced here because owned entities partition the
+global mesh, so the global count is just a SUM of the owned counts — a one-liner
+that was previously re-derived at each call site. They reduce as `long long` and
+are exact. Floating-point `globalSum` is not: `MPI_SUM` is not associative in
+floating point, so a `double` total is not bitwise reproducible across rank
+counts or across a GPU partial-sum path. That caveat is documented rather than
+engineered away (fixed-order/compensated summation is out of scope), because a
+consumer carrying a reduced volume or a reduced minimum edge length for a whole
+run will see adaptive timesteps diverge between rank counts and needs to expect
+it.
+
+Scalar types are mapped to `MPI_Datatype` by a `detail::MpiType<T>`
+specialization set. The unmatched primary template holds a dependent-false
+`static_assert`, so an arithmetic type with no mapping (`long double`) is a
+compile error. The earlier `if`-chain over `std::is_same` could not express that:
+it fell through to `MPI_DATATYPE_NULL` for any unlisted arithmetic type — `long
+long` among them — and failed inside MPI at runtime instead.
+
 ## Slice/handle validity
 
 Every count-changing operation (`distribute()`, `migrate()`, `refine()`, the

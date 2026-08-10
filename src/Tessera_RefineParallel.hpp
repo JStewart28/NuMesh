@@ -18,6 +18,7 @@
 #include "Tessera_HaloRebuild.hpp"
 #include "Tessera_Mesh.hpp"
 #include "Tessera_Profiling.hpp"
+#include "Tessera_Reduction.hpp"
 #include "Tessera_Refine.hpp"
 #include "Tessera_RefineClosure.hpp"
 #include "Tessera_RefinePolicy.hpp"
@@ -561,10 +562,7 @@ RefineResult refineImpl( MeshT& mesh,
                 myMid.push_back( kv.first );
         std::sort( myMid.begin(), myMid.end() );
 
-        long long localOwnedV = nOwnedV;
-        long long globalV = 0;
-        MPI_Allreduce( &localOwnedV, &globalV, 1, MPI_LONG_LONG, MPI_SUM,
-                       comm );
+        const long long globalV = globalOwnedVertices( mesh );
         long long myCount = static_cast<long long>( myMid.size() );
         long long baseOff = 0;
         MPI_Exscan( &myCount, &baseOff, 1, MPI_LONG_LONG, MPI_SUM, comm );

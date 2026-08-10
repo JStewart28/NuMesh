@@ -176,7 +176,7 @@ triHash( unsigned long long a, unsigned long long b, unsigned long long c )
     return hashCombine( hashCombine( t[0], t[1] ), t[2] );
 }
 
-static inline long long globalSum( long long v, MPI_Comm comm )
+static inline long long commSum( long long v, MPI_Comm comm )
 {
     long long g = 0;
     MPI_Allreduce( &v, &g, 1, MPI_LONG_LONG, MPI_SUM, comm );
@@ -441,8 +441,8 @@ static int case_rank_count( int rank, int size, const char* tag )
         else if ( it->second != kv.second )
             ++diagMismatch;
     }
-    diagMismatch = globalSum( diagMismatch, MPI_COMM_WORLD );
-    parentMissing = globalSum( parentMissing, MPI_COMM_WORLD );
+    diagMismatch = commSum( diagMismatch, MPI_COMM_WORLD );
+    parentMissing = commSum( parentMissing, MPI_COMM_WORLD );
 
     // Everything that is provably a function of the global mesh alone must
     // agree exactly. `parentMissing` belongs here: a blue parent the reference
@@ -607,7 +607,7 @@ static int case_idempotence( int rank, int size, const char* tag )
     std::map<EdgeKey, GlobalId> se0;
     snapshot( vs0, rs0, V0, E0, F0, se0 );
     const long long closure0 =
-        globalSum( TesseraTest::closureSiblingGroups( mesh ), comm );
+        commSum( TesseraTest::closureSiblingGroups( mesh ), comm );
     if ( closure0 <= 0 )
         ++fails; // vacuous: no closure to be idempotent about
 
@@ -778,7 +778,7 @@ static int case_cross_mode( int rank, int size, const char* tag )
     {
         std::vector<char> mc( conf.numOwnedFaces(), 1 );
         auto res = refine( conf, confHalo, mc );
-        closureChildren += globalSum(
+        closureChildren += commSum(
             static_cast<long long>( res.closure.nClosureChildren ), comm );
 
         std::vector<char> mh( hang.numOwnedFaces(), 1 );

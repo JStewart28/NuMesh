@@ -89,13 +89,13 @@ std::vector<char> gidMask( MeshT& mesh, int m )
     return mask;
 }
 
-inline long long globalSum( long long v, MPI_Comm comm )
+inline long long commSum( long long v, MPI_Comm comm )
 {
     long long g = 0;
     MPI_Allreduce( &v, &g, 1, MPI_LONG_LONG, MPI_SUM, comm );
     return g;
 }
-inline long long globalMax( long long v, MPI_Comm comm )
+inline long long commMax( long long v, MPI_Comm comm )
 {
     long long g = 0;
     MPI_Allreduce( &v, &g, 1, MPI_LONG_LONG, MPI_MAX, comm );
@@ -222,7 +222,7 @@ int case_adversarial_dest( int rank, int size, const char* tag )
     const long long NeG = TesseraTest::globalOwnedEdges( mesh );
     const long long NfG = TesseraTest::globalOwnedFaces( mesh );
     const long long groups =
-        globalSum( TesseraTest::closureSiblingGroups( mesh ), comm );
+        commSum( TesseraTest::closureSiblingGroups( mesh ), comm );
     unsigned long long pcv, pce, pcf;
     TesseraTest::topologyChecksum( mesh, pcv, pce, pcf );
 
@@ -234,7 +234,7 @@ int case_adversarial_dest( int rank, int size, const char* tag )
             static_cast<Rank>( g % static_cast<GlobalId>( size ) ) );
 
     const MigrateStats st = migrate( mesh, halo, dest );
-    const long long fixups = globalSum( st.siblingFixups, comm );
+    const long long fixups = commSum( st.siblingFixups, comm );
 
     int local =
         checkConformingDistributed( mesh, NvG, NeG, NfG, pcv, pce, pcf );
@@ -244,7 +244,7 @@ int case_adversarial_dest( int rank, int size, const char* tag )
                                   mesh.numOwnedVertices(), halo.vplan );
     local += corruptResyncTuples( comm, mesh.edges(), mesh.numOwnedEdges(),
                                   halo.eplan );
-    const long long glob = globalSum( local, comm );
+    const long long glob = commSum( local, comm );
     if ( glob != 0 )
         ++fails;
 
@@ -302,15 +302,15 @@ int case_load_balance( int rank, int size, const char* tag )
         return s;
     };
     const long long maxFacesBefore =
-        globalMax( static_cast<long long>( mesh.numOwnedFaces() ), comm );
+        commMax( static_cast<long long>( mesh.numOwnedFaces() ), comm );
     const double totalWeight = globalSumD( weightSum( mesh ), comm );
     const double maxWeightBefore = globalMaxD( weightSum( mesh ), comm );
 
     const MigrateStats st = loadBalance( mesh, halo );
-    const long long fixups = globalSum( st.siblingFixups, comm );
+    const long long fixups = commSum( st.siblingFixups, comm );
 
     const long long maxFacesAfter =
-        globalMax( static_cast<long long>( mesh.numOwnedFaces() ), comm );
+        commMax( static_cast<long long>( mesh.numOwnedFaces() ), comm );
     const double maxWeightAfter = globalMaxD( weightSum( mesh ), comm );
     const double idealWeight = totalWeight / static_cast<double>( size );
 
@@ -333,7 +333,7 @@ int case_load_balance( int rank, int size, const char* tag )
 
     int local =
         checkConformingDistributed( mesh, NvG, NeG, NfG, pcv, pce, pcf );
-    const long long glob = globalSum( local, comm );
+    const long long glob = commSum( local, comm );
     if ( glob != 0 )
         ++fails;
     if ( TesseraTest::checkOwnedEuler( mesh ) != 2 )

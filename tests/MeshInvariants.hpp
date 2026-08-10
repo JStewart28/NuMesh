@@ -189,41 +189,34 @@ void topologyChecksum( MeshT& mesh, unsigned long long& cv,
 // Step 6b (distributed refinement) invariants
 // ---------------------------------------------------------------------------
 
+// The owned-count reductions are the library's (Tessera_Reduction.hpp) — these
+// are name-preserving forwards so the existing call sites do not churn. Nothing
+// here hand-rolls MPI_Allreduce for them any more.
+
 // Global owned-only Euler number Σ_ranks( ownedV - ownedE + ownedF ). For a
 // conforming closed genus-0 surface (e.g. after a UNIFORM refine) this is 2;
 // adaptive refinement introduces bounded hanging nodes and does not preserve it.
 template <class MeshT>
 long long ownedEulerGlobal( MeshT& mesh )
 {
-    long long local = static_cast<long long>( mesh.numOwnedVertices() ) -
-                      static_cast<long long>( mesh.numOwnedEdges() ) +
-                      static_cast<long long>( mesh.numOwnedFaces() );
-    long long global = 0;
-    MPI_Allreduce( &local, &global, 1, MPI_LONG_LONG, MPI_SUM, mesh.comm() );
-    return global;
+    return Tessera::globalOwnedEuler( mesh );
 }
 
 // Sum of an owned count across ranks (owned entities partition the global mesh).
 template <class MeshT>
 long long globalOwnedVertices( MeshT& mesh )
 {
-    long long l = static_cast<long long>( mesh.numOwnedVertices() ), g = 0;
-    MPI_Allreduce( &l, &g, 1, MPI_LONG_LONG, MPI_SUM, mesh.comm() );
-    return g;
+    return Tessera::globalOwnedVertices( mesh );
 }
 template <class MeshT>
 long long globalOwnedEdges( MeshT& mesh )
 {
-    long long l = static_cast<long long>( mesh.numOwnedEdges() ), g = 0;
-    MPI_Allreduce( &l, &g, 1, MPI_LONG_LONG, MPI_SUM, mesh.comm() );
-    return g;
+    return Tessera::globalOwnedEdges( mesh );
 }
 template <class MeshT>
 long long globalOwnedFaces( MeshT& mesh )
 {
-    long long l = static_cast<long long>( mesh.numOwnedFaces() ), g = 0;
-    MPI_Allreduce( &l, &g, 1, MPI_LONG_LONG, MPI_SUM, mesh.comm() );
-    return g;
+    return Tessera::globalOwnedFaces( mesh );
 }
 
 // 2:1 balance over an arbitrary face layer, given each face's corner gids and
