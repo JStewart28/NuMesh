@@ -527,6 +527,127 @@ parallel 2:1 balance to resolve. The interpolation policy exposes two hooks —
 interpolateVertexField(a, b)` (absolute member index `M`, called per component) —
 overridden per field with `if constexpr` on `M`.
 
+### Edge-addressed splitting
+
+`refine()` is **face-addressed**: it takes a face mask and bisects all three edges
+of every marked face, so the split-edge map is an *output*. Metric-driven
+remeshing is **edge-addressed** — an edge longer than the local target length is
+split — and marking every face incident on a wanted edge is strictly the wrong
+edit: it splits all three of that face's edges and then pulls the 2:1 balance
+closure in on top, so the result is both larger than asked for and differently
+shaped. `Tessera::splitEdges(mesh, halo, edgeMask, policy)` (header
+`Tessera_EdgeSplit.hpp`) bisects exactly the marked edges. Its mask is a host
+`std::vector<char>` sized `numOwnedEdges()`, matching `refine()`'s convention
+rather than inventing a second one, and the **owner** of an edge decides.
+
+#### Two editing families
+
+`splitEdges()` is the first operation of the **Remesh** family; `refine()` /
+`refineLocal()` are the whole of the **Hierarchical** one, and a mesh belongs to
+exactly one. Hierarchical maintains the 2:1 level balance and the conforming
+closure with `Level` authoritative; Remesh maintains conformity and manifoldness
+only, and a child face **inherits its parent's level**, so `Level` is advisory
+afterwards. Interleaving is unsupported and *enforced*: the mesh carries an
+`EditFamily` tag (`Tessera_EditFamily.hpp`), `None` until its first edit and then
+fixed, and each entry point throws naming both families. See the README's
+*Editing families* subsection for the table and the quoted message. The
+alternative — extending the level model to anisotropic bisection, i.e. per-edge
+levels with a compatible balance rule — is a much larger design no known consumer
+needs, and is recorded as future work in `tasks/edge-split.md`.
+
+#### No closure pass, and no mark propagation
+
+This is worth stating prominently because it is counter-intuitive next to
+`refine()`. **Bisecting a set of edges and subdividing every incident face
+according to how many of its edges were bisected yields a conforming mesh
+directly.** A face with 1, 2 or 3 bisected edges becomes 2, 3 or 4 children, and
+because *both* faces incident on a bisected edge subdivide that edge the same way,
+no hanging node survives.
+
+The 2:1 machinery exists only because of an asymmetry `refine()` creates: it
+bisects all three edges of a marked face and leaves the neighbour untouched, so
+the neighbour is left with a T-junction that must either be tolerated
+(`HangingNode2to1`, bounded by the balance fixpoint) or closed (`Conforming`).
+`splitEdges()` has no such asymmetry, so `refineImpl()`'s Phase 1
+(mark-propagation fixpoint) and its step-3b closure pass **have no analogue here**
+and are deliberately not ported. `SplitResult` accordingly carries no iteration
+count and no `ClosureStats`.
+
+#### The three bit-pattern cases
+
+For a face with corners `(v0,v1,v2)` and edges `e[k] = (v[k], v[(k+1)%3])`, let
+`S` be the subset of its edges that are bisected, with midpoints `mid[k]`:
+
+| \|S\| | children | count |
+|---|---|---|
+| 0 | emitted unchanged, **keeping its gid** | 1 |
+| 1 | `(A, m, C)`, `(m, B, C)` — the median from the midpoint to the opposite corner, with `(A,B,C)` rotated so the split edge is edge 0 | 2 |
+| 2 | corner triangle `(q0, B, q1)`, plus the quad `(A, q0, q1, C)` cut along its **shorter diagonal**; `(A,B,C)` rotated so the *unsplit* edge is edge 2 = `(C,A)`, `q0 = mid(A,B)`, `q1 = mid(B,C)` | 3 |
+| 3 | `(v0,m0,m2) (v1,m1,m0) (v2,m2,m1) (m0,m1,m2)` — the red split, reusing `refine()`'s existing case | 4 |
+
+so a face with `|S|` bisected edges becomes `|S| + 1` children — the same count,
+and the same three shapes, as the closure's green / blue / red-closure patterns.
+That is not a coincidence: both are "retriangulate a triangle around a known set
+of edge midpoints". Winding is preserved in every case, because each pattern is
+written for a *rotation* of the parent's corner triple and a rotation of a CCW
+triple is CCW.
+
+**The two-edge tie-break.** The diagonal is chosen geometrically, through the
+library's one canonical length producer `edgeLen2Canonical()` — the same helper
+the conforming blue closure uses, which orders the endpoints by gid before
+subtracting so two ranks comparing the same edge get bit-identical doubles. As
+in the closure, "shorter diagonal" reduces exactly to "connect the midpoint of the
+**longer** split edge to its opposite corner", needing only the two split edges'
+lengths and never the diagonals'. Unlike the closure it needs no message and no
+communication: the operands are the deciding face's **own corners**, and after
+`rebuildHalo()` every vertex an owned face references is held locally with its
+position. (The closure cannot do this because it runs on the *un-closed* red
+layer, whose corners come from `ClosureParentVerts` and may name vertices the rank
+does not hold.)
+
+Exact ties are common — the undisturbed icosphere is highly symmetric — and fall
+back to the **smaller of the two split edges' `EdgeKey`s**, deliberately *not* to
+the closure's lower-midpoint-gid rule: midpoint gids come from an `MPI_Exscan`, so
+they are agreed across the ranks of one run but are not the same values at a
+different rank count, whereas an `EdgeKey` is built from pre-existing vertex gids.
+`SplitResult::diagTies` counts the ties so the fallback's exercise is measured
+rather than assumed (22 on the `test_split_edges` case-4 workload, identical at
+ranks 1–5).
+
+#### Distributed structure
+
+Phase 2 of `refineImpl()` is reused essentially wholesale, through the same edge
+coordinator (`detail::edgeCoordRank`):
+
+1. **Mask agreement.** An edge is owned by one rank but incident on faces owned by
+   up to two. Every owned face advertises its three edges (so the coordinator
+   knows the full participant set) and every rank advertises the owned edges it
+   marked (so the coordinator learns the verdict from the edge's *owner*). The
+   coordinator replies to every co-sharer. Identical routing to `refineImpl()`
+   Phase 2a with `refining` replaced by the owner's mask bit.
+2. **Midpoint gid assignment**, unchanged: the midpoint owner is the lowest
+   incident face owner — every incident face subdivides, so there is no
+   "refining participants only" qualifier — owners count their midpoints,
+   `MPI_Exscan` a contiguous global block onto the pre-split global vertex count,
+   assign, and send the gid to all co-sharers. `SplitResult::midpoints` therefore
+   has the same contract and shape as `RefineResult::midpoints`, and
+   `checkMidpointAgreement` consumes it unchanged.
+3. **Child face gids** from one `MPI_Exscan` over a contiguous block above the
+   global max face gid (a subdivided parent's gid is retired, so live gids are
+   sparse and the max exceeds the count). **New edge gids** from the edge
+   coordinator, which sees each `EdgeKey` once and hands the same dense gid to both
+   sides of a shared edge. A new *interior* edge lies strictly inside one parent
+   face and is never shared, but the two *halves* of a bisected edge are, so all
+   go through the coordinator uniformly.
+
+Midpoint positions and vertex user fields come from `RefinePolicy` unchanged, and
+midpoints are **not** projected onto a sphere. Per-edge user data cannot be
+carried through, exactly as for `refine()` (README *Known Issues*). Like
+`refine()`, `splitEdges()` ends by calling `rebuildHalo()` at the halo's recorded
+depth, so the halo is valid on return and a second call may follow immediately.
+An empty mask is a no-op fast path with no communication beyond the collectives
+that establish the global request and face counts.
+
 ## Quality-based refinement marking
 
 `Tessera::markByQuality(mesh, criterion)` inspects mesh geometry and returns the

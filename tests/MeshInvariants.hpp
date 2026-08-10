@@ -326,6 +326,88 @@ inline int checkMidpointAgreement(
     return fails;
 }
 
+// The three EdgeKeys of every face in `verts`, deduplicated.
+inline std::set<Tessera::EdgeKey>
+edgeSetOf( const std::vector<std::array<GlobalId, 3>>& verts )
+{
+    std::set<Tessera::EdgeKey> out;
+    for ( const auto& t : verts )
+        for ( int k = 0; k < 3; ++k )
+            out.insert( Tessera::makeEdgeKey( t[k], t[( k + 1 ) % 3] ) );
+    return out;
+}
+
+// Globally-decided ground truth for a split-edge map (RefineResult::midpoints or
+// SplitResult::midpoints), needing no replica of the refinement algorithm. Every
+// reported key is routed to its edge coordinator, which therefore knows the true
+// global split-edge set; each rank then asks the coordinator about every edge of
+// its pre-edit owned faces and checks presence-in-my-map == is-globally-split.
+// Two failure modes are caught:
+//   COMPLETENESS  an edge of one of my faces is split somewhere but absent here
+//                 (the pre-Task-3 refine() bug: the kept side never heard);
+//   SOUNDNESS     I report a key that is not an edge of any face I own.
+// Returns LOCAL fails (sum across ranks == global).
+inline int checkSplitEdgeCoverage(
+    MPI_Comm comm, int size,
+    const std::vector<std::array<GlobalId, 3>>& preOwnedFaceVerts,
+    const std::vector<std::pair<Tessera::EdgeKey, GlobalId>>& mids )
+{
+    struct KeyMsg
+    {
+        Tessera::EdgeKey key;
+    };
+    struct SplitMsg
+    {
+        Tessera::EdgeKey key;
+        unsigned char split;
+    };
+
+    std::set<Tessera::EdgeKey> mine;
+    for ( const auto& kv : mids )
+        mine.insert( kv.first );
+    const std::set<Tessera::EdgeKey> myEdges = edgeSetOf( preOwnedFaceVerts );
+
+    int fails = 0;
+    for ( const Tessera::EdgeKey& k : mine )
+        if ( myEdges.find( k ) == myEdges.end() )
+            ++fails; // reported an edge this rank does not touch
+
+    // Advertise every reported key -> coordinator learns the global split set.
+    std::vector<std::vector<KeyMsg>> adv( size );
+    for ( const Tessera::EdgeKey& k : mine )
+        adv[Tessera::detail::edgeCoordRank( k, size )].push_back( { k } );
+    auto advGot = Tessera::allToAllV( comm, adv );
+    std::set<Tessera::EdgeKey> globalSplit;
+    for ( const auto& m : advGot.data )
+        globalSplit.insert( m.key );
+
+    // Ask the coordinator about every edge of my pre-edit owned faces.
+    std::vector<std::vector<KeyMsg>> req( size );
+    for ( const Tessera::EdgeKey& k : myEdges )
+        req[Tessera::detail::edgeCoordRank( k, size )].push_back( { k } );
+    auto reqGot = Tessera::allToAllV( comm, req );
+
+    std::vector<std::vector<SplitMsg>> reply( size );
+    for ( int s = 0; s < size; ++s )
+    {
+        const KeyMsg* p = reqGot.from( s );
+        const int cnt = reqGot.count( s );
+        for ( int i = 0; i < cnt; ++i )
+            reply[s].push_back(
+                { p[i].key, static_cast<unsigned char>(
+                                globalSplit.count( p[i].key ) ? 1 : 0 ) } );
+    }
+    auto replyGot = Tessera::allToAllV( comm, reply );
+
+    for ( const auto& m : replyGot.data )
+    {
+        const bool have = mine.find( m.key ) != mine.end();
+        if ( have != ( m.split != 0 ) )
+            ++fails; // incomplete (split but missing) or spurious
+    }
+    return fails;
+}
+
 // ---------------------------------------------------------------------------
 // Conforming-refinement invariants (tasks/conforming-refinement.md, Task 4)
 // ---------------------------------------------------------------------------

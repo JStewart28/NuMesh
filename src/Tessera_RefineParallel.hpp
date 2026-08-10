@@ -1102,6 +1102,12 @@ RefineResult refine( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                      const std::vector<char>& mask,
                      const Policy& policy = Policy{} )
 {
+    // refine() is the HIERARCHICAL editing family: it maintains the 2:1 level
+    // balance and the conforming closure, both of which read Level as
+    // authoritative. A mesh already edited by the REMESH family (splitEdges())
+    // carries inherited, advisory levels, so balancing against them would be a
+    // silent wrong answer -- see Tessera_EditFamily.hpp.
+    requireEditFamily( mesh, EditFamily::Hierarchical, "refine" );
     return detail::refineImpl( mesh, halo, mask, policy );
 }
 

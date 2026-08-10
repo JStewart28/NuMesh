@@ -891,6 +891,8 @@ template <class MeshT,
 void refineLocal( MeshT& mesh, const std::vector<char>& refineFace,
                   const Policy& policy = Policy{} )
 {
+    // The HIERARCHICAL editing family; see refine() and Tessera_EditFamily.hpp.
+    requireEditFamily( mesh, EditFamily::Hierarchical, "refineLocal" );
     if constexpr ( MeshT::refinement_mode == RefinementMode::Conforming )
     {
         detail::refineLocalConforming( mesh, refineFace, policy );

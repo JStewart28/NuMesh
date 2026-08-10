@@ -730,3 +730,35 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_halo_depth.cpp
 )
+
+# Caller-driven edge split (tasks/edge-split.md) -- the first operation of the
+# REMESH editing family, and the one refine() could not express: refine() takes
+# a FACE mask and bisects all three edges of every marked face, so "bisect these
+# particular edges" was inexpressible. Every count assertion is a closed-form
+# identity checked through the global owned-count reductions, so the test checks
+# arithmetic rather than checking Tessera against itself: one edge -> V+1/E+3/F+2,
+# one face's three edges -> V+3/E+9/F+6 (Euler delta 0 in both), and ALL edges ->
+# exactly a uniform refine(), asserted not just on V/E/F but on the vertex
+# position and face corner-position multisets BITWISE. Plus two-edge diagonal
+# determinism against an MPI_COMM_SELF reference (with all three |S| patterns
+# asserted non-vacuous), midpoint agreement and coverage, exact off-sphere
+# midpoints, linear user-field transfer, five length-driven rounds with a
+# measured radius-ratio floor, the empty-mask identity, halo validity on return,
+# and the editing-family guard in both directions.
+#
+# TIER regression, ranks 1-5, both backends: gate promotion is pre-authorized
+# for this task by tasks/edge-split.md.
+tessera_add_test(
+    NAME     split_edges
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_split_edges.cpp
+)
+tessera_add_test(
+    NAME     split_edges
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_split_edges.cpp
+)

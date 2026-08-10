@@ -81,6 +81,14 @@ refine( mesh, halo, face_refine_mask );             // 2:1-balanced red split, p
 // the ghost layer in place from the owned entities -- refine()/migrate() call it
 // themselves, so it is only needed when something else changed the owned set.
 
+splitEdges( mesh, halo, edge_split_mask );          // bisect EXACTLY the marked edges (an
+                                                     // EDGE mask, sized numOwnedEdges());
+                                                     // every incident face becomes 2, 3 or
+                                                     // 4 children, conforming on exit with
+                                                     // no closure and no 2:1 pass. Also
+                                                     // rebuilds `halo`. REMESH family --
+                                                     // see "Editing families" below
+
 loadBalance( mesh, halo );           // internal Zoltan2 rebalance + halo rebuild (optional)
 // or, external (e.g. Canopy-driven):
 //   auto c = ownedFaceCentroids( mesh );
@@ -92,6 +100,44 @@ haloExchange( mesh, halo );                         // re-sync the field pack (r
 
 writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
 ```
+
+### Editing families
+
+Tessera has **two disjoint families of topological edit, and a mesh belongs to
+exactly one of them**:
+
+| Family | Operations | Invariant maintained | `Level` semantics |
+|---|---|---|---|
+| **Hierarchical** | `refine()`, `refineLocal()` | 2:1 level balance; conforming closure | `Level` is **authoritative** |
+| **Remesh** | `splitEdges()` *(`collapseEdges()`, `flipEdges()`, `compact()` to follow)* | conformity and manifoldness only | `Level` is **advisory** |
+
+`refine()`'s whole design rests on the level model, and that model is coherent
+only because `refine()` performs the uniform 1→4 red split. Bisecting *one* edge
+of a triangle produces two children whose edges have mixed levels: no single
+integer describes them, and a 2:1 level-difference invariant is not the right
+statement about the result. So a `splitEdges()` child **inherits its parent's
+level**, and the mesh is thereafter not 2:1-level-meaningful.
+
+Interleaving the two on one mesh is therefore **unsupported, and enforced rather
+than documented**. The mesh carries an `EditFamily` tag (`mesh.editFamily()`),
+`None` until its first topological edit and then fixed; each entry point throws a
+`std::runtime_error` naming **both** families when the tag disagrees:
+
+> `Tessera::refine: this mesh belongs to the Remesh
+> (splitEdges/collapseEdges/flipEdges/compact) editing family, and refine belongs
+> to the Hierarchical (refine/refineLocal) family. The two are DISJOINT and must
+> not be interleaved on one mesh: the hierarchical family maintains the 2:1 level
+> balance and the conforming closure with Level authoritative, while the remesh
+> family maintains conformity and manifoldness only and leaves Level advisory (a
+> child inherits its parent's level). Build a fresh mesh for the other family.`
+
+A one-line check that turns a subtle wrong answer into an immediate abort.
+Extending the level model to anisotropic bisection (per-edge levels with a
+compatible balance rule) is a much larger design that no known consumer needs; it
+is recorded as future work in [tasks/edge-split.md](tasks/edge-split.md), not
+attempted. See
+`docs/design.md` → *Edge-addressed splitting* and
+[tasks/edge-split.md](tasks/edge-split.md).
 
 ### Example programs
 
@@ -346,7 +392,7 @@ make -j $(nproc)
   because it changes what a default-spelled `Mesh` does.)* The whole
   `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
   `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented,
-  registered across the suite, and **verified**: the ship gate is 160/160 and the
+  registered across the suite, and **verified**: the ship gate is 180/180 and the
   diagnostic tier 62/62 on SERIAL and HIP at **ranks 1–5**, over multiple successive
   adaptive rounds, and the shape-quality bounds are measured rather than assumed (the
   worst radius ratio saturates by round 11 and is flat through round 16 while the mesh
@@ -376,7 +422,7 @@ make -j $(nproc)
   `RefinementMode::Conforming` fixes both, because it can recover the persistent
   split-edge map locally from the closure bookkeeping; `HangingNode2to1` keeps no
   such record and would need a new face field or an extra message round.
-- **Edge user fields are reset by `refine()`/`refineLocal()`.** Edges are re-derived
-  from the new face connectivity, so any per-edge user data is re-initialized (M1
-  carries no edge user state through AMR). Vertex and face user fields are preserved
-  (interpolated / inherited).
+- **Edge user fields are reset by `refine()`/`refineLocal()`/`splitEdges()`.** Edges
+  are re-derived from the new face connectivity, so any per-edge user data is
+  re-initialized (M1 carries no edge user state through AMR or remeshing). Vertex and
+  face user fields are preserved (interpolated / inherited).

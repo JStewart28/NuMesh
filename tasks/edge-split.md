@@ -1,6 +1,6 @@
 # Caller-driven edge split
 
-**Status:** NOT STARTED. First of the four topological-edit tasks
+**Status:** IMPLEMENTED. First of the four topological-edit tasks
 ([edge-split](edge-split.md) → [mesh-compaction](mesh-compaction.md) →
 [edge-flip](edge-flip.md) → [edge-collapse](edge-collapse.md)). **Read the
 "Editing families" section below before starting any of the four** — it is stated
@@ -258,3 +258,65 @@ See the ordering diagram in [halo-depth.md](halo-depth.md).
 
 - 2026-08-07 — Task written, then re-checked against `08dd346` after pulling
   `../tessera`. Nothing implemented.
+- 2026-08-10 — Implemented. New `src/Tessera_EdgeSplit.hpp` (`splitEdges()`,
+  `SplitResult`) and `src/Tessera_EditFamily.hpp` (`EditFamily`,
+  `requireEditFamily()`); `Mesh` carries the tag; `refine()` and `refineLocal()`
+  claim `Hierarchical`, `splitEdges()` claims `Remesh`. New
+  `tests/test_split_edges.cpp` at TIER `regression`, SERIAL + HIP, ranks 1–5.
+  `edgeSetOf()`/`checkSplitEdgeCoverage()` moved from
+  `test_refine_splitedges.cpp` into `tests/MeshInvariants.hpp` and are now shared
+  by both tests. README gains the API line, the *Editing families* subsection
+  with Decision 1's table and the quoted guard message, and the edge-user-field
+  Known Issue is extended to name `splitEdges` rather than duplicated;
+  `docs/design.md` gains *Edge-addressed splitting*.
+
+  **Two deliberate departures from the task text, both recorded here:**
+
+  1. **The two-edge exact-tie fallback is the smaller `EdgeKey`, not the
+     closure's lower-midpoint-gid rule.** The task says both ("tie-broken by the
+     smaller `EdgeKey`" and "follow the same exact-tie fallback the closure
+     uses"), and they are not the same rule. The `EdgeKey` rule is the one that
+     satisfies the exit criterion: midpoint gids come from an `MPI_Exscan`, so
+     the closure's fallback is agreed across the ranks of one run but is *not*
+     rank-count invariant — which is exactly the Decision-11 finding that made
+     the closure's main rule geometric in the first place. An `EdgeKey` is built
+     from pre-existing vertex gids and is invariant. Ties are common on the
+     icosphere (22 on the case-4 workload), so this is not a corner: with the
+     gid rule, check 4 would be expected to fail. The count is published as
+     `SplitResult::diagTies` and asserted equal between the world run and the
+     `MPI_COMM_SELF` reference.
+  2. **The whole-edge squared length is computed locally, not carried in a
+     message.** `edgeLen2Canonical()` is used as instructed, but its operands are
+     the deciding face's own corners, which `rebuildHalo()` guarantees are held
+     with their positions — so no analogue of `detail::KeyGid`'s `len2` rider is
+     needed. The closure needs the message only because it runs on the un-closed
+     red layer, whose corners come from `ClosureParentVerts`.
+
+  **Test 8's floor, measured rather than guessed.** "Minimum radius ratio" is
+  read as inradius/circumradius (0.5 for an equilateral triangle, → 0 for a
+  sliver), which is the reading under which "asserted above a floor" is the
+  meaningful statement. First-run per-round values over the five
+  length-threshold rounds:
+
+  | round | 1 | 2 | 3 | 4 | 5 |
+  |---|---|---|---|---|---|
+  | min r/R | 0.3780 | 0.3780 | **0.2815** | 0.3780 | 0.3780 |
+
+  byte-identical at np1–5 on both backends and in both execution spaces, so the
+  floor is set to **0.25**. The sequence does not drift downward — rounds 4 and 5
+  recover to round 1's value while F grows 320 → 28160 — which is the substantive
+  result.
+
+  **First-run measurements** (all byte-identical at np1–5, SERIAL and HIP,
+  `Serial` and `Default` execution spaces):
+
+  | check | result |
+  |---|---|
+  | 1. one edge | V 162→163, E 480→483, F 320→322; \|S\|=(318,2,0,0) |
+  | 2. one face's three edges | V 162→165, E 480→489, F 320→326; \|S\|=(316,3,0,1) |
+  | 3. all edges vs uniform `refine()` | V=642 E=1920 F=1280 both; vertex-position and face-corner-triple multisets **bitwise** equal |
+  | 4. parity mask vs `MPI_COMM_SELF` | V=395 E=1179 F=786; \|S\|=(81,82,87,70); diagTies=22 — all identical |
+  | 6. midpoints | every one the exact bitwise average of its endpoints and strictly inside the unit sphere |
+  | 7. user fields | worst relative error 8.88e-16 over `double` and `double[3]` |
+  | 9./10. empty mask, halo | checksum unchanged; plans non-empty and ghost resync clean at np>1 |
+  | 11. family guard | throws in both directions, message names both families |

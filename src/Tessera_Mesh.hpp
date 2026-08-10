@@ -13,6 +13,7 @@
 #define TESSERA_MESH_HPP
 
 #include "Tessera_CsrAdjacency.hpp"
+#include "Tessera_EditFamily.hpp"
 #include "Tessera_Fields.hpp"
 #include "Tessera_GenerationGuard.hpp"
 #include "Tessera_RefinementMode.hpp"
@@ -175,6 +176,21 @@ class Mesh
     // positive value as the real bound.
     int haloDepth() const { return _halo_depth; }
     void setHaloDepth( int d ) { _halo_depth = d; }
+
+    // -- editing family ---------------------------------------------------------
+    //
+    // Which of the two DISJOINT topological-edit families has claimed this mesh
+    // (Tessera_EditFamily.hpp): `None` until the first edit, then fixed.
+    // refine()/refineLocal() claim Hierarchical, splitEdges() claims Remesh, and
+    // each throws through requireEditFamily() if the mesh already belongs to the
+    // other one -- the level model the hierarchical family maintains is not
+    // meaningful after an anisotropic remesh edit, and the remesh operations do
+    // not understand the transient closure layer.
+    //
+    // Deliberately NOT part of generation(): it says nothing about storage
+    // validity, only about which contract the mesh is under.
+    EditFamily editFamily() const { return _edit_family; }
+    void setEditFamily( EditFamily f ) { _edit_family = f; }
 
     // -- generation counter ----------------------------------------------------
     //
@@ -382,6 +398,8 @@ class Mesh
     std::size_t _n_owned_f = 0;
 
     int _halo_depth = 0;
+
+    EditFamily _edit_family = EditFamily::None;
 
     std::size_t _generation = 0;
 
