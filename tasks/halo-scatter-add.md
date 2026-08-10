@@ -203,7 +203,7 @@ The mesh carries user fields so the test can exercise both a scalar and a vector
 ## Where this sits
 
 Independent of the other gap tasks; benefits from
-[halo-depth.md](halo-depth.md) (check 10) but does not require it. See the
+[halo-depth.md](halo-depth.md) (check 10), which has already been implemented. See the
 ordering diagram in [halo-depth.md](halo-depth.md).
 
 ## Progress log
