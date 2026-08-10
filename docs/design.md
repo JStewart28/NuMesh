@@ -553,7 +553,7 @@ fixed, and each entry point throws naming both families. See the README's
 *Editing families* subsection for the table and the quoted message. The
 alternative — extending the level model to anisotropic bisection, i.e. per-edge
 levels with a compatible balance rule — is a much larger design no known consumer
-needs, and is recorded as future work in `tasks/edge-split.md`.
+needs, and is recorded under the README's *Future Optimizations*.
 
 #### No closure pass, and no mark propagation
 

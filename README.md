@@ -134,8 +134,7 @@ than documented**. The mesh carries an `EditFamily` tag (`mesh.editFamily()`),
 A one-line check that turns a subtle wrong answer into an immediate abort.
 Extending the level model to anisotropic bisection (per-edge levels with a
 compatible balance rule) is a much larger design that no known consumer needs; it
-is recorded as future work in [tasks/edge-split.md](tasks/edge-split.md), not
-attempted. See
+is recorded under *Future Optimizations* below, not attempted. See
 `docs/design.md` → *Edge-addressed splitting* and
 [tasks/edge-split.md](tasks/edge-split.md).
 
@@ -383,6 +382,19 @@ make -j $(nproc)
   is that un-close stops being local per child, which is what makes the current
   encoding cheap in `migrate()`. Worth doing only if face memory becomes the
   binding constraint.
+- Unify the two editing families by extending the level model to **anisotropic
+  bisection**. Today `refine()` and `splitEdges()` are disjoint families (see
+  *Editing families*) because a single integer `Level` cannot describe a face
+  whose edges were bisected unevenly: `refine()`'s 2:1 invariant is stated in
+  level differences and is only coherent because it performs the uniform 1→4 red
+  split. Making them interleavable means **per-edge levels plus a compatible
+  balance rule**, which then has to be maintained by the mark-propagation
+  fixpoint, the closure patterns, and the HDF5 format alike — a much larger design
+  than the guard it would replace, and one no known consumer needs (the driving
+  consumer, Beatnik's z-model remesher, is entirely edge-addressed and never calls
+  `refine()`). Until then the guard turns the mistake into an immediate abort,
+  which is the cheap 95% of the value. Design notes:
+  [tasks/edge-split.md](tasks/edge-split.md) → Decision 1's alternative.
 
 ---
 
