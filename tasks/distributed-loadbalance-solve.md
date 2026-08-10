@@ -1,6 +1,8 @@
 # Distributed load-balance solve
 
-**Status:** NOT STARTED.
+**Status:** COMPLETE. Implemented on branch `conforming-refinement`.
+Check 4's verdict went **against** `Distributed`, so the default is `Sampled` —
+see the progress log at the bottom for every measured number.
 
 **Verified against `08dd346`** (branch `conforming-refinement`) — the code this task
 cites was re-read at that commit.
@@ -221,3 +223,115 @@ ordering diagram in [halo-depth.md](halo-depth.md).
 
 - 2026-08-07 — Task written, then re-checked against `08dd346` after pulling
   `../tessera`. Nothing implemented.
+- 2026-08-10 — **Implemented and verified.** `LoadBalanceMode`
+  (`GatherRoot`/`Distributed`/`Sampled`) plus a `LoadBalanceStats` out-parameter
+  added to `computeLoadBalance()`/`loadBalance()` in
+  `src/Tessera_Zoltan2Balancer.hpp`; the three solves share one
+  `detail::lbMultiJagged<Dim>()` helper so `multijagged`, the parameter list and
+  the `Dim`-generic adapter construction are single-sourced.
+  `tests/test_loadbalance_distributed.cpp` registered at TIER `regression`,
+  SERIAL + HIP, ranks 1–5 (gate is now **220/220**, nothing relabelled;
+  `test_loadbalance` still green as the `GatherRoot` guard).
+
+  **Check 6 — the deliverable — passes.** At subdivision 4 (global 5120 faces),
+  faces rank 0 receives for its solve: `GatherRoot` **5120**, `Distributed`
+  **0**, `Sampled` **128** (np2) to **320** (np5). Asserted, not just printed.
+
+  **Check 4 — the deciding measurement — verdict: `Distributed` is NOT
+  run-to-run reproducible, so the default is `Sampled`.** Two identically-built
+  subdivision-4 icospheres balanced in one run, measured over **two ctest
+  invocations × both backend registrations × both execution spaces** (8
+  invocations per rank count): `Distributed` agreed at np1–np4 in every
+  invocation and disagreed at np5 on **0, 4, 8, 16 or 18 of 5120** faces
+  depending on the invocation. `Sampled` agreed exactly everywhere, and its
+  printed `DEST_CHECKSUM` was **bit-identical in all 8 invocations at every rank
+  count** — np1 `11499402685461970266`, np2 `3590200686806674594`, np3
+  `7075996803214070821`, np4 `8549360387791187482`, np5
+  `10270847821036491696` — which is the cross-**run** half of the check, done by
+  comparing the two logs. Mechanism: MJ's cut coordinates come from floating-point reductions
+  with no fixed partial-sum order, and an icosphere is symmetric enough that many
+  centroids sit on a cut and flip on a last-bit change. Nothing about the
+  partition is wrong (every invariant, the balance bound and the topology
+  checksum hold in every run) — `dest` is simply not a function of the mesh
+  alone. Recorded in README → *Known Issues* and `docs/design.md` → *Load
+  balancing*. Check 4 now asserts zero mismatches for the default and **reports**
+  `Distributed`'s count rather than asserting it, since asserting it would pin a
+  property Zoltan2 does not have.
+
+  **Check 5 — quality.** Face-count imbalance (max part / mean) of the `dest`
+  each mode produces from the all-on-rank-0 start, subdivision 4, identical on
+  SERIAL and HIP: np2 `GatherRoot` 1.0000 / `Distributed` 1.0000 / `Sampled`
+  1.0125; np5 1.0000 / 1.0000 / **1.0615**. The default is therefore ~6% looser
+  than the reference at np5 and equal at np2 — not materially worse, as the
+  criterion requires. Asserted as `≤ GatherRoot + 0.15`; the partitions are
+  deliberately not compared for equality.
+
+  **Check 2 — balance slack, measured not guessed.** `slack = 0.10` over
+  `1 + tol`, from a worst observed post-balance imbalance of **1.0615** at
+  subdivision 4 over ranks 2–5 on both backends (excess over `1+tol` = 0.0115).
+  Recorded as `kBalanceSlack` in the test with that derivation. A first draft
+  also asserted `maxAfter <= NfG/2`, which is arithmetically impossible at np2
+  (a perfect partition *is* `NfG/2`); it was removed in favour of the imbalance
+  bound, which is the scale-correct statement at any rank count.
+
+  **Check 3 — conforming.** Subdivision-3 icosphere, one `gid % 3` adaptive
+  round, 3340 visible faces, then dumped onto rank 0 and balanced in
+  `Distributed` mode: max owned faces 3340 → 1685 (np2) / 685 (np5), imbalance
+  1.0090 / 1.0254, `siblingFixups` **18** (np2) / **22** (np5) — expected and
+  reported, not asserted — and `rootSolveFaces` still 0. Every invariant holds
+  (`checkSiblingCoresidency`, `checkOwnershipPartition`, `owned1RingLocal`,
+  `checkConforming`, `check21BalanceRed`, `checkNoInteriorVertex`, Euler == 2,
+  topology checksum unchanged, ghost corrupt/resync over both the vertex and the
+  face plan).
+
+  **Check 7 — `Sampled` cuts are partition-independent.** The same subdivision-4
+  mesh in two different starting partitions (everything-on-rank-0 vs the axis
+  partition) broadcasts **bit-identical** cut structures: 14 doubles at np2, 35
+  at np5, stride 40 / 16, sample 128 / 320, diff 0. This required sorting the
+  gathered sample **by gid** on rank 0 — the gather arrives in *rank* order,
+  which is partition-dependent — and selecting the sample by `gid % stride == 0`
+  rather than by local index.
+
+  **Check 9 — idempotence, measured.** A second `loadBalance()` on the
+  already-balanced subdivision-4 mesh moves **0 of 5120** faces under `Sampled`
+  in **every** invocation and rank count, and **0 to 42 of 5120 (up to 0.0082)**
+  under `GatherRoot` and `Distributed`, with the imbalance never worsening in any
+  mode. Threshold set at `kIdempotenceFrac = 0.05` from those numbers.
+
+  **A finding the task did not anticipate:** `GatherRoot` is not run-to-run
+  reproducible either. Solving on one rank over a `SerialComm` removes the
+  *communicator* but not the parallelism — MultiJagged is Kokkos-parallel and its
+  reductions run on the default execution space whatever comm it is handed — so
+  its `dest` varies between invocations by the same mechanism, visible in check
+  9's `moved` count. That is why `Sampled` is the right default rather than
+  merely the cautious one: it is the only mode measured reproducible, and the
+  reason is structural (a broadcast cut structure plus exact local arithmetic),
+  not incidental.
+
+  **Check 10 — scaling evidence.** Subdivision 5 (20480 faces), max over ranks
+  of the `computeLoadBalance()` wall time, SERIAL / HIP:
+
+  | ranks | `GatherRoot` | `Distributed` | `Sampled` |
+  |---|---|---|---|
+  | np2 | 0.0552 / 0.0537 s | 0.0558 / 0.0521 s | 0.0517 / 0.0487 s |
+  | np5 | 0.0745 / 0.0805 s | 0.0878 / 0.0988 s | 0.0678 / 0.0782 s |
+
+  At this scale the three are within noise of each other, which is expected and
+  is *not* the point: 20480 faces fit comfortably on one rank, so `GatherRoot`
+  is not yet paying for the memory ceiling it imposes. What the task removes is
+  the *scaling* term, and check 6 is what measures that directly — rank 0's solve
+  input goes from `O(global)` to `0` or `O(nparts)`. The wall times are recorded
+  as the baseline, not as evidence of a speedup at test scale.
+
+  **Implementation notes worth keeping.** `Sampled` recovers the cut structure
+  from MultiJagged's own `mj_keep_part_boxes` / `getPartBoxesView()` axis-aligned
+  per-part boxes rather than from a private cut array, and classifies a centroid
+  as: inside one box → that part; inside several (exactly on a cut) → lowest part
+  id; inside none (MJ's boxes span the *sample's* bounding box, not the mesh's) →
+  nearest box by squared distance, lowest id on a tie. The sample stride starts
+  from the global **gid range** rather than the face count and halves by
+  collective agreement until the sample can be partitioned, because live face
+  gids are sparse in `Conforming` mode. Every adapter array is padded to at least
+  one element so a rank owning nothing (routine after the skewed migrate) never
+  hands Zoltan2 a null pointer, while the advertised length stays the true local
+  count.

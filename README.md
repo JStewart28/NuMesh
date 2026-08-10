@@ -89,7 +89,10 @@ splitEdges( mesh, halo, edge_split_mask );          // bisect EXACTLY the marked
                                                      // rebuilds `halo`. REMESH family --
                                                      // see "Editing families" below
 
-loadBalance( mesh, halo );           // internal Zoltan2 rebalance + halo rebuild (optional)
+loadBalance( mesh, halo );           // internal Zoltan2 rebalance + halo rebuild (optional).
+                                     // Nothing is gathered to rank 0 -- see "Load
+                                     // balancing modes" below for the three modes and
+                                     // the trade-off between them
 // or, external (e.g. Canopy-driven):
 //   auto c = ownedFaceCentroids( mesh );
 //   std::vector<Rank> dest = external_partition( c );
@@ -151,6 +154,58 @@ belongs to one entity kind. Three contract properties:
 
 Not provided: a caller-supplied reduction operator (min/max/custom) and
 multi-field packing. One field per call; three fields is three calls.
+
+### Load balancing modes
+
+`loadBalance()` and `computeLoadBalance()` take a `LoadBalanceMode` selecting how
+the Zoltan2 geometric solve is run. All three use **`Zoltan2` MultiJagged and never
+`rcb`** — Zoltan2's deterministic RCB breaks on Tuolumne, and that finding stands
+regardless of which communicator the solve runs over.
+
+```cpp
+#include <Tessera.hpp>   // Tessera_Zoltan2Balancer.hpp
+
+// dest only -- computes nothing else, moves nothing:
+std::vector<Rank> dest = computeLoadBalance( mesh, /*imbalanceTolerance=*/0.05,
+                                             LoadBalanceMode::Sampled );
+// compute + migrate, with optional instrumentation:
+LoadBalanceStats st;
+MigrateStats ms = loadBalance( mesh, halo, 0.05, LoadBalanceMode::Distributed, &st );
+// st.rootSolveFaces -- how many faces rank 0 received for its solve
+// st.cuts           -- Sampled: the broadcast cut structure, identical on every rank
+```
+
+| Mode | Rank-0 solve input | Reproducible run to run | Partition quality |
+|---|---|---|---|
+| `GatherRoot` | the **global** face count | yes | best (one solve over every face) |
+| `Distributed` | **zero** — one solve over a `Teuchos::MpiComm` on `mesh.comm()` | **no** (see *Known Issues*) | best |
+| `Sampled` *(default)* | `O(comm size)` — a `64 · nparts` gid-order sample | yes, and partition-independent | slightly looser (cuts fitted to a sample) |
+
+`GatherRoot` is the original behaviour, kept as the reference implementation and
+the fallback: it `MPI_Gatherv`s every rank's centroids/weights to rank 0, solves
+the whole problem there over a `Teuchos::SerialComm`, and `MPI_Scatterv`s the
+assignment back. Rank 0's memory and solve time therefore scale with the
+**global** face count — a memory ceiling on one rank, not a distributed cost.
+
+`Distributed` removes that entirely: each rank feeds the adapter its **own**
+owned-face centroids/weights, keyed by the real face gids (already globally
+unique), and `getPartListView()` comes back in this rank's owned-face order with
+nothing to scatter. It is the right choice when partition quality matters more
+than bitwise repeatability.
+
+`Sampled` is the default. Each rank selects the owned faces whose gid satisfies
+`gid % stride == 0` — a rule on **globally agreed gids**, so the sampled *set* is
+a property of the mesh and not of its current partition — rank 0 gathers the
+`O(nparts)` sample, **sorts it by gid** (the gather arrives in rank order, which
+is partition-dependent), solves it, and broadcasts MultiJagged's axis-aligned
+per-part boxes. Every rank then classifies its own centroids against those boxes
+in exact local arithmetic: inside one box, that part; inside several (exactly on
+a cut), the lowest part id; inside none, the nearest box. Consequently the cuts
+are bit-identical across two different starting partitions of the same mesh, and
+the assignment is reproducible by construction.
+
+The returned `dest` is in exactly the order `ownedFaceCentroids/Gids/Weights`
+produce, in every mode, because `migrate()` depends on that.
 
 ### Mesh generators
 
@@ -589,6 +644,40 @@ make -j $(nproc)
 
 ## Known Issues
 
+- **One distributed MultiJagged solve (`LoadBalanceMode::Distributed`) is not
+  run-to-run reproducible, which is why `Sampled` is the default.** *(Not a
+  Tessera defect — a measured property of Zoltan2, recorded because the
+  reasonable expectation is that one solve gives one answer every time.)* Moving
+  the partition solve off rank 0 raised a question the old rank-0-only path never
+  had to answer: is a **single** distributed solve repeatable at a fixed rank
+  count? Cross-rank *agreement* is not the issue — there is one solve, so there
+  is one answer — but run-to-run *reproducibility* is a separate property and
+  Zoltan2 does not promise it. Measured by
+  `tests/test_loadbalance_distributed.cpp` check 4, which balances two
+  identically-built subdivision-4 icospheres (5120 faces) in the same run and
+  compares the two `dest` arrays element-wise: over two ctest invocations × both
+  backend registrations × both execution spaces, **np1–np4 agreed in every
+  invocation** and **np5 disagreed on 0, 4, 8, 16 or 18 faces** depending on the
+  invocation. `GatherRoot` is no better — its own solve is a Kokkos-parallel
+  MultiJagged, and a second `loadBalance()` of an already-balanced mesh moves
+  anywhere from 0 to 42 faces from one invocation to the next (case 9) — so
+  `Sampled` is not merely the safer default, it is the only mode measured
+  reproducible: its `dest` checksum was **bit-identical in all eight invocations
+  at every rank count 1–5**. The mechanism is the expected one: MJ's cut coordinates come from
+  floating-point reductions whose partial-sum order is not fixed, and an
+  icosphere is symmetric enough that many centroids sit on or adjacent to a cut,
+  so a last-bit difference in the cut flips them. The consequence is not a wrong
+  partition — every invariant, the balance bound and the topology checksum hold
+  in every run — but a `dest` that is not a function of the mesh alone. So
+  `LoadBalanceMode::Sampled` is the default: its cuts come from a gid-order
+  sample solved once and broadcast, and the per-face classification is exact
+  local arithmetic, so it agrees with itself at every rank count, across runs,
+  and across two different starting partitions of the same mesh (check 7). `Distributed` remains
+  fully supported and gathers nothing to rank 0 either; choose it when partition
+  quality matters more than bitwise repeatability. Check 4 reports both modes'
+  mismatch counts and prints per-mode checksums; only the default's zero is
+  asserted, because asserting `Distributed`'s would pin a property it does not
+  have.
 - **`markByQuality` on an anisotropic surface marks the *equator* of a lat/lon
   sphere, not the poles.** *(Not a defect — recorded here because the naive
   expectation is inverted, and the inversion is easy to mistake for a bug.)*
@@ -617,9 +706,9 @@ make -j $(nproc)
   because it changes what a default-spelled `Mesh` does.)* The whole
   `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
   `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented,
-  registered across the suite, and **verified**: the ship gate is 210/210 (180/180
-  when this was written; the ten `latlon_sphere`, ten `halo_scatter_add` and ten
-  `face_adjacency` entries came later) and the
+  registered across the suite, and **verified**: the ship gate is 220/220 (180/180
+  when this was written; the ten `latlon_sphere`, ten `halo_scatter_add`, ten
+  `face_adjacency` and ten `loadbalance_distributed` entries came later) and the
   diagnostic tier 62/62 on SERIAL and HIP at **ranks 1–5**, over multiple successive
   adaptive rounds, and the shape-quality bounds are measured rather than assumed (the
   worst radius ratio saturates by round 11 and is flat through round 16 while the mesh

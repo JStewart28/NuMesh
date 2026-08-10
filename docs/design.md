@@ -1005,19 +1005,107 @@ The public contract is **migration**, not partitioning:
   the three gid-keyed maps `faceById` / `vById` / `eById`. Callers normally never
   need it — it is public for the case where a mesh's owned set was changed by
   something other than `refine()`/`migrate()`.
-- `Tessera::loadBalance(mesh, halo, imbalanceTolerance=0.05)` is a thin convenience
-  wrapper (**Step 7b**): `Tessera::computeLoadBalance(mesh, imbalanceTolerance)`
-  gathers every rank's owned-face centroids/weights/gids to rank 0 (the mesh is
-  **not** replicated, so the geometric input must be assembled before Zoltan2 can
-  see it), runs Zoltan2 geometric **MultiJagged** over a `Teuchos::SerialComm`
-  (solve on rank 0 only — MultiJagged is not guaranteed deterministic across ranks
-  — then `MPI_Scatterv` the per-face part assignment back; RCB is never used, it
-  breaks on Tuolumne), and returns a `dest` in the same order as
-  `ownedFaceCentroids/Gids/Weights`. `loadBalance()` hands that `dest` to the
-  **same** `migrate()`. There is no separate internal-vs-external migration code
-  path. The Zoltan2 adapter (`Zoltan2::BasicVectorAdapter`) is built with its
-  generic multivector constructor (per-dimension arrays), not a fixed 3D x/y/z
-  one, so it works for both `Dim=2` and `Dim=3`.
+- `Tessera::loadBalance(mesh, halo, imbalanceTolerance=0.05, mode, stats=nullptr)`
+  is a thin convenience wrapper (**Step 7b**) over
+  `Tessera::computeLoadBalance(mesh, imbalanceTolerance, mode, stats)` plus the
+  **same** `migrate()` — there is no separate internal-vs-external migration code
+  path. `computeLoadBalance()` returns a `dest` in the same order as
+  `ownedFaceCentroids/Gids/Weights`, in every mode, because `migrate()` depends on
+  that order. The Zoltan2 adapter (`Zoltan2::BasicVectorAdapter`) is built with
+  its generic multivector constructor (per-dimension arrays), not a fixed 3D
+  x/y/z one, so it works for both `Dim=2` and `Dim=3`. **RCB is never used**, in
+  any mode: it breaks on Tuolumne. Every mode runs geometric **MultiJagged**.
+
+### The solve is distributed, and the determinism rationale that said otherwise was about a different situation
+
+This section previously described the solve as rank-0-only and justified it with
+"MultiJagged is not guaranteed deterministic across ranks, so only rank 0
+solves". That rationale does not say what it looks like it says. The concern it
+states is about **every rank solving the same problem independently** and getting
+different answers, which would produce an inconsistent global partition — a real
+hazard for `Canopy_TreePartitioner.hpp`, whose tree *is* replicated, and the
+pattern this code inherited its `Teuchos::SerialComm` from. It does **not** apply
+to a **single distributed solve** over a `Teuchos::MpiComm`: there is one solve,
+therefore one answer, distributed by construction. Tessera's mesh has never been
+replicated at that point, so the per-rank-solve hazard was never present.
+
+What the rank-0-only path did cost was real: rank 0's memory and solve time
+scaled with the **global** face count while every other rank idled, and the
+`MPI_Gatherv`/`MPI_Scatterv` pair was a full global data movement on top of the
+migration that follows. At production scale — millions of faces, hundreds of
+ranks, rebalancing every few steps — that is the bottleneck and a memory ceiling
+on one rank. An adaptively refining surface concentrates work (after a few
+hundred steps a refined feature sits on a handful of ranks and per-rank cost is
+linear in local entity count, so throughput is set by the worst-loaded rank), so
+rebalancing has to be cheap enough to do often.
+
+`LoadBalanceMode` therefore selects between three solves, and **no default path
+gathers the mesh to rank 0**:
+
+| Mode | Rank-0 solve input | Reproducible run to run | Quality |
+|---|---|---|---|
+| `GatherRoot` | the **global** face count | yes | best |
+| `Distributed` | **zero** | **no** (measured; see below) | best |
+| `Sampled` *(default)* | `O(comm size)` | yes, and partition-independent | slightly looser |
+
+`GatherRoot` is retained verbatim as the reference implementation the test
+compares against, and as the fallback. `Distributed` hands the adapter this rank's
+**own** owned-face centroids and weights keyed by the **real face gids** — already
+globally unique, which is exactly what the adapter wants, and strictly better than
+the `0..total-1` ids the gathered path synthesizes — and
+`solution.getPartListView()` comes back already in this rank's owned-face order,
+so there is nothing to scatter. The `size == 1` fast path is kept in all three.
+
+`Sampled` is the default, and its structure is what buys determinism. Each rank
+selects the owned faces satisfying `gid % stride == 0`; because that predicate
+reads a **globally agreed gid** rather than a local index, the sampled *set* is a
+property of the mesh and not of its current partition. The stride is derived from
+the global gid range for a target of `64 · nparts` coordinates and halved (by
+collective agreement, so every rank uses the same value) until the sample is large
+enough to partition — necessary because live face gids are sparse in `Conforming`
+mode. Rank 0 gathers the sample, **sorts it by gid** (the gather arrives in *rank*
+order, which is partition-dependent — this sort is the difference between
+partition-independent cuts and not), solves it over a `SerialComm` with
+`mj_keep_part_boxes`, and broadcasts MultiJagged's axis-aligned per-part boxes.
+Every rank then classifies its **own** centroids locally: inside one box, that
+part; inside several — the point lies exactly on a cut — the lowest part id;
+inside none (MJ's boxes span the sample's bounding box, not the mesh's) the
+nearest box by squared distance. That is exact arithmetic on globally agreed box
+coordinates, so it is trivially reproducible and every rank classifies
+identically.
+
+**The reproducibility question was measured, not assumed, and the measurement
+decided the default.** Cross-rank agreement is moot for one distributed solve,
+but run-to-run reproducibility at a fixed rank count is a separate property that
+Zoltan2 does not promise. `tests/test_loadbalance_distributed.cpp` check 4
+balances two identically-built subdivision-4 icospheres in the same run and
+compares the two `dest` arrays element-wise. **Verdict: `Distributed` is not
+reproducible.** Over two ctest invocations × both backend registrations × both
+execution spaces it agreed with itself at np1–np4 in every invocation and
+disagreed on **0, 4, 8, 16 or 18** of 5120 faces at np5 depending on the
+invocation. MJ's cut coordinates come from floating-point reductions with no fixed
+partial-sum order, and an icosphere is symmetric enough that many centroids sit on
+a cut and flip on a last-bit difference. Nothing about the resulting partition is
+*wrong* — every invariant, the balance bound and the topology checksum hold in
+every run — but `dest` is not a function of the mesh alone.
+
+**`GatherRoot` is no better, which is the part that makes `Sampled` the right
+default rather than merely the safe one.** Solving on one rank over a
+`SerialComm` removes the *communicator* from the picture but not the parallelism:
+MultiJagged is Kokkos-parallel, so its reductions run on the default execution
+space (HIP here) whatever comm it is handed. Check 9 measures the consequence
+directly — a second `loadBalance()` of an already-balanced mesh moves 0 faces
+under `Sampled` in every invocation, and anywhere from 0 to 42 under `GatherRoot`
+and `Distributed`. `Sampled`'s `dest` checksum was bit-identical in all eight
+invocations at every rank count 1–5. So `Sampled` is the default, `Distributed`
+stays available for callers who prefer the better-fitted cuts, `GatherRoot` stays
+as the reference the test compares quality against, and the finding is recorded in
+README → *Known Issues*. Measured evidence at subdivision 4, ranks 2–5, both backends: the
+face-count imbalance after balancing a mesh dumped entirely onto rank 0 is 1.0000
+for `GatherRoot` and `Distributed` and 1.0125–1.0615 for `Sampled`; rank 0's solve
+input is 5120 / 0 / 128–320 faces respectively; a second `loadBalance()` on the
+already-balanced result moves 0 faces under `Sampled` in every invocation and up
+to 42 of 5120 under `GatherRoot` or `Distributed`.
 
 ### Redistributing a conforming mesh
 

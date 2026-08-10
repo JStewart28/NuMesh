@@ -510,6 +510,27 @@ tessera_add_test(
     SOURCES  test_loadbalance.cpp
 )
 
+# Distributed Zoltan2 load-balance solve (tasks/distributed-loadbalance-solve.md):
+# LoadBalanceMode::{GatherRoot,Distributed,Sampled}. The deliverable is that rank 0
+# receives ZERO faces for its solve in the default Distributed mode (case 6), plus
+# validity/balance/conforming/reproducibility/quality/single-rank/idempotence checks
+# and printed scaling evidence at subdivision 5. test_loadbalance above stays as the
+# GatherRoot regression guard.
+tessera_add_test(
+    NAME     loadbalance_distributed
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_loadbalance_distributed.cpp
+)
+tessera_add_test(
+    NAME     loadbalance_distributed
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_loadbalance_distributed.cpp
+)
+
 # Parallel HDF5 + XDMF writer/reader round-trip (Step 8): write -> read ->
 # compare topology + user-field checksums, on-disk gid checksum independent
 # of rank count, and a post-read corrupt/haloExchange ghost-restoration check.
