@@ -219,11 +219,18 @@ void gatherReferencedTuples( MPI_Comm comm, int self_rank, int comm_size,
 
 //! ROUNDS B, C, D. Given the tuples this rank now OWNS (`faceById`) and the
 //! vertex/edge tuples its owned faces reference (`vById`/`eById`, complete by
-//! round G's postcondition), resolve ownership, fetch the 1-deep ghost layer, and
-//! overwrite `mesh`'s storage and `halo`'s three plans.
+//! round G's postcondition), resolve ownership, fetch a `depth`-deep ghost layer,
+//! and overwrite `mesh`'s storage and `halo`'s three plans.
 //!
 //! `vById`/`eById` are grown in place with the ghost tuples that arrive in round
 //! C, so they are taken by non-const reference.
+//!
+//! DEPTH. Only round C is depth-dependent, and it is the loop below. Round B's
+//! ownership resolution is depth-INVARIANT and therefore runs once, before the
+//! loop: a vertex's owner is the min over the owners of its incident faces, and
+//! every incident face is advertised by its own owner regardless of who holds a
+//! copy, so widening the ghost set cannot change any answer. Round D is a pure
+//! function of the FINAL ghost set and runs once, after the loop.
 //!
 //! INVALIDATION: reallocates the AoSoAs, the key Views and the CSRs, and replaces
 //! (not merely clears) the halo plans — every slice, CSR handle and key View taken
@@ -233,7 +240,7 @@ void finishHaloAndAssemble(
     MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     const std::map<GlobalId, HostFaceTuple<MeshT>>& faceById,
     std::map<GlobalId, HostVertexTuple<MeshT>>& vById,
-    std::map<GlobalId, HostEdgeTuple<MeshT>>& eById )
+    std::map<GlobalId, HostEdgeTuple<MeshT>>& eById, int depth )
 {
     using memory_space = typename MeshT::memory_space;
     using VMT = typename MeshT::vertex_member_types;
@@ -272,13 +279,15 @@ void finishHaloAndAssemble(
     auto vAdv = allToAllV( comm, toVC );
     auto eAdv = allToAllV( comm, toEC );
 
-    // Vertex coordinator: owner = min advertiser; reply owner to each advertiser
-    // and hand the owner the list of incident faces owned by OTHER ranks.
+    // Vertex coordinator: owner = min advertiser; reply owner to each advertiser.
+    // `byV` — the coordinator's incident-face table for the vertex gids it
+    // coordinates — is retained past this round: it is the whole global vertex->
+    // face incidence relation, and the ring loop below queries it once per ring.
+    // It is built from OWNED faces only, so it is complete and depth-invariant.
     std::map<GlobalId, std::vector<VtxInc>> byV;
     for ( const auto& m : vAdv.data )
         byV[m.vg].push_back( m );
     std::vector<std::vector<GidOwn>> vOwnReply( size );
-    std::vector<std::vector<VtxInc>> ghostNeed( size );
     for ( const auto& kv : byV )
     {
         const GlobalId vg = kv.first;
@@ -291,12 +300,8 @@ void finishHaloAndAssemble(
         }
         for ( Rank r : advertisers )
             vOwnReply[r].push_back( { vg, owner } );
-        for ( const auto& inc : kv.second )
-            if ( inc.owner != owner )
-                ghostNeed[owner].push_back( inc );
     }
     auto vOwnGot = allToAllV( comm, vOwnReply );
-    auto needGot = allToAllV( comm, ghostNeed );
     for ( const auto& m : vOwnGot.data )
         vOwner[m.gid] = m.owner;
 
@@ -322,75 +327,147 @@ void finishHaloAndAssemble(
         eOwner[m.gid] = m.owner;
 
     // ======================================================================
-    // Round C — fetch ghost faces (+ their vertices/edges) from face owners.
+    // Round C — fetch the ghost rings (+ their vertices/edges) from face owners.
     // ======================================================================
-    std::map<GlobalId, Rank> neededFace; // ghost faceGid -> its owner
-    for ( const auto& m : needGot.data )
-        if ( faceById.find( m.faceGid ) == faceById.end() )
-            neededFace[m.faceGid] = m.owner;
-    std::vector<std::vector<GlobalId>> reqFace( size );
-    for ( const auto& kv : neededFace )
-        reqFace[kv.second].push_back( kv.first );
-    auto reqGot = allToAllV( comm, reqFace );
-
-    // Serve requests: reply the face tuple + its 3 vertex/edge tuples (owners
-    // stamped from this rank's resolved maps) to the requesting rank.
-    std::vector<std::vector<TupleBlob<FTuple>>> repF( size );
-    std::vector<std::vector<TupleBlob<VTuple>>> repV( size );
-    std::vector<std::vector<TupleBlob<ETuple>>> repE( size );
-    for ( int s = 0; s < size; ++s )
+    // One iteration == one ring. Iteration d seeds from the vertices this rank
+    // holds but has not yet probed, asks each seed vertex's coordinator for its
+    // FULL incident-face list, and pulls back every one of those faces it does
+    // not already hold, with the faces' vertices and edges.
+    //
+    // Iteration 0 restricts the seed to OWNED vertices, which makes depth == 1
+    // reproduce the historical ghost set exactly: the old code had the vertex
+    // coordinator PUSH each owner the incident faces owned by others, and that
+    // is precisely "all incidences of my owned vertices, minus the ones I own".
+    //
+    // Once a vertex has been probed every face incident on it is held, so it is
+    // never probed again — iteration d therefore costs one ring, not one closure.
+    std::map<GlobalId, FTuple> ghostFaceById;
+    std::set<GlobalId> probed;
+    const int nRings = ( depth > 0 ) ? depth : 1;
+    for ( int d = 0; d < nRings; ++d )
     {
-        const GlobalId* p = reqGot.from( s );
-        const int c = reqGot.count( s );
-        for ( int i = 0; i < c; ++i )
+        std::vector<GlobalId> seed;
+        for ( const auto& kv : vById )
         {
-            FTuple ft = faceById.at( p[i] );
-            Cabana::get<FaceField::Owner>( ft ) = static_cast<Rank>( R );
-            repF[s].push_back( toBlob( ft ) );
-            for ( int k = 0; k < 3; ++k )
+            const GlobalId vg = kv.first;
+            if ( probed.count( vg ) )
+                continue;
+            if ( d == 0 && vOwner.at( vg ) != static_cast<Rank>( R ) )
+                continue;
+            seed.push_back( vg );
+        }
+        probed.insert( seed.begin(), seed.end() );
+
+        // Ask the coordinators for the seed vertices' incident faces.
+        std::vector<std::vector<GlobalId>> askV( size );
+        for ( GlobalId vg : seed )
+            askV[gidCoordRank( vg, size )].push_back( vg );
+        auto askGot = allToAllV( comm, askV );
+        std::vector<std::vector<VtxInc>> incReply( size );
+        for ( int s = 0; s < size; ++s )
+        {
+            const GlobalId* p = askGot.from( s );
+            const int c = askGot.count( s );
+            for ( int i = 0; i < c; ++i )
             {
-                const GlobalId vg = Cabana::get<FaceField::Verts>( ft, k );
-                const GlobalId eg = Cabana::get<FaceField::Edges>( ft, k );
-                VTuple vt = vById.at( vg );
-                Cabana::get<VertexField::Owner>( vt ) = vOwner.at( vg );
-                repV[s].push_back( toBlob( vt ) );
-                ETuple et = eById.at( eg );
-                Cabana::get<EdgeField::Owner>( et ) = eOwner.at( eg );
-                repE[s].push_back( toBlob( et ) );
+                auto it = byV.find( p[i] );
+                if ( it == byV.end() )
+                    continue;
+                for ( const auto& inc : it->second )
+                    incReply[s].push_back( inc );
             }
         }
-    }
-    auto ghF = allToAllV( comm, repF );
-    auto ghV = allToAllV( comm, repV );
-    auto ghE = allToAllV( comm, repE );
+        auto needGot = allToAllV( comm, incReply );
 
-    // Ingest ghosts. Ghost faces are new; ghost vertices/edges may repeat locally
-    // held ones (dedup by gid). Owners for ghosts come stamped in their tuples.
-    std::map<GlobalId, FTuple> ghostFaceById;
-    for ( const auto& b : ghF.data )
-    {
-        FTuple t = fromBlob( b );
-        ghostFaceById[Cabana::get<FaceField::Gid>( t )] = t;
-    }
-    for ( const auto& b : ghV.data )
-    {
-        VTuple t = fromBlob( b );
-        const GlobalId vg = Cabana::get<VertexField::Gid>( t );
-        if ( vById.find( vg ) == vById.end() )
+        std::map<GlobalId, Rank> neededFace; // ghost faceGid -> its owner
+        for ( const auto& m : needGot.data )
+            if ( faceById.find( m.faceGid ) == faceById.end() &&
+                 ghostFaceById.find( m.faceGid ) == ghostFaceById.end() )
+                neededFace[m.faceGid] = m.owner;
+        std::vector<std::vector<GlobalId>> reqFace( size );
+        for ( const auto& kv : neededFace )
+            reqFace[kv.second].push_back( kv.first );
+        auto reqGot = allToAllV( comm, reqFace );
+
+        // Serve requests: reply the face tuple + its 3 vertex/edge tuples (owners
+        // stamped from this rank's resolved maps) to the requesting rank. Only
+        // OWNED faces are ever requested of a rank, and round G guarantees this
+        // rank holds every vertex/edge an owned face references, so the .at()
+        // lookups below are total at every depth.
+        std::vector<std::vector<TupleBlob<FTuple>>> repF( size );
+        std::vector<std::vector<TupleBlob<VTuple>>> repV( size );
+        std::vector<std::vector<TupleBlob<ETuple>>> repE( size );
+        for ( int s = 0; s < size; ++s )
         {
-            vById.emplace( vg, t );
-            vOwner[vg] = Cabana::get<VertexField::Owner>( t );
+            const GlobalId* p = reqGot.from( s );
+            const int c = reqGot.count( s );
+            for ( int i = 0; i < c; ++i )
+            {
+                FTuple ft = faceById.at( p[i] );
+                Cabana::get<FaceField::Owner>( ft ) = static_cast<Rank>( R );
+                repF[s].push_back( toBlob( ft ) );
+                for ( int k = 0; k < 3; ++k )
+                {
+                    const GlobalId vg = Cabana::get<FaceField::Verts>( ft, k );
+                    const GlobalId eg = Cabana::get<FaceField::Edges>( ft, k );
+                    VTuple vt = vById.at( vg );
+                    Cabana::get<VertexField::Owner>( vt ) = vOwner.at( vg );
+                    repV[s].push_back( toBlob( vt ) );
+                    ETuple et = eById.at( eg );
+                    Cabana::get<EdgeField::Owner>( et ) = eOwner.at( eg );
+                    repE[s].push_back( toBlob( et ) );
+                }
+            }
         }
-    }
-    for ( const auto& b : ghE.data )
-    {
-        ETuple t = fromBlob( b );
-        const GlobalId eg = Cabana::get<EdgeField::Gid>( t );
-        if ( eById.find( eg ) == eById.end() )
+        auto ghF = allToAllV( comm, repF );
+        auto ghV = allToAllV( comm, repV );
+        auto ghE = allToAllV( comm, repE );
+
+        // Ingest ghosts. Ghost faces are new; ghost vertices/edges may repeat
+        // locally held ones (dedup by gid). Owners come stamped in the tuples,
+        // so no ownership round is needed for the newly-acquired ring.
+        long long acquired = 0;
+        for ( const auto& b : ghF.data )
         {
-            eById.emplace( eg, t );
-            eOwner[eg] = Cabana::get<EdgeField::Owner>( t );
+            FTuple t = fromBlob( b );
+            const GlobalId fg = Cabana::get<FaceField::Gid>( t );
+            if ( ghostFaceById.emplace( fg, t ).second )
+                ++acquired;
         }
+        for ( const auto& b : ghV.data )
+        {
+            VTuple t = fromBlob( b );
+            const GlobalId vg = Cabana::get<VertexField::Gid>( t );
+            if ( vById.find( vg ) == vById.end() )
+            {
+                vById.emplace( vg, t );
+                vOwner[vg] = Cabana::get<VertexField::Owner>( t );
+                ++acquired; // a newly-held vertex is a seed for the next ring
+            }
+        }
+        for ( const auto& b : ghE.data )
+        {
+            ETuple t = fromBlob( b );
+            const GlobalId eg = Cabana::get<EdgeField::Gid>( t );
+            if ( eById.find( eg ) == eById.end() )
+            {
+                eById.emplace( eg, t );
+                eOwner[eg] = Cabana::get<EdgeField::Owner>( t );
+            }
+        }
+
+        // Early exit, collective so every rank leaves the loop together: when no
+        // rank acquired anything the closure is saturated and further rings are
+        // pure no-ops. This is the common case at small rank counts, where the
+        // whole mesh becomes locally resident before `depth` is reached.
+        // `acquired` counts newly-held VERTICES as well as faces, because the
+        // vertices are what seed the next ring -- a rank can hold a new seed
+        // vertex without the face it arrived on being new to anybody else.
+        long long globalAcquired = 0;
+        MPI_Allreduce( &acquired, &globalAcquired, 1, MPI_LONG_LONG, MPI_SUM,
+                       comm );
+        if ( globalAcquired == 0 )
+            break;
     }
 
     // ======================================================================
@@ -608,14 +685,27 @@ void finishHaloAndAssemble(
         comm, R, size, ghosts_of( eord, nOwnedE, eOwner ), e2l );
     halo.fplan = buildKindPlan<memory_space>(
         comm, R, size, ghosts_of( ford, nOwnedF, fOwnerMap ), f2l );
+
+    // buildKindPlan() is a function of the FINAL ghost set and does not care how
+    // deep it is; recording the depth is all round D owes the loop above.
+    halo.depth = nRings;
+    mesh.setHaloDepth( nRings );
 }
 
 } // namespace detail
 
-//! Rebuild the 1-deep ghost layer and the three halo plans in place, from the
+//! Rebuild a `depth`-deep ghost layer and the three halo plans in place, from the
 //! mesh's current OWNED entities. No entity changes rank, and nothing is
 //! communicated beyond ownership/ghost discovery. After this returns,
 //! haloExchange() is meaningful and refine() may be called again.
+//!
+//! `depth` is the number of ghost RINGS: at depth d every owned vertex's d-ring of
+//! faces (with their vertices and edges) is held locally, so buildVertexStencil()
+//! with k <= d has complete rows on every owned vertex. It is recorded on both
+//! `halo` and `mesh`, and refine()/migrate() preserve it — a caller sets depth once
+//! at setup and never thinks about it again. Note that two haloExchange() calls
+//! are NOT a substitute for depth 2: an exchange refreshes the same ghost set from
+//! the same owners, it does not widen it.
 //!
 //! refine() calls this itself, so a caller normally never needs to: it exists as
 //! public API for the case where a mesh's owned set was changed by something other
@@ -626,7 +716,8 @@ void finishHaloAndAssemble(
 //!   * Every vertex and edge referenced by an owned face is held locally (owned or
 //!     ghost) WITH its position and whole field pack — round G's guarantee, which
 //!     is stronger than "a 1-deep ghost layer exists".
-//!   * Every face sharing a vertex with an owned face is held as a ghost.
+//!   * Every face within `depth` vertex-hops of an owned vertex is held as a
+//!     ghost (at depth 1: every face sharing a vertex with an owned face).
 //!   * halo.{v,e,f}plan are consistent with the new local indices; ghost values
 //!     are the owners' values, so a following haloExchange() is a re-sync.
 //!   * Local ordering is CANONICAL: owned first then ghost, each kind ascending by
@@ -639,7 +730,8 @@ void finishHaloAndAssemble(
 //! halo plans — every slice, CSR handle and key View taken out before this call is
 //! dangling. Re-slice from the mesh afterwards.
 template <class MeshT>
-void rebuildHalo( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo )
+void rebuildHalo( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
+                  int depth = 1 )
 {
     TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_HALO_REBUILD );
     using VMT = typename MeshT::vertex_member_types;
@@ -706,7 +798,7 @@ void rebuildHalo( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo )
         }
     }
 
-    detail::finishHaloAndAssemble( mesh, halo, faceById, vById, eById );
+    detail::finishHaloAndAssemble( mesh, halo, faceById, vById, eById, depth );
 }
 
 } // namespace Tessera

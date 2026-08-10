@@ -160,6 +160,22 @@ class Mesh
         bumpGeneration();
     }
 
+    // -- halo depth ------------------------------------------------------------
+    //
+    // How many rings of ghost entities the local closure carries: at depth d,
+    // every OWNED vertex's d-ring of faces (and those faces' vertices and edges)
+    // is held locally, so a k-ring operator with k <= d has complete rows on
+    // every owned vertex. Set by distribute() and by the shared halo rebuild
+    // (rebuildHalo()/migrate()), which is why refine()/migrate() preserve it
+    // without the caller re-stating it.
+    //
+    // 0 means "never distributed" — a replicated mesh straight out of the
+    // builder, where every entity is local and no ring is missing. Consumers
+    // that police depth (buildVertexStencil()) treat 0 as unconstrained and any
+    // positive value as the real bound.
+    int haloDepth() const { return _halo_depth; }
+    void setHaloDepth( int d ) { _halo_depth = d; }
+
     // -- generation counter ----------------------------------------------------
     //
     // Monotonically increases every time this mesh's local entity count or
@@ -364,6 +380,8 @@ class Mesh
     std::size_t _n_owned_v = 0;
     std::size_t _n_owned_e = 0;
     std::size_t _n_owned_f = 0;
+
+    int _halo_depth = 0;
 
     std::size_t _generation = 0;
 

@@ -125,7 +125,7 @@ hold it (owned or ghost) after the halo is built. This rule is deterministic and
 needs no vote/tie-break. The sharing set is materialized by the ghost-build neighbor
 exchange (neighbor-bounded, **not** all-to-all).
 
-## 1-deep halo
+## Halo
 
 After `haloExchange()`, every owned vertex has all incident edges/faces and the
 opposite vertices of its 1-ring locally; every owned face has its 3 vertices + 3
@@ -134,6 +134,55 @@ GPU-aware MPI) using persistent, registration-bounded buffer pools ported from
 Canopy. The halo is described by a **`HaloExchangePlan`** (per-peer index maps +
 buffer pools); any operation that changes the local entity count or ghost set
 invalidates the plan, which is rebuilt before the next sync.
+
+### Halo depth
+
+The ghost layer is **configurable in depth**. At depth *d* every owned vertex's
+*d*-ring of faces — with those faces' vertices and edges — is held locally, so a
+*k*-ring operator with *k* ≤ *d* has complete rows on every owned vertex, at any
+rank count. Depth is one number, defined on the **vertex** closure, with edges and
+faces following; there is no independent edge or face depth.
+
+Three properties are worth stating explicitly, because each is a place the design
+could plausibly have gone the other way.
+
+- **Depth is a property of the local closure, not of the exchange.** Two successive
+  `haloExchange()` calls are *not* a 2-deep halo: the second refreshes the same
+  ghost set from the same owners. Widening happens in `distribute()` and in
+  `rebuildHalo()`, which decide *which* entities are resident; `haloExchange()`
+  only moves values into slots that already exist. Correspondingly the depth loop
+  is entirely inside the closure construction and `buildKindPlan` is untouched —
+  a plan is a pure function of the final ghost set and does not care how deep it is.
+- **Ownership is depth-invariant.** A vertex's owner is the minimum over the owners
+  of its incident faces, and every incident face is advertised by *its own* owner
+  regardless of which ranks hold a copy. Widening the ghost set therefore cannot
+  change any ownership answer, so round B of the rebuild (below) runs **once**,
+  before the ring loop, and its result is final at every depth. `test_halo_depth`
+  asserts this rather than trusting the argument: the global owned counts, the
+  owned Euler number and the topology checksums are compared at depth 1 and 2.
+- **Depth is preserved, not re-stated.** `MeshHalo::depth` and `Mesh::haloDepth()`
+  record it, and `refine()` and `migrate()`/`loadBalance()` read the halo's depth
+  and rebuild to it. A caller sets depth once at setup — `distribute(mesh, halo,
+  faceOwner, 2)` — and never thinks about it again. `depth == 0` means "never
+  distributed" (a replicated mesh out of the builder, where everything is
+  resident) and is read as 1 by the rebuild.
+
+In `distribute()` the mesh is replicated, so the closure is a purely **local** loop
+with no communication: `depth` times over { mark every face incident on a marked
+vertex; mark those faces' vertices and edges }, seeded from the owned faces and the
+owned vertices. In `rebuildHalo()`/`migrate()` nothing is replicated, so each ring
+is one query against the vertex coordinators (see below). Both stop early when a
+ring acquires nothing — at small rank counts the whole mesh becomes locally
+resident before `depth` is reached, and in the distributed case that early exit is
+a collective `MPI_Allreduce`, so every rank leaves the loop together.
+
+The consumer this exists for is `buildVertexStencil(mesh, k)`, which now **throws**
+`std::invalid_argument` when `k > mesh.haloDepth()`. That matters more than a
+missing-feature error usually does: a short CSR row looks exactly like a correct
+one, so an operator built on an under-covered `k=2` stencil produces a plausible
+field with a small error localized on partition boundaries — an error that moves
+when the rank count changes and that no structural invariant detects. Depth makes
+the requirement dischargeable; the throw makes it checked.
 
 ## Slice/handle validity
 
@@ -289,7 +338,9 @@ rounds were added.
 Phases 1-3 leave each rank holding only its owned entities — every cross-rank
 decision went through a coordinator, so no ghost was needed — and `refine()` then
 finishes by calling **`rebuildHalo()`** (`Tessera_HaloRebuild.hpp`), the general
-non-replicated 1-deep halo rebuild it shares with `migrate()`. So on return the
+non-replicated halo rebuild it shares with `migrate()` — at the halo's recorded
+depth, so a mesh distributed at depth 2 is still depth 2 after any number of
+refinement rounds. So on return the
 passed halo's three plans are valid: `haloExchange()` is meaningful (and a re-sync,
 since round C/D fetch ghost values from their owners), and `refine()` may be called
 again immediately with nothing in between. `rebuildHalo()` also canonicalises the
@@ -527,12 +578,16 @@ The public contract is **migration**, not partitioning:
   entities, so ownership and the ghost set are discovered by communication (whole
   Cabana tuples travel over `allToAllV`; ownership and ghost-face discovery route
   through per-gid vertex/edge coordinators).
-- `Tessera::rebuildHalo(mesh, halo)` (`Tessera_HaloRebuild.hpp`) is the **general
-  (non-replicated) ghost builder** on its own, with no move: rounds G (recover
-  referenced-but-non-held vertex/edge tuples), B (ownership + ghost discovery via
-  coordinators), C (ghost fetch from face owners) and D (owned-first assembly, CSRs,
-  key tables, the three plans). `migrate()` is rounds S and A plus this; `refine()`
-  calls it directly. The entire interface between the move half and the halo half is
+- `Tessera::rebuildHalo(mesh, halo, depth=1)` (`Tessera_HaloRebuild.hpp`) is the
+  **general (non-replicated) ghost builder** on its own, with no move: rounds G
+  (recover referenced-but-non-held vertex/edge tuples), B (ownership + ghost
+  discovery via coordinators), C (ghost fetch from face owners) and D (owned-first
+  assembly, CSRs, key tables, the three plans). `migrate()` is rounds S and A plus
+  this; `refine()` calls it directly. Only **round C** is depth-dependent: it is a
+  loop over rings, each asking the vertex coordinators for the incident faces of the
+  vertices acquired last time and pulling back the ones not yet held (see *Halo
+  depth*). Rounds G, B and D each run once. `migrate()` and `refine()` pass the
+  depth recorded on the halo, so they preserve it. The entire interface between the move half and the halo half is
   the three gid-keyed maps `faceById` / `vById` / `eById`. Callers normally never
   need it — it is public for the case where a mesh's owned set was changed by
   something other than `refine()`/`migrate()`.

@@ -398,7 +398,10 @@ MigrateStats migrate( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     // Shared verbatim with rebuildHalo(); the three maps round A just filled are
     // the entire interface. INVALIDATION: this reallocates the AoSoAs, key Views
     // and CSRs and replaces the halo plans (see finishHaloAndAssemble()).
-    detail::finishHaloAndAssemble( mesh, halo, faceById, vById, eById );
+    // The depth is PRESERVED, not reset: a caller that distributed at depth 2
+    // gets a depth-2 halo back out of every migrate()/loadBalance().
+    detail::finishHaloAndAssemble( mesh, halo, faceById, vById, eById,
+                                   effectiveHaloDepth( halo ) );
 
     return stats;
 }

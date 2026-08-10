@@ -1074,7 +1074,10 @@ RefineResult refineImpl( MeshT& mesh,
     // the halo plans, as does everything above it, so every slice/CSR/key-View a
     // caller took out before this refine() call is dangling. Re-slice from the
     // mesh.
-    rebuildHalo( mesh, halo );
+    // The depth is PRESERVED, not reset: refine() rebuilds the halo the caller
+    // asked for at setup, so a depth-2 mesh is still depth-2 after any number of
+    // refine() rounds.
+    rebuildHalo( mesh, halo, effectiveHaloDepth( halo ) );
 
     return result;
 }

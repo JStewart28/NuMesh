@@ -694,3 +694,31 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_refine_rehalo.cpp
 )
+
+# Configurable halo depth (tasks/halo-depth.md). The ghost layer used to be
+# 1-deep and not configurable, so buildVertexStencil(mesh, 2) was SILENTLY SHORT
+# within one hop of a partition boundary -- a short CSR row looks exactly like a
+# correct one, and the resulting operator error moves when the rank count
+# changes. This test pins the fix end to end: a depth-2 distribute() gives every
+# owned vertex its complete 2-ring measured against the global reference
+# assembled from every rank's owned edges; depth 1 still reproduces
+# distribute()'s own closure exactly (the depth loop lives in the
+# finishHaloAndAssemble() that migrate() and refine() share, so that agreement is
+# what protects the rest of the gate); ownership is depth-invariant;
+# refine() x4, migrate() and loadBalance() all PRESERVE the depth; and
+# buildVertexStencil(mesh, 2) throws on a depth-1 mesh instead of quietly
+# returning short rows. Non-vacuity guards as in refine_rehalo.
+tessera_add_test(
+    NAME     halo_depth
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_halo_depth.cpp
+)
+tessera_add_test(
+    NAME     halo_depth
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_halo_depth.cpp
+)

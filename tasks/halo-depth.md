@@ -1,6 +1,7 @@
 # Configurable halo depth
 
-**Status:** NOT STARTED. Foundational — several sibling tasks below depend on it.
+**Status:** DONE (2026-08-09). See *Progress log*. Foundational — several sibling
+tasks below depend on it.
 
 **Verified against `08dd346`** (branch `conforming-refinement`), where
 `Tessera_HaloRebuild.hpp` already exists. See *What already landed* before
@@ -248,3 +249,33 @@ Only [edge-collapse.md](edge-collapse.md) has a hard dependency on this task.
   `rebuildHalo()` extraction and the geometric blue tie-break had both landed in
   the interim, so the task narrowed from "extract the rebuild **and** add depth"
   to "add depth to the existing rebuild". Nothing implemented.
+- 2026-08-09 — **DONE.** All three steps implemented, `tests/test_halo_depth.cpp`
+  registered at TIER `regression` on SERIAL and HIP at ranks 1–5. Full gate
+  **160/160** (150 pre-existing, unchanged and unrelabelled, plus the 10 new),
+  diagnostic tier 62/62. The README *Known Issue* is deleted.
+
+  Two notes on how it landed, both about the ring loop rather than the plumbing.
+
+  * The ring loop went where the task said — `detail::finishHaloAndAssemble()` —
+    but round B's ghost PUSH (the vertex coordinator handing each owner the
+    incident faces owned by others) was replaced by a PULL against the same
+    coordinator table `byV`. The push only ever reaches a vertex's owner, which
+    is the ring-0 seed and nothing else; ring *d* needs the incidences of
+    vertices the rank merely holds. One mechanism serving every ring is simpler
+    than two, and it is exactly equivalent at depth 1: the coordinator returns
+    all incidences of a seed vertex and the ones this rank already owns are
+    filtered out, which is precisely the set the push sent. Ownership
+    resolution still runs once, before the loop, as the task argued.
+  * The early exit is the one place this was genuinely subtle, and it was a real
+    bug caught by the tests. Growth must be measured on the newly-held
+    **vertices**, not only on the newly-held faces: a rank all of whose owned
+    vertices are interior to its own faces acquires no new face in ring 0 — yet
+    its own faces' boundary vertices are what ring 1 expands from. Testing faces
+    alone made such a rank break after one ring and hand back a silently 1-deep
+    halo, which is the exact failure mode this task exists to remove. It showed
+    up first in `distribute()`'s local loop (rank 1 of a 2-rank latitude-band
+    split had V=93 instead of 115) and the same counting fix was applied to the
+    distributed loop. Check 1b in the test — cross-checking `distribute()`'s
+    local closure against `rebuildHalo()`'s coordinator rings at depth 2 — is
+    what makes that class of bug loud, because a short closure otherwise only
+    surfaces as a short k-ring on the few owned vertices next to the gap.

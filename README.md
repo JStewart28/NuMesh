@@ -5,8 +5,8 @@ A distributed, MPI- and GPU-aware **unstructured triangle-mesh library** built o
 [Kokkos](https://github.com/kokkos/kokkos).
 
 Tessera provides the local, halo-able mesh machinery for evolving closed surfaces:
-entity storage, full connectivity, a hand-built 1-deep MPI halo, split-based
-adaptive refinement, optional migration/load-balancing, and parallel
+entity storage, full connectivity, a hand-built MPI halo of configurable depth,
+split-based adaptive refinement, optional migration/load-balancing, and parallel
 Paraview-readable I/O. It is a dependency of the [Canopy](https://github.com/) FMM
 solver and the Beatnik/rocketrig Rayleigh–Taylor problem; the global
 Birkhoff–Rott/FMM velocity solve lives downstream in Canopy and is **not** part of
@@ -25,8 +25,8 @@ Tessera.
 
 Detailed descriptions of the algorithms and design decisions used in this
 repository — entity storage and AoSoA layout, global ID scheme, ownership and the
-1-deep halo, adaptive refinement, load balancing, and parallel I/O — live in
-**[docs/design.md](docs/design.md)**. This README covers the public API, build
+halo (including halo depth), adaptive refinement, load balancing, and parallel I/O
+— live in **[docs/design.md](docs/design.md)**. This README covers the public API, build
 instructions, and per-example arguments; the design rationale is not duplicated
 here.
 
@@ -58,8 +58,11 @@ buildIcosphere( mesh, /*subdivisions=*/3 );        // initial coarse closed surf
 auto faceOwner = facePartitionByAxis( mesh, /*axis=*/2 );  // deterministic geometric
                                                              // partition of the faces
 MeshHalo<MemSpace> halo;
-distribute( mesh, halo, faceOwner );                // cut to owned + 1-deep ghost layer,
-                                                     // build the halo exchange plans
+distribute( mesh, halo, faceOwner, /*depth=*/1 );   // cut to owned + a `depth`-deep ghost
+                                                     // layer, build the halo exchange
+                                                     // plans. Pass depth=k once, at setup,
+                                                     // for a k-ring operator; refine() and
+                                                     // migrate() PRESERVE it thereafter
 haloExchange( mesh, halo );                         // fill the ghost layer
 
 auto vort = mesh.vertexSlice<Tessera::VertexField::Vorticity>();   // typed Cabana slice
@@ -69,9 +72,14 @@ haloExchange( mesh, halo );                         // refresh ghosts (whole fie
 refine( mesh, halo, face_refine_mask );             // 2:1-balanced red split, plus the
                                                      // conforming closure in the default
                                                      // mode; REBUILDS `halo` on the way
-                                                     // out, so it may be called again
-                                                     // immediately and haloExchange() is
-                                                     // meaningful straight afterwards
+                                                     // out, at its recorded depth, so it
+                                                     // may be called again immediately and
+                                                     // haloExchange() is meaningful
+                                                     // straight afterwards
+
+// mesh.haloDepth() reports the depth in force. rebuildHalo( mesh, halo, depth ) rebuilds
+// the ghost layer in place from the owned entities -- refine()/migrate() call it
+// themselves, so it is only needed when something else changed the owned set.
 
 loadBalance( mesh, halo );           // internal Zoltan2 rebalance + halo rebuild (optional)
 // or, external (e.g. Canopy-driven):
@@ -184,9 +192,13 @@ Scalar cot = cotangentAtCorner( geom, f, c );  // (u·v)/‖u×v‖ (triangle ge
 ```
 
 **k-ring stencil topology** — a CSR of the k-ring vertex neighbours (`k=1` and
-`k=2` both supported), built by edge BFS over the existing connectivity:
+`k=2` both supported), built by edge BFS over the existing connectivity. Rows are
+complete for every owned vertex provided the mesh's **halo depth is ≥ k**, and
+that is checked: `k > mesh.haloDepth()` throws `std::invalid_argument` naming both
+numbers, rather than returning silently short rows on a partition boundary.
 
 ```cpp
+distribute( mesh, halo, faceOwner, /*depth=*/2 );     // once, at setup
 auto stencil = buildVertexStencil( mesh, /*k=*/2 );   // VertexStencil<MemSpace>
 ```
 
@@ -297,7 +309,7 @@ make -j $(nproc)
   because it changes what a default-spelled `Mesh` does.)* The whole
   `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
   `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented,
-  registered across the suite, and **verified**: the ship gate is 150/150 and the
+  registered across the suite, and **verified**: the ship gate is 160/160 and the
   diagnostic tier 62/62 on SERIAL and HIP at **ranks 1–5**, over multiple successive
   adaptive rounds, and the shape-quality bounds are measured rather than assumed (the
   worst radius ratio saturates by round 11 and is flat through round 16 while the mesh
@@ -327,14 +339,6 @@ make -j $(nproc)
   `RefinementMode::Conforming` fixes both, because it can recover the persistent
   split-edge map locally from the closure bookkeeping; `HangingNode2to1` keeps no
   such record and would need a new face field or an extra message round.
-- **`buildVertexStencil(mesh, 2)` (k=2) is incomplete within one hop of a partition
-  boundary.** Tessera's halo is **1-deep**, which fully covers a k=1 stencil but not a
-  k=2 one: for an owned vertex whose 2-ring reaches beyond the ghost layer, the missing
-  outer-ring neighbours are silently absent from its CSR row rather than reported as an
-  error. The marked set is therefore only correct for vertices whose entire 2-ring is
-  held locally (all interior vertices on a single rank; interior-of-partition vertices
-  in a distributed run). Workaround: either widen the halo to depth ≥ k before building
-  the stencil, or restrict k=2 stencils to single-rank runs. k=1 stencils are unaffected.
 - **Edge user fields are reset by `refine()`/`refineLocal()`.** Edges are re-derived
   from the new face connectivity, so any per-edge user data is re-initialized (M1
   carries no edge user state through AMR). Vertex and face user fields are preserved

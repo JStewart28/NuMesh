@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -68,13 +69,36 @@ struct VertexStencil
 //
 // Neighbours are stored ascending by local index within each row for
 // determinism. Coverage is complete for OWNED vertices provided the local halo
-// depth is >= k (a 1-deep halo fully covers k=1; deeper stencils on a partition
-// boundary need a correspondingly deeper halo — the caller's responsibility).
+// depth is >= k, and that is now CHECKED rather than merely documented: a
+// k-ring stencil on a mesh whose halo is shallower than k throws
+// std::invalid_argument naming both numbers. Discharging it is the caller's
+// responsibility and is expressible — build the mesh with
+// `distribute( mesh, halo, faceOwner, k )` (or `rebuildHalo( mesh, halo, k )`)
+// and refine()/migrate() preserve that depth thereafter.
+//
+// The check is skipped when mesh.haloDepth() == 0, which means "never
+// distributed": a replicated mesh straight out of the builder holds every
+// entity, so no ring can be missing at any k.
+//
+// Without the check a short CSR row looks exactly like a correct one, and an
+// operator built on it produces a plausible field with a small error localized
+// on partition boundaries that moves when the rank count changes.
 template <class MeshT>
 VertexStencil<typename MeshT::memory_space> buildVertexStencil( MeshT& mesh,
                                                                 int k )
 {
     using memory_space = typename MeshT::memory_space;
+
+    if ( mesh.haloDepth() > 0 && k > mesh.haloDepth() )
+        throw std::invalid_argument(
+            std::string( "Tessera::buildVertexStencil: k=" ) +
+            std::to_string( k ) + " exceeds the mesh halo depth " +
+            std::to_string( mesh.haloDepth() ) +
+            "; the k-rings of owned vertices on a partition boundary would be "
+            "silently short. Rebuild the mesh with a halo of depth >= " +
+            std::to_string( k ) +
+            " (distribute(mesh, halo, faceOwner, depth) or rebuildHalo(mesh, "
+            "halo, depth))." );
 
     const int nv = static_cast<int>( mesh.numVertices() );
     const int ne = static_cast<int>( mesh.numEdges() );

@@ -41,7 +41,22 @@ struct MeshHalo
     HaloExchangePlan<MemorySpace> vplan;
     HaloExchangePlan<MemorySpace> eplan;
     HaloExchangePlan<MemorySpace> fplan;
+
+    //! Ghost rings the local closure carries (see Mesh::haloDepth()). Recorded
+    //! here as well as on the mesh because it is the halo's own property, and
+    //! because it is what lets refine()/migrate() PRESERVE the depth a caller
+    //! chose once at setup rather than silently narrowing back to 1. 0 means
+    //! "never built" and is read as 1.
+    int depth = 0;
 };
+
+//! The depth to build at when a caller hands on an existing halo: its recorded
+//! depth, with the never-built value 0 read as the historical 1.
+template <class MemorySpace>
+inline int effectiveHaloDepth( const MeshHalo<MemorySpace>& halo )
+{
+    return halo.depth > 0 ? halo.depth : 1;
+}
 
 namespace detail
 {
@@ -163,13 +178,18 @@ std::vector<Rank> facePartitionByAxis( const MeshT& mesh, int axis = 2 )
 //   face f   -> faceOwner[f]
 //   vertex v -> min faceOwner over faces incident to v
 //   edge e   -> min faceOwner over the (<=2) faces incident to e
-// Local set (1-deep closure of owned vertices' 1-rings):
-//   local faces = owned faces + faces incident to an owned vertex
-//   local verts = union of vertices over local faces (gives each owned vertex its
-//                 full 1-ring), local edges likewise.
+// Local set (`depth`-deep closure of the owned vertices), one iteration being:
+//   local faces += owned faces + faces incident to an already-local vertex
+//   local verts += union of vertices over local faces (gives each owned vertex its
+//                  full 1-ring), local edges likewise.
+// `depth` iterations of that body give every owned vertex its complete d-ring, so
+// a k-ring operator with k <= depth has complete rows on every owned vertex. The
+// mesh is replicated here, so the closure is a purely local loop: no extra
+// communication at any depth, only a larger local set and larger halo plans.
+// `depth` is recorded on both `halo` and `mesh` so refine()/migrate() preserve it.
 template <class MeshT>
 void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
-                 const std::vector<Rank>& faceOwner )
+                 const std::vector<Rank>& faceOwner, int depth = 1 )
 {
     TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_DISTRIBUTE );
     using memory_space = typename MeshT::memory_space;
@@ -222,22 +242,53 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         eOwner[e] = m;
     }
 
-    // ---- local entity sets --------------------------------------------------
+    // ---- local entity sets (`depth`-deep closure of the owned vertices) ------
+    // Seeded from the owned faces (a face all of whose corners are owned by lower
+    // ranks is still local) and the owned vertices, then widened one ring per
+    // iteration. At depth == 1 this is exactly the historical single pass.
+    const int nRings = ( depth > 0 ) ? depth : 1;
     std::vector<char> inFace( Nf, 0 ), inV( Nv, 0 ), inE( Ne, 0 );
     for ( int f = 0; f < Nf; ++f )
         if ( faceOwner[f] == R )
             inFace[f] = 1;
     for ( int v = 0; v < Nv; ++v )
         if ( vOwner[v] == R )
-            for ( int p = vf_off( v ); p < vf_off( v + 1 ); ++p )
-                inFace[vf_nbr( p )] = 1;
-    for ( int f = 0; f < Nf; ++f )
-        if ( inFace[f] )
-            for ( int k = 0; k < 3; ++k )
-            {
-                inV[static_cast<int>( f_v( f, k ) )] = 1;
-                inE[static_cast<int>( f_e( f, k ) )] = 1;
-            }
+            inV[v] = 1;
+    for ( int d = 0; d < nRings; ++d )
+    {
+        bool grew = false;
+        for ( int v = 0; v < Nv; ++v )
+            if ( inV[v] )
+                for ( int p = vf_off( v ); p < vf_off( v + 1 ); ++p )
+                    if ( !inFace[vf_nbr( p )] )
+                    {
+                        inFace[vf_nbr( p )] = 1;
+                        grew = true;
+                    }
+        // The VERTEX marks must feed the growth test too, not just the face
+        // marks. A rank all of whose owned vertices are interior to its own
+        // faces marks no new face in the loop above -- yet the seed's own faces
+        // still contribute the boundary vertices here, and those are what the
+        // NEXT ring expands from. Testing faces alone stops such a rank after
+        // one ring and silently hands back a 1-deep halo.
+        for ( int f = 0; f < Nf; ++f )
+            if ( inFace[f] )
+                for ( int k = 0; k < 3; ++k )
+                {
+                    const int vg = static_cast<int>( f_v( f, k ) );
+                    if ( !inV[vg] )
+                    {
+                        inV[vg] = 1;
+                        grew = true;
+                    }
+                    inE[static_cast<int>( f_e( f, k ) )] = 1;
+                }
+        // Early exit: at small rank counts the whole replicated mesh becomes
+        // locally resident before `depth` is reached, and further rings are
+        // pure no-ops.
+        if ( !grew )
+            break;
+    }
 
     // ---- owned-first ordering (indices ascending == gid ascending) ---------
     auto build_order = [&]( int N, const std::vector<char>& in,
@@ -415,6 +466,12 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         halo.fplan = detail::buildKindPlan<memory_space>(
             comm, R, comm_size, ghosts_of( forder, nof, faceOwner ), f2l );
     }
+
+    // Record the depth on both the halo and the mesh: the halo so that
+    // refine()/migrate() preserve it without the caller re-stating it, the mesh
+    // so that a depth-policing consumer (buildVertexStencil()) can see it.
+    halo.depth = nRings;
+    mesh.setHaloDepth( nRings );
 }
 
 // ============================================================================

@@ -55,7 +55,7 @@ echo "  Args:      $*"
 echo "  Started:   $(date)"
 echo ""
 
-flux run --ntasks 4 --nodes=1 --exclusive --cores-per-task=1 \
+flux run --ntasks 4 --nodes=1 --exclusive --cores-per-task=16 \
     --env=GLIBC_TUNABLES=glibc.rtld.optional_static_tls=8388608 \
     "${exe}" "$@"
 _rc=$?

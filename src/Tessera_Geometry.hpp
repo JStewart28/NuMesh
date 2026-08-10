@@ -181,8 +181,8 @@ MeshGeometry<MeshT> buildMeshGeometry( MeshT& mesh )
     Kokkos::deep_copy( faceVerts, h_fv );
     Kokkos::deep_copy( edgeVerts, h_ev );
 
-    return MeshGeometry<MeshT>(
-        mesh.template vertexSlice<PosField>(), faceVerts, edgeVerts );
+    return MeshGeometry<MeshT>( mesh.template vertexSlice<PosField>(),
+                                faceVerts, edgeVerts );
 }
 
 // ============================================================================
@@ -206,7 +206,7 @@ MeshGeometry<MeshT> buildMeshGeometry( MeshT& mesh )
     do                                                                         \
     {                                                                          \
         if ( ( idx ) == invalid_local )                                        \
-            Kokkos::abort(                                                      \
+            Kokkos::abort(                                                     \
                 "Tessera geometry: " what                                      \
                 " received a face/edge with an invalid_local vertex "          \
                 "(a boundary/missing connectivity entry). Skip such "          \
