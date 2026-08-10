@@ -225,7 +225,7 @@ promotion is **pre-authorized for this task**.
 
 **No hard prerequisite** — `rebuildHalo()` already exists in tree
 (`Tessera_HaloRebuild.hpp`, `25980f2`), which is what makes step 5 possible today;
-[halo-depth.md](halo-depth.md) is needed only for the `haloDepth = 2` half of
+[halo-depth.md](halo-depth.md) is implemented. It is needed for the `haloDepth = 2` half of
 check 5. Nothing depends on this task. See the ordering diagram in
 [halo-depth.md](halo-depth.md).
 
