@@ -18,6 +18,8 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace Tessera
@@ -156,6 +158,157 @@ TriangleSoup<Scalar> generateIcosphere( int subdivisions )
     }
 
     soup.triangles = std::move( tris );
+    return soup;
+}
+
+// ============================================================================
+// Lat/lon (UV) sphere triangle-soup generator (host, serial, deterministic)
+// ============================================================================
+//
+// Why a second generator, when generateIcosphere() already produces a closed
+// unit sphere: an icosphere is *too good* a test surface. It is nearly
+// isotropic, its triangles are nearly equilateral, and almost every vertex has
+// valence 6. A lat/lon sphere is anisotropic by construction -- triangles
+// stretch as the rings shrink toward the poles -- and its two pole vertices have
+// valence nLon, so it reaches code paths an icosphere never does: quality-based
+// marking, cotangent weights at a high-valence vertex, stencil rows of very
+// different lengths, and the poles as valence outliers.
+//
+// This is the same kind of primitive as generateIcosphere(): pure generation,
+// handed to buildFromTriangleSoup() for connectivity. A caller could of course
+// build this soup itself -- the soup interface exists precisely so it can -- but
+// a UV sphere has a handful of easy-to-get-wrong details (duplicate pole
+// vertices, a duplicated seam meridian, inconsistent winding), and every
+// consumer that writes it writes the same bugs.
+
+//! Generate a unit lat/lon (UV) sphere triangle soup.
+//!
+//! `nLat` is the number of latitude RINGS **including both poles** (`nLat >= 3`);
+//! `nLon` is the number of meridians (`nLon >= 3`). Throws
+//! `std::invalid_argument` otherwise.
+//!
+//! Vertices:
+//! \code
+//!   theta_j = pi * j / (nLat - 1),  j = 0 .. nLat-1   (0 = north pole)
+//!   phi_i   = 2*pi * i / nLon,      i = 0 .. nLon-1   (NOT nLon+1 -- no seam
+//!                                                     duplicate; i wraps)
+//!   position = ( sin(theta)*cos(phi), sin(theta)*sin(phi), cos(theta) )
+//! \endcode
+//! The poles (`j = 0` and `j = nLat-1`) are **one vertex each**, written
+//! literally as `(0,0,+1)` and `(0,0,-1)` rather than evaluated from the
+//! formula: `sin(pi)` is not zero in floating point, so a computed south pole is
+//! off the unit sphere in the last bits *and different for different phi*, which
+//! is how a duplicate-pole bug hides.
+//!
+//! Counts (closed surface, `V - E + F = 2`):
+//! \code
+//!   V = 2 + (nLat - 2) * nLon
+//!   F = 2 * nLon * (nLat - 2)        // nLon per pole fan + 2 per interior quad
+//!   E = V + F - 2 = 3 * nLon * (nLat - 2)
+//! \endcode
+//!
+//! Ordering: index 0 is the north pole, then ring `j = 1 .. nLat-2` each
+//! contributing `nLon` vertices in ascending `i`, then the south pole last.
+//! So `ring(j,i) == 1 + (j-1)*nLon + i` and the south pole is `V-1`.
+//! Deterministic and documented, so a consumer can address a vertex
+//! arithmetically.
+//!
+//! Winding: CCW seen from OUTSIDE, matching generateIcosphere().
+//!
+//! Quad diagonal: each interior quad `(i,j)-(i+1,j)-(i+1,j+1)-(i,j+1)` is split
+//! along the `(i,j+1)-(i+1,j)` diagonal, the same way around the whole sphere.
+//! Fixed, not adaptive -- a caller wanting a different triangulation flips edges.
+//!
+//! **Reproducibility caveat.** Unlike the icosphere, whose positions come from a
+//! rational base table plus `sqrt`, these positions come from `sin`/`cos` at
+//! computed angles, which may differ in the last bit across libm
+//! implementations and platforms. They are *not* guaranteed bit-reproducible
+//! across machines, so a consumer comparing against a gold file generated
+//! elsewhere must compare with a tolerance. Within one run they are of course
+//! identical on every rank, which is what the replicated coarse build needs.
+template <class Scalar>
+TriangleSoup<Scalar> generateLatLonSphere( int nLat, int nLon )
+{
+    if ( nLat < 3 )
+        throw std::invalid_argument(
+            "Tessera::generateLatLonSphere: nLat (latitude rings INCLUDING "
+            "both poles) must be >= 3, got " +
+            std::to_string( nLat ) );
+    if ( nLon < 3 )
+        throw std::invalid_argument(
+            "Tessera::generateLatLonSphere: nLon (meridians) must be >= 3, "
+            "got " +
+            std::to_string( nLon ) );
+
+    // Angles and their sin/cos are computed in double regardless of Scalar and
+    // the products cast down, matching detail::normalize3().
+    const double pi = 3.14159265358979323846;
+    const int nRing = nLat - 2; // interior rings, excluding both poles
+
+    TriangleSoup<Scalar> soup;
+    soup.positions.reserve( 3 * static_cast<std::size_t>( 2 + nRing * nLon ) );
+
+    auto push = [&soup]( double x, double y, double z )
+    {
+        soup.positions.push_back( static_cast<Scalar>( x ) );
+        soup.positions.push_back( static_cast<Scalar>( y ) );
+        soup.positions.push_back( static_cast<Scalar>( z ) );
+    };
+
+    // -- vertices: north pole (exact), interior rings, south pole (exact) -----
+    push( 0.0, 0.0, 1.0 );
+    for ( int j = 1; j <= nRing; ++j )
+    {
+        const double theta =
+            pi * static_cast<double>( j ) / static_cast<double>( nLat - 1 );
+        const double st = std::sin( theta );
+        const double ct = std::cos( theta );
+        for ( int i = 0; i < nLon; ++i )
+        {
+            const double phi = 2.0 * pi * static_cast<double>( i ) /
+                               static_cast<double>( nLon );
+            push( st * std::cos( phi ), st * std::sin( phi ), ct );
+        }
+    }
+    push( 0.0, 0.0, -1.0 );
+
+    const int north = 0;
+    const int south = 1 + nRing * nLon;
+    // Ring j in [1, nRing], meridian i in [0, nLon) -- i is NOT wrapped here,
+    // callers wrap it, so a bad index is a bug rather than a silent alias.
+    auto ring = [nLon]( int j, int i ) { return 1 + ( j - 1 ) * nLon + i; };
+
+    soup.triangles.reserve( 3 * static_cast<std::size_t>( 2 * nLon * nRing ) );
+    auto tri = [&soup]( int a, int b, int c )
+    {
+        soup.triangles.push_back( a );
+        soup.triangles.push_back( b );
+        soup.triangles.push_back( c );
+    };
+
+    // -- north pole fan ------------------------------------------------------
+    for ( int i = 0; i < nLon; ++i )
+        tri( north, ring( 1, i ), ring( 1, ( i + 1 ) % nLon ) );
+
+    // -- interior quads, each cut along the (i,j+1)-(i+1,j) diagonal ---------
+    // A = (i,j)  B = (i+1,j)  C = (i+1,j+1)  D = (i,j+1)
+    // children (A,D,B) and (D,C,B); both CCW seen from outside.
+    for ( int j = 1; j <= nRing - 1; ++j )
+        for ( int i = 0; i < nLon; ++i )
+        {
+            const int ip = ( i + 1 ) % nLon;
+            const int A = ring( j, i );
+            const int B = ring( j, ip );
+            const int C = ring( j + 1, ip );
+            const int D = ring( j + 1, i );
+            tri( A, D, B );
+            tri( D, C, B );
+        }
+
+    // -- south pole fan (reversed i order, so the winding is again outward) --
+    for ( int i = 0; i < nLon; ++i )
+        tri( south, ring( nRing, ( i + 1 ) % nLon ), ring( nRing, i ) );
+
     return soup;
 }
 

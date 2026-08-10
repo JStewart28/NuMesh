@@ -1,6 +1,6 @@
 # Lat/lon sphere generator
 
-**Status:** NOT STARTED. Smallest and most self-contained of the eleven gap tasks
+**Status:** DONE. Smallest and most self-contained of the eleven gap tasks
 alongside [global-reductions.md](global-reductions.md); a good first one.
 
 **Verified against `08dd346`** (branch `conforming-refinement`) — the code this task
@@ -189,3 +189,73 @@ in [halo-depth.md](halo-depth.md).
 
 - 2026-08-07 — Task written, then re-checked against `08dd346` after pulling
   `../tessera`. Nothing implemented.
+- 2026-08-10 — **Implemented and green.** `generateLatLonSphere()` added to
+  `src/Tessera_Icosphere.hpp` (beside `TriangleSoup`, as the task preferred) and
+  `buildLatLonSphere()` to `src/Tessera_MeshBuilder.hpp` beside
+  `buildIcosphere()`; one new level-1 profiling region,
+  `build_latlon_sphere`. Purely additive — no existing code path was touched.
+  New `tests/test_latlon_sphere.cpp` at TIER `regression`, SERIAL + HIP, ranks
+  1–5: **10/10 green on the first run.** All eleven checks implemented; every
+  printed figure is byte-identical at np1 and np5 on both backends and both
+  execution spaces.
+
+  **Check 8 — the anisotropy, measured at `(33,64)`:**
+  max/min triangle area **10.2145** (`4.714122e-04` → `4.815259e-03`), max/min
+  edge length **14.4108** (`9.618946e-03` → `1.386172e-01`). The assertion is
+  `areaRatio > 10`, which this clears — but only by 2%, so the bound is tight
+  rather than generous. That is a property of the parameter pair the task chose,
+  not of the check: at `(33,64)` `dθ = dφ = π/32`, so the mesh is nearly square
+  at the equator and all the anisotropy comes from the polar shrinkage.
+
+  **Check 5 — the volume tolerance in the task text was wrong.** The measured
+  enclosed volumes are `V(9,12) = 3.847759065` and `V(33,64) = 4.171995762`
+  against `4π/3 = 4.188790205`, i.e. deficits of **8.1415%** and **0.4009%**.
+  The task asked for `(9,12)` "within 5%", which is arithmetically unreachable —
+  a UV polyhedron inscribed at that resolution cannot do better than its own
+  vertices. The `(33,64)` figure does meet its 0.5%. Rather than drop the check
+  or restate a number that happens to pass, the test asserts something stronger
+  than either percentage: the summed signed tetrahedron volume telescopes in
+  closed form to
+
+      V = (nLon·sin(2π/nLon)/6) · 2 sin(dθ) · Σ_{j=1..nLat-2} sin(θ_j),  dθ = π/(nLat-1)
+
+  (because `z_j·r_{j+1} − z_{j+1}·r_j ≡ sin dθ` and `r_1 = r_{nLat−2} = sin dθ`),
+  and the measured volume is required to match that to `1e-12` relative **for
+  every parameter pair**, plus `0 < V < 4π/3` and a converging deficit. The
+  closed form pins the winding, the quad diagonal and both pole fans at once,
+  where a percentage bound pins none of them. Sanity check on the formula:
+  `(3,4)` is the regular octahedron and it gives exactly `4/3`.
+
+  **Check 11 — the prediction was inverted, and the reason is geometric.** The
+  task expected `markByQuality` to mark "the polar bands and not the equatorial
+  ones" at `(33,8)`. It marks the equator, and it is right to. At `(33,8)` the
+  meridional chord is `2 sin(dθ/2) = 0.0981` and latitude-independent, while the
+  in-ring chord is `2 sin θ_j sin(π/8) = 0.7654 sin θ_j` — so the *equatorial*
+  triangles are the long, 7.8:1-stretched ones and the *polar* ones are small and
+  nearly isotropic. `EdgeLengthCriterion` marks long edges; therefore it marks
+  the equator, exactly per its documented contract. Measured at `maxLen = 0.4`:
+  352 of 496 faces marked; of the 128 faces entirely inside the polar caps
+  (`|z| ≥ cos 28.125°`) **0** marked, of the 192 entirely inside the equatorial
+  band (`|z| ≤ cos 56.25°`) **all 192** marked. `CurvatureCriterion` selects the
+  same way round: at `40°` it marks 160 faces, all equatorial and none polar; at
+  `20°` it marks 384, of which only 16 — the two pole fans themselves, 8 faces
+  each — are polar. So the check was not weakened to green it: it asserts the
+  *correct* direction, against closed-form latitude cut points computed in the
+  test, with both bands asserted non-vacuous and the marked set asserted to be a
+  strict non-trivial subset (so neither an all-marked nor an empty mask could
+  pass). The behaviour is recorded in README *Known Issues* and in
+  `docs/design.md` → *Quality-based refinement marking* as the task's exit
+  criterion requires, since "polar" and "badly shaped" being different sets is a
+  real trap for a consumer driving AMR off a lat/lon mesh.
+
+  **Check 10** additionally verifies ghost positions against their *owners*
+  through a gid coordinator (`gid % size`) rather than by re-reading the halo's
+  own bookkeeping, after each of `distribute`, `refine`, `migrate`,
+  `loadBalance` and `readMesh`.
+
+  Documented in README (*Mesh generators*, with the parameter meanings, the
+  closed-form counts, the vertex ordering, the winding, the fixed quad diagonal
+  and the libm reproducibility caveat) and in `docs/design.md` (new *Mesh
+  generation* section). The distributed lat/lon generator remains a noted
+  follow-on to [distributed-coarse-build.md](distributed-coarse-build.md), not
+  built here.

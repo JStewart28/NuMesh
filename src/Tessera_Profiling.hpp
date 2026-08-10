@@ -65,6 +65,7 @@ namespace Profiling
 
 // Level 1 — top-level phases.
 static constexpr const char* TIMER_BUILD_ICOSPHERE = "build_icosphere";
+static constexpr const char* TIMER_BUILD_LATLON = "build_latlon_sphere";
 static constexpr const char* TIMER_PARTITION = "partition";
 static constexpr const char* TIMER_DISTRIBUTE = "distribute";
 static constexpr const char* TIMER_HALO_EXCHANGE = "halo_exchange";

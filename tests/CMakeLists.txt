@@ -762,3 +762,37 @@ tessera_add_test(
     RANKS    ${TESSERA_TEST_MPI_RANKS}
     SOURCES  test_split_edges.cpp
 )
+
+# Lat/lon (UV) sphere generator (tasks/latlon-sphere.md). generateIcosphere()
+# was Tessera's only generator, and an icosphere is TOO GOOD a test surface:
+# nearly isotropic, nearly equilateral, almost every vertex of valence 6. A
+# lat/lon sphere is anisotropic by construction and its two poles have valence
+# nLon, so it reaches code paths the icosphere never does. Half the test is the
+# generator -- the closed-form V/E/F and Euler at five (nLat,nLon) pairs
+# including the nLat==3 bipyramid and a prime nLon, plus the four classic
+# UV-sphere bugs one check each: manifoldness (the seam-duplicate detector),
+# no-duplicate-vertices (the duplicate-pole detector), bitwise-exact poles, and
+# outward winding backed by the enclosed volume matched to a CLOSED-FORM
+# polyhedron volume rather than a percentage bound. The other half is the rest
+# of the library on that input: uniform refine(), migrate(), loadBalance(),
+# haloExchange() with ghost positions verified against their owners through a
+# gid coordinator, an HDF5 round trip, and markByQuality() on a deliberately
+# 7.8:1-stretched (33,8) surface where the marked band is asserted against the
+# closed-form latitude cut points.
+#
+# TIER regression, ranks 1-5, both backends: gate promotion is pre-authorized
+# for this task by tasks/latlon-sphere.md.
+tessera_add_test(
+    NAME     latlon_sphere
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_latlon_sphere.cpp
+)
+tessera_add_test(
+    NAME     latlon_sphere
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_latlon_sphere.cpp
+)

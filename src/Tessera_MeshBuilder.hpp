@@ -254,6 +254,21 @@ void buildIcosphere( MeshT& mesh, int subdivisions )
     buildFromTriangleSoup( mesh, soup );
 }
 
+//! Convenience: generate a lat/lon (UV) sphere and build full connectivity into
+//! `mesh`, mirroring buildIcosphere(). `nLat` counts latitude rings INCLUDING
+//! both poles (>= 3), `nLon` counts meridians (>= 3); see
+//! generateLatLonSphere() for the vertex ordering, the closed-form counts, the
+//! winding, the fixed quad diagonal, and the libm reproducibility caveat.
+//! Throws std::invalid_argument on a degenerate argument.
+template <class MeshT>
+void buildLatLonSphere( MeshT& mesh, int nLat, int nLon )
+{
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_BUILD_LATLON );
+    static_assert( MeshT::dim == 3, "buildLatLonSphere requires Dim == 3" );
+    auto soup = generateLatLonSphere<typename MeshT::scalar_type>( nLat, nLon );
+    buildFromTriangleSoup( mesh, soup );
+}
+
 } // namespace Tessera
 
 #endif // TESSERA_MESH_BUILDER_HPP

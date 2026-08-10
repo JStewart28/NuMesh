@@ -101,6 +101,73 @@ haloExchange( mesh, halo );                         // re-sync the field pack (r
 writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
 ```
 
+### Mesh generators
+
+Tessera ships two closed-surface generators. Both produce a **triangle soup** —
+a flat `positions` array plus a flat per-face `triangles` index array — which
+`buildFromTriangleSoup()` turns into a fully-connected replicated mesh. The
+`build*` wrappers do both steps. A caller is free to supply its own soup
+instead; the soup interface exists precisely for that.
+
+```cpp
+TriangleSoup<double> s1 = generateIcosphere<double>( /*subdivisions=*/3 );
+TriangleSoup<double> s2 = generateLatLonSphere<double>( /*nLat=*/33, /*nLon=*/64 );
+buildFromTriangleSoup( mesh, s2 );          // or, in one step:
+buildLatLonSphere( mesh, /*nLat=*/33, /*nLon=*/64 );
+buildIcosphere( mesh, /*subdivisions=*/3 );
+```
+
+| Generator | Counts | Character |
+|---|---|---|
+| `generateIcosphere(n)` / `buildIcosphere` | `V=12, E=30, F=20` at `n=0`; each level `V'=V+E, E'=2E+3F, F'=4F` | Nearly isotropic, nearly equilateral, almost every vertex valence 6 |
+| `generateLatLonSphere(nLat,nLon)` / `buildLatLonSphere` | `V = 2 + (nLat−2)·nLon`, `F = 2·nLon·(nLat−2)`, `E = 3·nLon·(nLat−2)` | **Anisotropic** by construction; the two poles have valence `nLon` |
+
+**Why both.** An icosphere is *too good* a test surface. A lat/lon sphere
+stretches its triangles toward the poles and puts two valence-`nLon` outliers on
+the surface, so it exercises what an icosphere never reaches: quality-based
+marking, the cotangent weight at a high-valence vertex, stencil rows of very
+different lengths, and the poles as valence outliers. At `(33,64)` the measured
+max/min triangle-area ratio is **10.21** and the max/min edge-length ratio
+**14.41** (against ~1 for an icosphere).
+
+`generateLatLonSphere` parameters and guarantees:
+
+- **`nLat`** is the number of latitude rings **including both poles**, `nLat >= 3`;
+  **`nLon`** is the number of meridians, `nLon >= 3`. Anything smaller throws
+  `std::invalid_argument`. `nLat == 3` is the degenerate-but-legal bipyramid:
+  two pole fans, no interior quads, `2·nLon` faces.
+- **Vertex ordering** is deterministic and documented, so a consumer can address
+  a vertex arithmetically: index `0` is the north pole, then ring
+  `j = 1 .. nLat−2` each contributing `nLon` vertices in ascending `i` — so
+  `ring(j,i) == 1 + (j−1)·nLon + i` — then the south pole last, at `V−1`.
+  Positions are
+  `(sin θ·cos φ, sin θ·sin φ, cos θ)` with `θ_j = πj/(nLat−1)` and
+  `φ_i = 2πi/nLon` for `i = 0 .. nLon−1` — **no seam duplicate**; `i` wraps.
+- **The poles are exact**, written literally as `(0,0,+1)` and `(0,0,−1)`.
+  `sin(π)` is not zero in floating point, so a south pole evaluated from the
+  formula is off the unit sphere in its last bits *and different for different
+  `φ`* — which is how a duplicate-pole bug hides.
+- **Winding** is CCW seen from outside, matching `generateIcosphere()`.
+- **The quad diagonal is fixed:** each interior quad
+  `(i,j)-(i+1,j)-(i+1,j+1)-(i,j+1)` is split along the `(i,j+1)-(i+1,j)`
+  diagonal, the same way around the whole sphere. Not adaptive — a caller
+  wanting a different triangulation flips edges. This convention is what fixes
+  the valence histogram: `2` poles at `nLon`, `2·nLon` vertices at valence 5
+  (rings `1` and `nLat−2`), `(nLat−4)·nLon` at valence 6, and for `nLat == 3` a
+  single ring of `nLon` valence-4 vertices.
+- **Reproducibility caveat.** Unlike the icosphere, whose positions come from a
+  rational base table plus `sqrt`, these come from `sin`/`cos` at computed
+  angles, which may differ in the last bit across libm implementations and
+  platforms. Positions are **not** guaranteed bit-reproducible across machines,
+  so compare against a gold file generated elsewhere with a tolerance. Within
+  one run they are identical on every rank, which is what the replicated coarse
+  build needs.
+
+A **distributed** lat/lon generator is a natural follow-on once
+`buildFromTriangleSoupDistributed` exists (the canonical key is just
+`{j·nLon + i, invalid_gid}`); it is deliberately not built here. Other
+generators (torus, plane, cylinder, cube-sphere) on demand.
+
 ### Editing families
 
 Tessera has **two disjoint families of topological edit, and a mesh belongs to
@@ -400,11 +467,36 @@ make -j $(nproc)
 
 ## Known Issues
 
+- **`markByQuality` on an anisotropic surface marks the *equator* of a lat/lon
+  sphere, not the poles.** *(Not a defect — recorded here because the naive
+  expectation is inverted, and the inversion is easy to mistake for a bug.)*
+  Intuition says the pole region of a UV sphere is the "bad" one, because that is
+  where the triangles degenerate as `nLon` grows. It depends entirely on which
+  way the mesh is anisotropic. At `(nLat=33, nLon=8)` the meridional step is
+  `dθ = π/32` (chord `0.0981`, latitude-independent) while the in-ring step is
+  `dφ = 45°`, giving a ring-edge chord of `0.7654·sin θ`. So the ring edges — and
+  with them the triangle areas — are **longest at the equator** and shrink to
+  nothing at the poles: the polar triangles are the small, nearly *isotropic*
+  ones and the equatorial ones carry the 7.8:1 stretch. `EdgeLengthCriterion`
+  marks long edges, so it marks the equator, exactly per its documented contract.
+  Measured at `(33,8)` with `maxLen = 0.4`, identical at ranks 1–5 on both
+  backends: 352 of 496 faces marked; of the 128 faces entirely inside the polar
+  caps (`|z| ≥ cos 28.125°`) **none** are marked, and of the 192 entirely inside
+  the equatorial band (`|z| ≤ cos 56.25°`) **all** are.
+  `CurvatureCriterion` behaves the same way round: at `maxAngle = 40°` it marks
+  160 faces, all in the equatorial band and none in the polar caps; at `20°` it
+  marks 384, of which only 16 (the two pole fans themselves, 8 faces each) are
+  polar. The lesson for a consumer driving AMR from a lat/lon mesh is that
+  "polar" and "badly shaped" are not the same set, and which one a criterion
+  selects is decided by the `dθ`/`dφ` ratio. Pinned by
+  `tests/test_latlon_sphere.cpp` against closed-form latitude cut points rather
+  than measured output.
 - **Conforming refinement is the `Mesh` default.** *(Not a defect — recorded here
   because it changes what a default-spelled `Mesh` does.)* The whole
   `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
   `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented,
-  registered across the suite, and **verified**: the ship gate is 180/180 and the
+  registered across the suite, and **verified**: the ship gate is 190/190 (180/180
+  when this was written; the ten `latlon_sphere` entries came later) and the
   diagnostic tier 62/62 on SERIAL and HIP at **ranks 1–5**, over multiple successive
   adaptive rounds, and the shape-quality bounds are measured rather than assumed (the
   worst radius ratio saturates by round 11 and is flat through round 16 while the mesh

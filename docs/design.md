@@ -33,6 +33,63 @@ boundaries for free. (Topology surgery — pinch-off, edge collapse/flip — is
 milestone 2+ and out of scope here, but the data model leaves room for it, including
 an optional per-entity `component_id`.)
 
+## Mesh generation
+
+Generation is neither haloing nor partitioning, and it is not required at all:
+the primitive interface is `buildFromTriangleSoup()`, which takes a flat array of
+vertex positions plus a flat array of per-face vertex indices and derives edges,
+both-direction connectivity, the CSR 1-ring and the key side tables. A consumer
+with its own geometry hands that in and never touches a generator.
+
+Two generators ship anyway, because the *canonical test surfaces* are worth
+single-sourcing:
+
+- **`generateIcosphere(subdivisions)`** — recursive 1→4 subdivision of an
+  icosahedron with every vertex projected onto the unit sphere and shared edge
+  midpoints deduplicated.
+- **`generateLatLonSphere(nLat, nLon)`** — a UV sphere: `nLat` latitude rings
+  including both poles, `nLon` meridians, closed forms
+  `V = 2 + (nLat−2)·nLon`, `F = 2·nLon·(nLat−2)`, `E = 3·nLon·(nLat−2)`.
+
+Both are host-side, serial, and deterministic, so every rank builds a
+bit-identical replicated coarse mesh with no communication — which is what
+`distribute()` assumes of its input.
+
+**Why the second one exists.** An icosphere is *too good* a test surface. It is
+nearly isotropic, its triangles are nearly equilateral, and its vertex valences
+are almost uniformly 6, so a whole class of code path is never reached by any
+test built on it. A lat/lon sphere is anisotropic *by construction* — the rings
+shrink toward the poles, so the triangles stretch — and the two pole vertices
+have valence `nLon`. That buys coverage of: quality-based marking on input where
+"large triangle" and "badly shaped triangle" are different sets; the cotangent
+weight at a high-valence vertex; stencil CSR rows of very different lengths; and
+the poles as valence outliers for anything that implicitly assumes valence ≈ 6.
+At `(33,64)` the max/min triangle-area ratio is 10.21 and the max/min edge-length
+ratio 14.41.
+
+A UV sphere also has four easy-to-get-wrong details, each of which every consumer
+that writes one writes as a bug, which is the other half of why it belongs in the
+library rather than in each caller: `nLon+1` meridians instead of `nLon` (a
+coincident seam ring, a non-manifold mesh, and an edge map that silently
+disagrees with itself); `nLon` coincident copies of each pole instead of one
+vertex; the pole computed from `sin θ·cos φ` rather than written as `(0,0,±1)`
+(`sin π` is not zero in floating point, so the computed south pole is off the
+sphere in its last bits *and* `φ`-dependent); and an inconsistent winding across
+the pole fans and the interior quads. The generator's contract — vertex ordering,
+CCW-from-outside winding, and the *fixed* `(i,j+1)-(i+1,j)` quad diagonal — is
+documented in the header and in the README rather than left implicit, because a
+consumer addressing a ring vertex arithmetically depends on all three. The one
+property the icosphere has and this does not is near-bit-reproducibility across
+platforms: positions come from `sin`/`cos` at computed angles rather than a
+rational table plus `sqrt`, so they may differ in the last bit between libm
+implementations.
+
+Not built here: a *distributed* lat/lon generator. Once
+`buildFromTriangleSoupDistributed` takes patches plus canonical keys, a
+distributed lat/lon generator is a natural follow-on — the canonical key is just
+`{j·nLon + i, invalid_gid}` — but nothing needs it yet. Nor are the other
+obvious surfaces (torus, plane, cylinder, cube-sphere); they go in on demand.
+
 ## Templated precision and embedding dimension
 
 The mesh is templated on its **scalar type** and its **coordinate embedding
@@ -699,6 +756,24 @@ plus the local device normal kernel; no new stored state and no change to
 A face flagged by more than one criterion is refined once; combining criteria (e.g.
 edge-length OR curvature) is a caller-side element-wise OR of their masks — no
 combinator is shipped.
+
+**Both criteria are absolute-threshold, not shape-based, and on an anisotropic
+surface that distinction is visible.** `EdgeLengthCriterion` asks "is any edge
+longer than `maxLen`", not "is this triangle badly shaped", and the two questions
+have different answers whenever the mesh is anisotropic. The lat/lon sphere is
+the surface that makes this concrete and is the reason it was added (see *Mesh
+generation*): at `(nLat=33, nLon=8)` the meridional chord is latitude-independent
+at `0.0981` while the in-ring chord is `0.7654·sin θ`, so the *equatorial*
+triangles are the long, 7.8:1-stretched ones and the *polar* ones are small and
+nearly isotropic. The criterion accordingly marks the equatorial band and none of
+the polar caps — the opposite of the intuition that "the poles of a UV sphere are
+where the mesh is bad" — and `CurvatureCriterion` selects the same way round at a
+threshold that discriminates at all. Neither is a defect; a consumer driving AMR
+from an anisotropic mesh has to pick the criterion for the anisotropy it actually
+has. Measured figures and the closed-form band cut points are in the README's
+*Known Issues* and pinned by `tests/test_latlon_sphere.cpp`. A genuinely
+shape-based criterion (aspect ratio, radius ratio, minimum angle) is a natural
+third criterion and is not shipped.
 
 **Note for anyone computing mesh geometry right after `refine()`:** this used to be
 a gotcha and is no longer one. `refine()` finishes with `rebuildHalo()`, whose round
