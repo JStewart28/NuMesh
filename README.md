@@ -53,7 +53,12 @@ using MeshT = Mesh<double, /*Dim=*/3, VertexFields<>, EdgeFields<>, FaceFields<>
 
 MeshT mesh( MPI_COMM_WORLD );
 buildIcosphere( mesh, /*subdivisions=*/3 );        // initial coarse closed surface,
-                                                     // replicated on every rank
+                                                     // replicated on every rank. For a
+                                                     // LARGE initial mesh, see
+                                                     // "Distributed initial construction"
+                                                     // below -- buildIcosphereDistributed()
+                                                     // replaces these next three calls and
+                                                     // never replicates anything
 
 auto faceOwner = facePartitionByAxis( mesh, /*axis=*/2 );  // deterministic geometric
                                                              // partition of the faces
@@ -269,10 +274,87 @@ max/min triangle-area ratio is **10.21** and the max/min edge-length ratio
   one run they are identical on every rank, which is what the replicated coarse
   build needs.
 
-A **distributed** lat/lon generator is a natural follow-on once
+A **distributed** lat/lon generator is a natural follow-on now that
 `buildFromTriangleSoupDistributed` exists (the canonical key is just
-`{j·nLon + i, invalid_gid}`); it is deliberately not built here. Other
+`makeVertexKey( j·nLon + i )`); it is deliberately not built here. Other
 generators (torus, plane, cylinder, cube-sphere) on demand.
+
+### Distributed initial construction
+
+Everything above builds the initial mesh **in full on every rank** and then cuts
+it: `buildFromTriangleSoup()` is serial and takes a *replicated* soup, and
+`distribute()` can compute ownership locally only *because* the mesh is
+replicated. Peak memory per rank is therefore proportional to the **global** mesh
+size, paid on every rank at once. That is fine for a small coarse sphere and is a
+hard ceiling when the initial mesh's resolution should be comparable to the
+running refined mesh. Two entry points remove the replication requirement
+(`Tessera_DistributedBuilder.hpp`); **no rank ever holds the global mesh**, and
+`distribute()` is not on this path at all.
+
+```cpp
+#include <Tessera.hpp>   // Tessera_DistributedBuilder.hpp
+
+MeshT mesh( MPI_COMM_WORLD );
+MeshHalo<MemSpace> halo;
+
+// (B) the icosphere, generated and built in parallel -- a drop-in replacement for
+//     buildIcosphere() + facePartitionByAxis() + distribute():
+buildIcosphereDistributed( mesh, halo, /*subdivisions=*/5, /*haloDepth=*/1 );
+haloExchange( mesh, halo );          // halo plans are valid on return
+
+// (A) the general capability: THIS RANK'S OWN patch, plus a canonical key per
+//     local vertex. Patches must COVER the surface; OVERLAP is fine.
+TriangleSoup<double> myPatch = my_generator( mesh.rank(), mesh.commSize() );
+std::vector<VertexKey> keys = my_keys( myPatch );          // one per local vertex
+buildFromTriangleSoupDistributed( mesh, halo, myPatch, keys, /*haloDepth=*/1 );
+```
+
+**The canonical-key contract is the whole interface, and it is three properties.**
+`VertexKey` is the same shape as `EdgeKey` — a sorted pair of `GlobalId`, 128 bits,
+structured rather than hashed:
+
+```cpp
+VertexKey base = makeVertexKey( i );        // == { i, invalid_gid }
+VertexKey mid  = makeVertexKey( a, b );     // == { min(a,b), max(a,b) }
+```
+
+1. **Rank-independent.** Two ranks meaning the same vertex compute the same key
+   with no communication. Deduplicating a shared vertex is the one thing that
+   genuinely needs global agreement, and a position-based dedup would need a
+   tolerance and would not be reproducible — so the *caller* supplies the key,
+   because a generator always knows *why* two patches share a vertex.
+2. **Equal iff the same vertex.** Patches must **cover** the surface with no gaps;
+   **overlap is allowed** and is resolved by the key dedup, so a caller may
+   generate a patch plus a boundary ring. A duplicated *triangle* is likewise kept
+   by the lowest rank claiming its `FaceKey` and dropped by the others, so seams
+   need no coordination.
+3. **Collisions throw.** Two vertices given the same key at *different* positions
+   are a caller bug, not a weld: the key coordinator compares every claimant's
+   position **bitwise** and every rank throws a `std::runtime_error` naming the
+   key. Welding them would produce a mesh that passes every structural invariant
+   and is geometrically wrong.
+
+Postconditions are exactly `buildIcosphere` + `distribute`'s, so every downstream
+operation is indifferent to which builder ran: globally unique agreed gids,
+ownership partitioning each entity kind, the canonical owned-first-then-ghost
+layout, and valid halo plans (`haloDepth` is forwarded to `rebuildHalo()`, and
+`refine()`/`migrate()` preserve it). Gid **numbering** differs — a different
+partition numbers differently — while the gid-independent identity, the vertex
+position multiset and the face corner-position multiset, is **bitwise identical**
+to the replicated path at every rank count.
+
+`buildIcosphereDistributed` partitions **by the subdivision tree, not by an axis
+sort**: `facePartitionByAxis()` needs every centroid, hence the global mesh, which
+is the thing being avoided. See `docs/design.md` → *Distributed initial
+construction*.
+
+**`buildIcosphere` + `distribute` remains fully supported, and is the right
+choice for a small initial mesh.** It is simpler, needs no keys, and is what every
+pre-existing test uses; the replication only becomes a problem when the coarse
+mesh is large. Not provided: a distributed reader for an arbitrary mesh file
+(`readMesh` is separate), and load balancing of the initial partition — the
+subdivision-tree partition is a locality-preserving starting point and
+`loadBalance()` refines it.
 
 ### Editing families
 
@@ -345,8 +427,8 @@ every region at levels ≤ *n*):
 
 | Level | Adds | Example regions |
 |---|---|---|
-| 1 | Top-level phases | `build_icosphere`, `partition`, `distribute`, `halo_exchange`, `refine`, `migrate`, `load_balance`, `write_mesh`, `read_mesh`, `mark_*` |
-| 2 | Major sub-phases | `refine_2to1_balance`, `refine_local_rebuild`, `migrate_round_*`, `halo_round_*`, `distribute_csr_rebuild`, `write_datasets`, `lb_zoltan2_solve` |
+| 1 | Top-level phases | `build_icosphere`, `build_icosphere_distributed`, `build_soup_distributed`, `partition`, `distribute`, `halo_exchange`, `refine`, `migrate`, `load_balance`, `write_mesh`, `read_mesh`, `mark_*` |
+| 2 | Major sub-phases | `refine_2to1_balance`, `refine_local_rebuild`, `migrate_round_*`, `halo_round_*`, `distribute_csr_rebuild`, `dbuild_*`, `write_datasets`, `lb_zoltan2_solve` |
 | 3 | Comm rounds / device kernels | `refine_advertise_alltoallv`, `mark_edge_length_kernel`, `write_hyperslabs`, `read_hyperslabs` |
 
 **Reporting is caller-driven — Tessera has no timestep loop.** The library owns the
@@ -706,9 +788,10 @@ make -j $(nproc)
   because it changes what a default-spelled `Mesh` does.)* The whole
   `RefinementMode::Conforming` path — closure kernel, distributed `refine()`,
   `migrate()`/`loadBalance()`, HDF5 round-trip, `markByQuality` — is implemented,
-  registered across the suite, and **verified**: the ship gate is 220/220 (180/180
+  registered across the suite, and **verified**: the ship gate is 230/230 (180/180
   when this was written; the ten `latlon_sphere`, ten `halo_scatter_add`, ten
-  `face_adjacency` and ten `loadbalance_distributed` entries came later) and the
+  `face_adjacency`, ten `loadbalance_distributed` and ten `distributed_build`
+  entries came later) and the
   diagnostic tier 62/62 on SERIAL and HIP at **ranks 1–5**, over multiple successive
   adaptive rounds, and the shape-quality bounds are measured rather than assumed (the
   worst radius ratio saturates by round 11 and is flat through round 16 while the mesh

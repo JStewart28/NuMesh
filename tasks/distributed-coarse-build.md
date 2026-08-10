@@ -1,6 +1,6 @@
 # Distributed initial mesh construction
 
-**Status:** NOT STARTED.
+**Status:** DONE (2026-08-10). See *Progress log*.
 
 **Verified against `08dd346`** (branch `conforming-refinement`) — the code this task
 cites was re-read at that commit.
@@ -233,3 +233,72 @@ check 5. Nothing depends on this task. See the ordering diagram in
 
 - 2026-08-07 — Task written, then re-checked against `08dd346` after pulling
   `../tessera`. Nothing implemented.
+- 2026-08-10 — **Implemented and green.** `src/Tessera_DistributedBuilder.hpp`
+  (`VertexKey`, `makeVertexKey`, `buildFromTriangleSoupDistributed`,
+  `buildIcosphereDistributed`), registered in `Tessera.hpp`; five new profiling
+  keys; `tests/test_distributed_build.cpp` at TIER `regression`, SERIAL and HIP,
+  ranks 1–5 (pre-authorized promotion). **10/10 green on the first run**, and the
+  full gate re-run clean afterwards with nothing relabelled.
+
+  All eleven checks pass at every rank count on both backends and on both
+  execution spaces, non-vacuously:
+
+  * **Check 2/4 — the definitive one — passes bitwise at subdivisions 1, 2 and 3.**
+    The vertex position multiset checksum is byte-identical to the replicated
+    reference's and to itself at np1–np5: `fcbcbf9882b5278b` (subdiv 1),
+    `2d164c6173f3535b` (2), `8de0e93be5228d3b` (3); face corner-triple checksums
+    `0655797e641a38c7` / `d3a9c719aab373bf` / `b0a9373bb99472ff`, likewise
+    identical everywhere. The two builders are interchangeable.
+  * **Check 3 — the measurement that is the deliverable.** At subdivision 5,
+    global V = 10 242 and F = 20 480. Worst per-rank **local** counts:
+
+    | ranks | peak local V | peak local F | peak owned F |
+    |---|---|---|---|
+    | 1 | 10 242 | 20 480 | 20 480 |
+    | 2 | 5 591 | 10 870 | 10 240 |
+    | 3 | 4 097 | 7 616 | 6 827 |
+    | 4 | 3 110 | 5 750 | 5 120 |
+    | 5 | 2 465 | 4 603 | 4 096 |
+
+    So at five ranks the peak local vertex count is **2 465 against a global
+    10 242 — 24%**, the residual over `1/P` being the ghost ring, and no rank ever
+    holds the global mesh. np1 holds everything because there is nothing to
+    distribute, which is why the assertion is guarded at `size >= 2`.
+  * **Check 5** is non-vacuous at ranks ≥ 2 — 30 (depth 1) and 50 (depth 2) ghost
+    positions deliberately corrupted at np2 and restored by `haloExchange()` — and
+    the `haloDepth = 2` half confirms the builder feeds `rebuildHalo()` correctly
+    at depth > 1, with every owned vertex's 2-ring exact against the
+    global-adjacency reference.
+  * Checks 1, 6, 7, 8: counts/invariants, uniform `refine()` (162→642, 480→1920,
+    320→1280), identity `migrate()` + a real `loadBalance()`, HDF5 round trip.
+  * Check 9: the octahedron in two **overlapping** patches (V=6, E=12, F=8),
+    equal to the replicated build by the position-multiset criterion. Check 10:
+    the key collision throws naming the key at every rank count. Check 11: a
+    2-face patch supplied identically by every rank, so ranks 1..P−1 own zero
+    entities and the collectives still complete.
+
+  **Two deliberate deviations from the plan above**, both noted here rather than
+  silently:
+
+  1. **Face gids** come from an `MPI_Exscan` over the deduplicated owned counts as
+     specified, but face *ownership* is resolved by a `FaceKey` coordinator round
+     first (routing by a `faceKeyCoordRank` hash, lowest claimant wins). The plan
+     implied ownership fell out of `faceKeys` locally; it cannot, because two ranks
+     holding the same triangle have no way to agree who keeps it without one round.
+     That round costs the same two `allToAllV` calls a combined gid+owner reply
+     would, and keeping the exscan preserves per-rank contiguous face gids.
+  2. **Step 4 was not factored into a shared `detail` helper** with `migrate()`'s
+     round D, because it turned out not to be a third copy of it: this builder only
+     materializes the **owned** entities and hands everything else — the ghost
+     rings, the key Views, the CSRs, the plans, the canonical owned-first ordering
+     — to `rebuildHalo()`'s round D verbatim. The assembly that remains is
+     ~70 lines of "write the owned tuples", with no overlap worth extracting.
+
+  `haloDepth` is forwarded to `rebuildHalo()` in full (halo-depth.md has landed),
+  so the `haloDepth = 2` half of check 5 is live rather than deferred.
+  README gains a *Distributed initial construction* subsection documenting both
+  entry points, `VertexKey`, the three-property canonical-key contract, and the
+  statement that `buildIcosphere` + `distribute` remains supported and is the right
+  choice for a small initial mesh; `docs/design.md` gains the matching design
+  section with the subdivision-tree partition decision and why an axis sort cannot
+  be used here.

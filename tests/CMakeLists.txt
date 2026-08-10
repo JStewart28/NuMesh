@@ -851,6 +851,46 @@ tessera_add_test(
     SOURCES  test_halo_scatter_add.cpp
 )
 
+# Distributed initial mesh construction (tasks/distributed-coarse-build.md). The
+# initial mesh used to be built in FULL ON EVERY RANK before it was cut --
+# buildFromTriangleSoup() is serial and takes a REPLICATED soup, and distribute()
+# can compute ownership locally only *because* the mesh is replicated -- so peak
+# memory per rank scaled with the GLOBAL mesh size, on every rank at once.
+# buildFromTriangleSoupDistributed() takes per-rank local patches plus a canonical
+# key per local vertex; buildIcosphereDistributed() partitions by the SUBDIVISION
+# TREE (an axis sort would need every centroid, hence the global mesh).
+#
+# The definitive check is BITWISE EQUIVALENCE with the replicated path at
+# subdivisions 1-3 -- compared by the gid-independent identity (the vertex
+# position multiset and the face corner-position triple multiset), since gid
+# numbering legitimately differs between two partitions. Because the replicated
+# reference is partition-free, that same assertion holding at np1-5 IS rank-count
+# reproducibility. The other headline check is that NOBODY HOLDS THE GLOBAL MESH:
+# at subdivision 5 every rank's local counts are strictly below the global ones and
+# are printed, since that measurement is the deliverable. Plus counts/invariants,
+# halo correctness at depth 1 AND 2 against a global-adjacency k-ring reference,
+# refine()/migrate()/loadBalance()/HDF5 on the result, a hand-built octahedron in
+# two OVERLAPPING patches (which the icosphere's disjoint ranges never reach), a
+# canonical-key collision that must throw naming the key rather than silently
+# welding two vertices, and the degenerate case where a rank owns zero faces.
+#
+# TIER regression, ranks 1-5, both backends: gate promotion is pre-authorized
+# for this task by tasks/distributed-coarse-build.md.
+tessera_add_test(
+    NAME     distributed_build
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_distributed_build.cpp
+)
+tessera_add_test(
+    NAME     distributed_build
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_distributed_build.cpp
+)
+
 # Face->face adjacency through shared edges (tasks/face-adjacency.md). "Which
 # faces share an edge with this face" is not derivable locally: EdgeField::Faces
 # holds GIDS that migrate() carries verbatim and that may name faces this rank

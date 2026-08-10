@@ -66,6 +66,12 @@ namespace Profiling
 // Level 1 — top-level phases.
 static constexpr const char* TIMER_BUILD_ICOSPHERE = "build_icosphere";
 static constexpr const char* TIMER_BUILD_LATLON = "build_latlon_sphere";
+//! The distributed initial-construction path (Tessera_DistributedBuilder.hpp):
+//! no rank ever materializes the global mesh, so unlike build_icosphere these
+//! two are O(global/ranks) rather than O(global) per rank.
+static constexpr const char* TIMER_BUILD_SOUP_DIST = "build_soup_distributed";
+static constexpr const char* TIMER_BUILD_ICOSPHERE_DIST =
+    "build_icosphere_distributed";
 static constexpr const char* TIMER_PARTITION = "partition";
 static constexpr const char* TIMER_DISTRIBUTE = "distribute";
 static constexpr const char* TIMER_HALO_EXCHANGE = "halo_exchange";
@@ -103,6 +109,15 @@ static constexpr const char* TIMER_HALO_GATHER = "halo_round_g_gather";
 static constexpr const char* TIMER_HALO_OWNERSHIP = "halo_round_b_ownership";
 static constexpr const char* TIMER_HALO_GHOSTFETCH = "halo_round_c_ghostfetch";
 static constexpr const char* TIMER_HALO_ASSEMBLE = "halo_round_d_assemble";
+
+// Level 2 — distributed-builder sub-phases (Tessera_DistributedBuilder.hpp).
+// The vertex-key round is charged per call, so in buildIcosphereDistributed()
+// it accumulates the `subdivisions` per-level rounds plus the final dedup.
+static constexpr const char* TIMER_DBUILD_VKEYS = "dbuild_vertex_key_gids";
+static constexpr const char* TIMER_DBUILD_FACES = "dbuild_face_gids";
+static constexpr const char* TIMER_DBUILD_EDGES = "dbuild_edge_gids";
+static constexpr const char* TIMER_DBUILD_ASSEMBLE = "dbuild_assemble";
+static constexpr const char* TIMER_DBUILD_GENERATE = "dbuild_generate_subtrees";
 
 // Level 2 — distribute() sub-phases.
 static constexpr const char* TIMER_DISTRIBUTE_CSR = "distribute_csr_rebuild";

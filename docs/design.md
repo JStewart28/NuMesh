@@ -84,11 +84,161 @@ platforms: positions come from `sin`/`cos` at computed angles rather than a
 rational table plus `sqrt`, so they may differ in the last bit between libm
 implementations.
 
-Not built here: a *distributed* lat/lon generator. Once
-`buildFromTriangleSoupDistributed` takes patches plus canonical keys, a
+Not built here: a *distributed* lat/lon generator. Now that
+`buildFromTriangleSoupDistributed` takes patches plus canonical keys (below), a
 distributed lat/lon generator is a natural follow-on — the canonical key is just
-`{j·nLon + i, invalid_gid}` — but nothing needs it yet. Nor are the other
+`makeVertexKey( j·nLon + i )` — but nothing needs it yet. Nor are the other
 obvious surfaces (torus, plane, cylinder, cube-sphere); they go in on demand.
+
+## Distributed initial construction
+
+Everything above builds the initial mesh **in full on every rank before it is
+cut**, and that is a property of the interface rather than of the generators:
+`buildFromTriangleSoup()` is host-side, serial, and takes a *replicated*
+`TriangleSoup`, and `distribute()` computes ownership locally — which it can
+precisely *because* the mesh is replicated. So peak memory per rank is
+proportional to the **global** mesh size, paid on every rank simultaneously, and
+the edge derivation compounds it with a `std::map<EdgeKey,int>` over every edge of
+the global mesh.
+
+This is scalability, not correctness. At subdivision 2 — 162 vertices — it is
+irrelevant. It becomes a hard ceiling exactly when the initial mesh's resolution
+should be comparable to the running refined mesh, which is the normal case for a
+production run that does not want to spend its first hundred steps refining up
+from a coarse sphere. It also constrains the *shape* of any non-icosphere initial
+mesh: a caller supplying its own geometry (a lat/lon sphere, a scanned surface, a
+mesh from another code) had to materialize the whole thing everywhere first, which
+is the reason the driving consumer (the Beatnik z-model, which builds its own
+initial surfaces) could not build them in parallel.
+
+`Tessera_DistributedBuilder.hpp` adds two entry points that remove the
+replication requirement. `distribute()` is **not** on that path at all, and
+`buildFromTriangleSoup()` is unchanged and remains the right tool for a small
+initial mesh and for every pre-existing test.
+
+### The canonical key is the whole design
+
+Deduplicating a vertex two patches share is the one thing that genuinely needs
+global agreement, and the design decision is *who answers it*. A position-based
+dedup would need a tolerance and would not be reproducible; a hash of the position
+into 64 bits would silently weld distinct vertices, which is the same objection
+that made every other cross-rank identity in Tessera a **structured key rather
+than a hash** (see *Global IDs*). Requiring the **caller** to supply a
+rank-independent `VertexKey` pushes the question to where the answer is known for
+free: a generator always knows *why* two patches share a vertex.
+
+So `VertexKey` reuses `EdgeKey`'s shape exactly — a sorted pair of `GlobalId`, 128
+bits, order-invariant, collision-free by construction — and covers the two cases
+that matter: a base vertex `{i, invalid_gid}` and a midpoint
+`{min(a,b), max(a,b)}` over its two parents' already-agreed ids, recursively. A
+caller with a different scheme hashes into it at its own risk. `invalid_gid` is
+the largest `GlobalId`, so a base key always sorts second-slot-last and can never
+collide with a midpoint key.
+
+Three contract properties, and the third is *checked rather than documented*.
+Keys are rank-independent; keys are equal iff the two ranks mean the same vertex,
+which makes patch **overlap** legal (a caller may generate a patch plus a boundary
+ring, and a duplicated *triangle* is resolved the same way, by lowest rank
+claiming its `FaceKey`) while patch **gaps** are the caller's error; and a
+**collision throws**. The key coordinator compares every claimant's position
+bitwise and, if two differ, agrees the offending rank by `MPI_Allreduce(MAX)`,
+broadcasts the key, and every rank throws naming it — collectively, for the same
+reason `buildFaceAdjacency()`'s non-manifold failure is collective: a throw on the
+coordinator alone would deadlock everyone else in the reply exchange. Silently
+welding two distinct vertices would produce a mesh that passes *every* structural
+invariant — ownership is a partition, Euler is 2, the halo is consistent — and is
+geometrically wrong, which is precisely the failure mode worth a hard abort.
+
+### It is a reuse of existing machinery, and rebuildHalo() is why it works
+
+The build is five steps, four of which are patterns already in the tree:
+
+1. **Vertex dedup and gid assignment.** Each local vertex's key is routed to a
+   coordinator by key hash via `allToAllV`. The coordinator sees every rank
+   claiming that key, picks the owner by the lowest-rank rule, numbers its own
+   distinct keys densely from an `MPI_Exscan` over its key count, and replies
+   `(key → gid, owner)` to every claimant. This is `refine()` Phase 2's pattern
+   with midpoint keys replaced by vertex keys. The *un-deduplicated* local list is
+   advertised deliberately, so a **within-rank** key collision is caught too.
+2. **Face dedup**, one coordinator round on `FaceKey`, then face gids from an
+   `MPI_Exscan` over the surviving owned counts — so a rank's face gids are
+   **contiguous**, which keeps the locality of the partition below observable.
+3. **Edge derivation, locally.** Each rank derives the unique edges of *its own*
+   owned triangles with a local `std::map<EdgeKey,int>` — `O(local)` memory, which
+   is the entire point of the exercise. Edge gids and ownership then go through
+   `detail::edgeCoordRank` exactly as in `refine()`'s Phase 3e, so an edge shared
+   across a patch boundary gets one dense gid agreed by both sides.
+4. **Assemble** the owned entities into the AoSoAs.
+5. **Ghost layer, key tables, CSRs and halo plans** by calling
+   `rebuildHalo( mesh, halo, haloDepth )`.
+
+**Step 5 is the structural reason the whole thing is feasible now and was not
+before.** `rebuildHalo()`'s round B resolves ownership *by communication*, so this
+builder needs none of the replicated-mesh ownership shortcut `distribute()` relies
+on; and its round G recovers any vertex or edge an owned face references but this
+rank does not hold, so steps 1–4 only ever have to produce the **owned** entities
+and may leave the key Views and CSRs entirely to round D. Everything after step 4
+is the code path `refine()` and `migrate()` already exercise on every gate run.
+
+### Partition by the subdivision tree, not by an axis sort
+
+`facePartitionByAxis()` sorts every face centroid globally, which requires every
+centroid, which requires the global mesh — the exact thing being avoided. So
+`buildIcosphereDistributed()` cannot use it, and does not need to.
+
+The icosphere is generated by a deterministic 1→4 recursion, so face index space
+at depth `s` is a perfect 20-ary-then-4-ary tree: the children of face `p` are
+`4p .. 4p+3`, and face `f` at depth `s` descends from base face `f / 4^s`. Rank
+`r` takes the contiguous range `[r·F/P, (r+1)·F/P)` and generates **only those
+faces**, descending only the subtrees that intersect it. Two facts make the
+descent a per-level range rather than a recursive walk: the level-`d` ancestors of
+a contiguous final range are themselves the contiguous range
+`[lo / 4^(s−d), ⌈hi / 4^(s−d)⌉)`, and the children of that range cover it.
+Memory and time are `O(F/P + s)` per rank, with **no communication and no global
+sort**.
+
+This is also a *better* starting partition than a single-axis sort, not merely a
+cheaper one: it is hierarchical and locality-preserving, so the children of a base
+face stay together. For `size > 20` the range simply cuts inside a base patch, and
+for `size > F` some ranks own nothing — both fine, and the latter is tested.
+
+**Canonical keys come free from the recursion,** at the cost of one coordinator
+round per subdivision level (`s` extra collectives at setup, which is nothing).
+Keys are assigned level by level: a midpoint's key is `makeVertexKey(a, b)` over
+its two parents' *already-agreed* ids, so each level's round numbers that level's
+new midpoints densely above the running total and the next level's keys are
+well-defined. The keys are globally distinct across the whole vertex set because
+two vertices adjacent at level `d` are separated by their midpoint at level `d+1`
+and are never adjacent again — so a given pair of ids is an edge of at most one
+level's mesh. Because the level rounds go through the same coordinator as step 1,
+the bitwise position check applies to them too, which incidentally verifies that
+every rank computed each shared midpoint identically.
+
+**Reproducibility is a requirement, not a hope:** the generated positions are
+**bitwise identical** to `generateIcosphere()`'s for the same subdivision, so the
+two paths are interchangeable. That means the same base table, the same
+`0.5·(v_a + v_b)` then `normalize3` order of operations, and the same `double`
+intermediate precision regardless of `Scalar` — the arithmetic is deliberately not
+restructured. Gid *numbering* of course differs (a different partition numbers
+differently), which is why the acceptance test compares the gid-independent
+identity — the sorted vertex position multiset and the face corner-position triple
+multiset, bitwise — against the replicated build. Because that reference is
+partition-free, agreement at ranks 1–5 *is* rank-count reproducibility.
+
+The measurement that is the actual deliverable, at subdivision 5 (10 242
+vertices, 20 480 faces globally): the worst per-rank local vertex count is 10 242
+at np1 (nothing to distribute), 5 591 at np2, 4 097 at np3, 3 110 at np4 and
+2 465 at np5 — 24% of the global count at five ranks, the residual over `1/P`
+being the ghost ring. Local face counts track it: 20 480 / 10 870 / 7 616 / 5 750
+/ 4 603.
+
+### Non-goals
+
+Replacing `buildFromTriangleSoup()` or `distribute()` — both remain, and the
+replicated pair is the right choice for a small initial mesh. A distributed
+*reader* for an arbitrary mesh file; `readMesh` is separate. And load balancing of
+the initial partition: the subdivision-tree partition is a locality-preserving
+starting point and `loadBalance()` refines it.
 
 ## Templated precision and embedding dimension
 
