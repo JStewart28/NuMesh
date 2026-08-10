@@ -197,9 +197,8 @@ replicated soup with a plain `std::map<EdgeKey, vector<int>>` and compares.
 
 ## Where this sits
 
-No hard prerequisite. [halo-depth.md](halo-depth.md) at depth ≥ 2 makes
-`numNonResident == 0` far more likely and is worth landing first if geometric
-consumers are the near-term need. Required by
+No hard prerequisite. [halo-depth.md](halo-depth.md) at depth ≥ 2 is already implemented. This makes
+`numNonResident == 0` far more likely. Required by
 [edge-flip.md](edge-flip.md) and [edge-collapse.md](edge-collapse.md) for their
 conflict-resolution passes. See the ordering diagram in
 [halo-depth.md](halo-depth.md).
