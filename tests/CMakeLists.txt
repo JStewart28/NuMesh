@@ -784,6 +784,45 @@ tessera_add_test(
     SOURCES  test_split_edges.cpp
 )
 
+# splitEdges() SHAPE QUALITY OVER SPLIT DEPTH (tasks/edge-split.md, risk R12).
+# The DIAGNOSTIC behind test_split_edges case 8's floor. Case 8 runs five
+# length-driven rounds; five are consistent with a bound but do not establish
+# one -- test_conforming_quality records that eight rounds could not distinguish
+# saturation from a maximum being discovered slowly and sixteen could, and a
+# downstream remesher refines far more than five times. Nor can the answer be
+# inherited from test_conforming_quality: THAT bound rests on the closure being
+# transient (every visible face is one of finitely many retriangulations of a red
+# face), and splitEdges() has no such reset -- its children persist and can be
+# cut again, so whether shape degrades is a property of the MASK.
+#
+# Four mask families bracket a consumer's behaviour: above-mean length (case 8's
+# rule, a coarse relative of Rivara longest-edge bisection and self-correcting),
+# below-mean length (the anti-Rivara rule -- cut the short edges of a stretched
+# triangle), a length-blind hash of the midpoint POSITION (rank-count invariant,
+# unlike a gid hash), and that hash restricted to a fixed geodesic cap so growth
+# is bounded and the drive can reach 25+ rounds. Per round it prints the global
+# min r/R, the min angle, and the POPULATION below five r/R thresholds -- the
+# tail being the diagnostic a minimum cannot give.
+#
+# TIER unit: it is run to whatever depth the face budget allows and its output is
+# a table to read, not a bound to assert. The bound it establishes is asserted in
+# test_split_edges case 8. Knobs: TESSERA_SPLIT_DEPTH_ROUNDS,
+# TESSERA_SPLIT_DEPTH_FACES.
+tessera_add_test(
+    NAME     split_edges_depth
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    "1;4"
+    SOURCES  test_split_edges_depth.cpp
+)
+tessera_add_test(
+    NAME     split_edges_depth
+    BACKEND  HIP
+    TIER     unit
+    RANKS    "1;4"
+    SOURCES  test_split_edges_depth.cpp
+)
+
 # Lat/lon (UV) sphere generator (tasks/latlon-sphere.md). generateIcosphere()
 # was Tessera's only generator, and an icosphere is TOO GOOD a test surface:
 # nearly isotropic, nearly equilateral, almost every vertex of valence 6. A

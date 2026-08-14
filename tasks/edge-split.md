@@ -64,6 +64,34 @@ The alternative — extending the level model to anisotropic bisection — is a 
 larger design (per-edge levels with a compatible balance rule) and is not needed
 by any known consumer. Record it as future work; do not attempt it here.
 
+**Decision 3 — `splitEdges()` makes no shape guarantee; the bound is a property
+of the caller's MASK.** Added 2026-08-14 after measuring it (see the progress
+log), because the opposite is easy to assume from `refine()`.
+
+`refine()`'s conforming closure *is* shape-bounded independently of the round
+count, and the reason is specific: the closure is **transient**. Un-close
+discards the whole closure layer every round, the red engine sees only red
+faces, so every visible triangle is one of finitely many retriangulations of a
+red triangle and the similarity classes are bounded by construction
+(`tests/test_conforming_quality.cpp` measures this).
+
+`splitEdges()` has no such reset. Its children **persist**: a `|S| = 1`
+median-cut child is an ordinary face next round and can be cut again, and the
+set of similarity classes reachable in *n* rounds is unbounded in *n*. Whether
+shape degrades therefore depends entirely on which edges the caller marks:
+
+| Mask rule | Behaviour, measured to depth |
+| --- | --- |
+| length-driven (split iff longer than a target) | **bounded** — periodic, period 3, min r/R cycling 0.3780/0.3780/0.2815 with the min angle dead flat at 33.203° over ten rounds |
+| anti-length (split the *short* edges) | **unbounded** — min r/R halves every round, 0.1953 → 0.0007 in seven |
+| length-blind (metric uncorrelated with length) | **unbounded** — r/R < 1e-4 by round 8, ~96% of faces below 0.30 by round 27 |
+
+A length-driven mask is a coarse relative of Rivara longest-edge bisection and
+is self-correcting for the same reason: bisecting the longest edge of a
+stretched triangle shortens it, so the rule attacks exactly the anisotropy it
+would otherwise accumulate. Nothing in `splitEdges()` supplies that; the caller
+does. **Do not quote case 8's floor as a property of `splitEdges()`.**
+
 **Decision 2 — an edge-mask split needs no closure and no mark propagation.**
 This is the pleasant surprise and it should be stated prominently, because it is
 counter-intuitive next to `refine()`. Bisecting a set of edges and splitting
@@ -216,12 +244,17 @@ global owned-count reductions and hold at every rank count.
 7. **User-field transfer.** A vertex user field seeded to a linear function of
    position is reproduced at every midpoint to `1e-15` relative, for both a
    `double` and a `double[3]` field.
-8. **Repeated rounds.** Five successive `splitEdges` calls with a
+8. **Repeated rounds.** Seven successive `splitEdges` calls with a
    length-threshold mask (split any edge above the current mean length), no
    intervening `migrate()`. Euler `== 2` and `checkConforming` after each round;
-   minimum triangle radius ratio reported per round and asserted above a floor
-   measured in the first implementation run rather than guessed — record the
-   measured value here.
+   minimum triangle radius ratio **and minimum angle** reported per round and
+   asserted above floors measured rather than guessed; plus **saturation** — the
+   final two rounds must set no new worst. Seven rounds and not five: the
+   measured sequence has period 3, so five rounds show one dip and one recovery,
+   which is consistent with a bound but does not establish one. Depth beyond
+   seven is `tests/test_split_edges_depth.cpp`'s job (TIER `unit`), which also
+   drives the anti-length and length-blind masks that Decision 3 tabulates.
+   Override the round count with `TESSERA_SPLIT_ROUNDS`.
 9. **Empty mask.** No-op: V/E/F and `topologyChecksum` unchanged.
 10. **Halo valid on return.** Immediately after `splitEdges`, `haloExchange()`
     leaves every ghost vertex position equal to its owner's, and a **second**
@@ -320,3 +353,94 @@ See the ordering diagram in [halo-depth.md](halo-depth.md).
   | 7. user fields | worst relative error 8.88e-16 over `double` and `double[3]` |
   | 9./10. empty mask, halo | checksum unchanged; plans non-empty and ghost resync clean at np>1 |
   | 11. family guard | throws in both directions, message names both families |
+
+- 2026-08-14 — **Risk R12 investigated: the case-8 floor was five rounds deep.**
+  Raised against a downstream (Beatnik) phase that rests on `splitEdges()`
+  holding triangle shape over many rounds, where the only evidence was case 8's
+  five rounds. `tests/test_conforming_quality.cpp` records the trap directly:
+  eight rounds there could not distinguish saturation from a maximum being
+  discovered slowly, sixteen could. Five rounds are consistent with a bound but
+  do not establish one, and a Beatnik run refines far more than five times.
+
+  **New `tests/test_split_edges_depth.cpp`, TIER `unit`, SERIAL + HIP, ranks
+  1 and 4.** A diagnostic, not a gate assertion: it drives four mask families to
+  whatever depth a face budget allows and prints a table — per round the global
+  min r/R, the global min angle, and the POPULATION below five r/R thresholds
+  (the tail is what a minimum cannot tell you: one bad triangle versus bad
+  triangles becoming a fixed fraction of the mesh). Every rule is a pure function
+  of the global geometry — the two length rules by construction, the two hash
+  rules because the hash is over the raw IEEE bits of the edge MIDPOINT POSITION
+  and not over gids, which come from an `MPI_Exscan` and are not rank-count
+  invariant. Knobs: `TESSERA_SPLIT_DEPTH_ROUNDS`, `TESSERA_SPLIT_DEPTH_FACES`.
+
+  **Result: the risk is real, but it lands on the MASK, not on `splitEdges()`** —
+  written up as Decision 3 above. Case 8's mask is fine at depth; two plausible
+  alternatives are not.
+
+  | family | rule | rounds | min r/R trajectory | verdict |
+  |---|---|---|---|---|
+  | `above-mean` | split iff longer than the global mean (case 8's mask) | 10, F 320 → 3 276 800 | 0.3780 0.3780 **0.2815** 0.3780 0.3780 **0.2815** 0.3780 0.3780 **0.2815** 0.3780 | **bounded — exactly periodic, period 3**; min angle 33.203° in *every* round; the tail below 0.30 is 0 except in the dip rounds |
+  | `below-mean` | split iff shorter than the global mean | 7, F → 1 179 680 | 0.1953 0.0568 0.0169 0.0068 0.0031 0.0015 0.0007 | **unbounded** — halves per round; min angle 24.96° → 0.21°; ~17% of faces below 0.25 and stable, so it is a fixed fraction, not a few bad cells |
+  | `hash-third` | length-blind: hash(midpoint position) ≡ 0 mod 3 | 27, F → 2 340 916 | 0.1953 → < 1e-4 by round 7, 0.0000 from round 8 | **unbounded** — min angle 24.96° → 0.000°; 96.7% of faces below 0.30 by round 27 |
+  | `cap-hash` | the same rule inside a fixed geodesic cap | 30, F → 8 096 | 0.2238 → 0.0000 by round 11 | **unbounded**, and localised: a small region collapses while the rest of the mesh is untouched |
+
+  Every printed round line is **byte-identical** across np 1, 2, 4, 5 × {SERIAL,
+  HIP} × {`Serial`, `Default`} — 7 configurations reduce to exactly 39 distinct
+  round lines, which is 8 + 7 + 12 + 12, i.e. one line per round per family and
+  no spread at all. So the trajectories above are properties of the global mesh,
+  not of a decomposition. Cost: 1m14s at np4, 4m45s at np1 for a 12-round,
+  400k-face budget.
+
+  **Why `above-mean` is periodic and not merely flat.** Splitting every
+  above-mean edge of a near-uniform icosphere is a coarse relative of Rivara
+  longest-edge bisection: it attacks the long edge of a stretched triangle, which
+  is the one whose bisection *improves* the shape. The mesh cycles through three
+  states — uniform, half-split, three-quarters-split — and 0.2815 is the shape of
+  the transient state, re-entered identically every third round. `below-mean`
+  is the same machinery driven backwards and it degrades geometrically.
+
+  **Changes to `tests/test_split_edges.cpp` case 8:** five rounds → **seven**
+  (two complete periods rather than one; F reaches 204 800, and 10 rounds would
+  reach 3.3M, which is a diagnostic's job not a gate's), round count overridable
+  with `TESSERA_SPLIT_ROUNDS`; the **minimum angle** is now measured, printed and
+  asserted above 30.0° (measured 33.203° flat); and a **saturation assertion**
+  was added — the worst over the final two rounds must not be below the worst
+  over the earlier ones. That last one is the assertion five rounds could not
+  support and is what actually retires R12 inside the gate: a monotone decline
+  fails it at every depth, a periodic sequence passes it as soon as the drive
+  exceeds one period. `kMinRadiusRatioFloor` stays at 0.25 — the measured worst
+  is unchanged at 0.2815 — but its comment now carries the ten-round table and an
+  explicit SCOPE paragraph saying the floor is a statement about the mask.
+  Case 8's per-round `checkAll()` was also broken out into its six named
+  post-conditions, printed only on failure, so a deep round says WHICH one moved
+  rather than reporting an aggregate count.
+
+  **The saturation comparison needs a relative tolerance, and finding that out
+  cost a debugging cycle worth recording.** The first version asserted
+  `worstLate >= worstEarly` bit-exactly and FAILED at exactly six rounds — the
+  first depth at which the late window contains a dip round. The periodicity is a
+  statement about shape, not about bits: round 6's dip is reached by three more
+  rounds of arithmetic than round 3's, so the two agree to ~1e-13
+  (0.281541949162 to twelve places) but not in the last bits. The assertion now
+  compares to 1e-6 relative, which is far below anything worth detecting given
+  that the unbounded families halve the value every round. If a future change
+  makes this fail, check the printed twelve-place values before assuming a
+  regression.
+
+  **Verification:** `test_split_edges` green at SERIAL and HIP, ranks 1-5, in
+  both execution spaces — 180 case lines all `ok`, zero failures, and case 8's
+  seven round lines reduce to exactly 7 distinct lines over all 20 instances,
+  i.e. byte-identical everywhere. 14 s at np5 to 41 s at np1 (was ~5 s at five
+  rounds); comparable to `conforming_quality`'s 11-16 s. The full gate was NOT
+  re-run: nothing under `src/` was touched, and the gate definition (label,
+  backends, ranks) is unchanged — `test_split_edges_depth` is TIER `unit`.
+
+  **Not done, deliberately:** no quality constraint was added to `splitEdges()`
+  itself. R12's suggested fix — refuse to split an edge whose child would fall
+  below a shape floor — would make the operation's output depend on a geometric
+  predicate the caller cannot see, i.e. `splitEdges()` would silently bisect
+  fewer edges than asked, which contradicts the "bisects EXACTLY the marked
+  edges" contract that cases 1-4 pin. The right place for the constraint is the
+  caller's metric, and the right library-side offering (if a consumer needs it)
+  is a separate opt-in *mask filter* that returns which of the caller's marks it
+  dropped. Not needed by any consumer today.

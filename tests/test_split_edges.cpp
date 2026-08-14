@@ -51,11 +51,16 @@
 //   7. USER-FIELD TRANSFER. A `double` and a `double[3]` vertex user field seeded
 //      to linear functions of position are reproduced at every midpoint to 1e-15
 //      relative.
-//   8. REPEATED ROUNDS. Five successive splitEdges() with a length-threshold mask
-//      and NO intervening migrate(): Euler == 2 and conformity after each, and
+//   8. REPEATED ROUNDS. Seven successive splitEdges() with a length-threshold
+//      mask and NO intervening migrate(): Euler == 2 and conformity after each;
 //      the global minimum triangle radius ratio (inradius/circumradius, 0.5 for
-//      an equilateral triangle) stays above a floor MEASURED in the first
-//      implementation run rather than guessed.
+//      an equilateral triangle) and the global minimum angle stay above floors
+//      MEASURED rather than guessed; and the worst has SATURATED -- the final
+//      two rounds set no new worst. Seven rounds, not five, because the measured
+//      sequence has period 3, so five show one dip and one recovery while seven
+//      show two of each. The floor is a statement about the length-driven MASK,
+//      not about splitEdges(), which has no shape guarantee of its own; see the
+//      kMinRadiusRatioFloor note and tests/test_split_edges_depth.cpp.
 //   9. EMPTY MASK. A no-op: V/E/F and the topology checksum unchanged.
 //  10. HALO VALID ON RETURN. Corrupting every ghost position and exchanging
 //      restores the owners' values, and a SECOND splitEdges() with nothing in
@@ -92,19 +97,49 @@ using namespace Tessera;
 // Coarse subdiv-2 icosphere entity counts (the Step-6b fixture).
 static const long long V0 = 162, E0 = 480, F0 = 320;
 
-// Floor on the global minimum triangle radius ratio (inradius/circumradius; 0.5
-// exactly for an equilateral triangle) over case 8's five length-driven rounds.
+// Floors on triangle shape over case 8's length-driven rounds: the global
+// minimum radius ratio (inradius/circumradius; 0.5 exactly for an equilateral
+// triangle, 0 for a degenerate one) and the global minimum angle.
 //
-// MEASURED, not guessed. The first implementation run reported, per round,
-//   0.3780  0.3780  0.2815  0.3780  0.3780
-// byte-identically at np1-5 on both backends and in both execution spaces, so
-// the worst any round reaches is 0.2815 and the floor is set just below it. Note
-// the sequence does not drift downward -- rounds 4 and 5 recover to the value
-// round 1 had -- which is the substantive statement: a length-threshold mask
-// driven through splitEdges() does not degrade triangle shape without bound.
+// MEASURED, not guessed. The per-round sequence is byte-identical at np1-5 on
+// both backends and in both execution spaces, and out to TEN rounds (measured by
+// test_split_edges_depth) it is EXACTLY PERIODIC with period 3:
+//
+//   round     1      2      3      4      5      6      7      8      9     10
+//   min r/R  .3780  .3780  .2815  .3780  .3780  .2815  .3780  .3780  .2815 .3780
+//   min ang  33.203 in every round, unchanged, while F grows 320 -> 3276800
+//
+// So the worst any round reaches is 0.2815, it is reached at rounds 3, 6 and 9
+// and is the SAME value each time, and the floor is set just below it. That the
+// sequence cycles rather than drifts is the substantive statement, and it is why
+// this case now runs SEVEN rounds rather than five: five rounds show one dip and
+// one recovery, which is consistent with a bound but does not establish one --
+// test_conforming_quality records the same trap, where eight rounds could not
+// distinguish saturation from a maximum being discovered slowly. Seven rounds
+// show dip-recover-dip-recover, i.e. two complete periods, and the assertion
+// below adds the saturation check directly: the final two rounds must set no new
+// worst.
+//
+// SCOPE -- READ THIS BEFORE QUOTING THE FLOOR. This is a statement about the
+// MASK, not about splitEdges(). splitEdges() gives no shape guarantee of its own
+// and cannot: unlike refine()'s conforming closure, which is discarded and
+// rebuilt every round so every visible face is one of finitely many
+// retriangulations of a red face, a splitEdges() child PERSISTS and can be cut
+// again, so the reachable similarity classes are unbounded in the round count.
+// What bounds them here is that the mask is LENGTH-DRIVEN -- split iff longer
+// than the current mean -- which is a coarse relative of Rivara longest-edge
+// bisection and is self-correcting. test_split_edges_depth drives the opposite
+// rules for comparison and they degrade geometrically: a below-mean-length mask
+// halves the minimum radius ratio every round (0.1953 -> 0.0007 over 7 rounds),
+// and a length-BLIND mask reaches r/R < 1e-4 by round 8 with ~96% of faces below
+// 0.30 by round 27. A consumer whose refinement metric is uncorrelated with edge
+// length inherits none of the bound below.
+//
 // A regression that starts emitting slivers -- e.g. a two-edge diagonal chosen
 // as the LONGER one -- drops this immediately.
 static const double kMinRadiusRatioFloor = 0.25;
+//! Measured 33.203 deg in every one of the ten rounds; floor set below it.
+static const double kMinAngleDegFloor = 30.0;
 
 // ---------------------------------------------------------------------------
 // Order-independent multiset checksum (same idiom as test_conforming_determinism)
@@ -310,11 +345,14 @@ static void geoSignature( MeshT& mesh, Chk& verts, Chk& faces, int& fails )
 
 //! Global minimum inradius/circumradius over the owned faces. 0.5 exactly for an
 //! equilateral triangle, 0 for a degenerate one. Reduced over mesh.comm().
+//! `minAngleDeg`, also reduced, is the global smallest triangle angle -- the
+//! second statistic because r/R and the min angle degrade for different reasons
+//! and a needle triangle can be caught by one before the other.
 template <class MeshT>
-static double minRadiusRatio( MeshT& mesh, int& fails )
+static double minRadiusRatio( MeshT& mesh, int& fails, double& minAngleDeg )
 {
     const auto pos = readPositions( mesh );
-    double worst = 1.0;
+    double worst = 1.0, worstAngle = 180.0;
     for ( const auto& t : ownedFaceVerts( mesh ) )
     {
         std::array<double, 3> p[3];
@@ -363,9 +401,24 @@ static double minRadiusRatio( MeshT& mesh, int& fails )
         const double s = 0.5 * ( side[0] + side[1] + side[2] );
         // r/R = (area/s) / (abc/(4 area)) = 4 area^2 / (s abc)
         worst = std::min( worst, 4.0 * area * area / ( s * abc ) );
+
+        // Law of cosines. side[k] runs corner k -> k+1, so the angle at corner
+        // k+1 is between side[k] and side[k+1], opposite side[k+2].
+        for ( int k = 0; k < 3; ++k )
+        {
+            const double a = side[k], b = side[( k + 1 ) % 3],
+                         c = side[( k + 2 ) % 3];
+            double cosA = ( a * a + b * b - c * c ) / ( 2.0 * a * b );
+            cosA = std::max( -1.0, std::min( 1.0, cosA ) );
+            worstAngle = std::min(
+                worstAngle, std::acos( cosA ) * 180.0 / 3.14159265358979323846 );
+        }
     }
     double global = worst;
     MPI_Allreduce( &worst, &global, 1, MPI_DOUBLE, MPI_MIN, mesh.comm() );
+    minAngleDeg = worstAngle;
+    MPI_Allreduce( &worstAngle, &minAngleDeg, 1, MPI_DOUBLE, MPI_MIN,
+                   mesh.comm() );
     return global;
 }
 
@@ -858,7 +911,35 @@ static int caseUserFields( int rank, const char* tag )
     return glob == 0 ? 0 : 1;
 }
 
-//! Case 8: five successive length-driven rounds with NOTHING in between.
+//! Rounds case 8 drives. SEVEN, not five: the measured sequence is periodic with
+//! period 3 (see kMinRadiusRatioFloor), so seven rounds show dip-recover-dip-
+//! recover -- two complete periods -- where five show only one. Deeper than this
+//! is a diagnostic, not a gate assertion: F reaches 204800 at round 7 already and
+//! 3276800 by round 10. `TESSERA_SPLIT_ROUNDS` overrides it so the periodicity
+//! can be re-measured to any depth without an edit, the same knob
+//! test_conforming_quality carries as TESSERA_QUALITY_ROUNDS.
+static const int kRepeatRounds = 7;
+
+//! Rounds at the END of the drive that must set no new worst radius ratio. This
+//! is the assertion five rounds could not make: a worst first reached in the
+//! final round is exactly what an unbounded decline looks like, and only a run
+//! that keeps going after the worst can tell the two apart. Measured: the last
+//! dip is at round 6, so rounds 6 and 7 are the flat tail.
+static const int kSaturationRounds = 2;
+
+static int repeatRoundCount()
+{
+    const char* e = std::getenv( "TESSERA_SPLIT_ROUNDS" );
+    if ( e == nullptr )
+        return kRepeatRounds;
+    const int n = std::atoi( e );
+    return n > 0 ? n : kRepeatRounds;
+}
+
+//! Case 8: successive length-driven rounds with NOTHING in between. Asserts
+//! conformity and Euler after each, both shape floors each round, and -- the
+//! part five rounds could not support -- that the worst has SATURATED: the final
+//! kSaturationRounds rounds set no new worst.
 template <class MeshT, class Exec>
 static int caseRepeatedRounds( int rank, const char* tag )
 {
@@ -867,30 +948,100 @@ static int caseRepeatedRounds( int rank, const char* tag )
     MeshHalo<mem> halo;
     setup<MeshT, Exec>( mesh, halo );
 
+    const int nRounds = repeatRoundCount();
     int local = 0;
-    for ( int round = 0; round < 5; ++round )
+    std::vector<double> perRound;
+    perRound.reserve( nRounds );
+
+    for ( int round = 0; round < nRounds; ++round )
     {
         const auto preVerts = ownedFaceVerts( mesh );
-        const std::vector<char> mask = aboveMeanLengthMask( mesh, local );
+        int maskFails = 0;
+        const std::vector<char> mask = aboveMeanLengthMask( mesh, maskFails );
         const SplitResult res = splitEdges( mesh, halo, mask );
-        local += checkAll( mesh, res, preVerts, false );
+
+        // Broken out rather than folded into checkAll() so a deep round names
+        // WHICH post-condition moved: at this depth an aggregate count is not
+        // actionable.
+        int fPart = 0, fRing = 0, fConf = 0, fMid = 0, fCov = 0, fEuler = 0;
+        {
+            long long v, e, f;
+            counts( mesh, v, e, f );
+            fPart = TesseraTest::checkOwnershipPartition( mesh, v, e, f );
+        }
+        fRing = TesseraTest::owned1RingLocal( mesh );
+        fConf = TesseraTest::checkConforming( mesh );
+        fMid = TesseraTest::checkMidpointAgreement( mesh.comm(),
+                                                    mesh.commSize(),
+                                                    res.midpoints );
+        fCov = TesseraTest::checkSplitEdgeCoverage(
+            mesh.comm(), mesh.commSize(), preVerts, res.midpoints );
+        fEuler = TesseraTest::checkOwnedEuler( mesh ) != 2 ? 1 : 0;
+        const int roundFails = maskFails + fPart + fRing + fConf + fMid + fCov +
+                               fEuler;
+        local += roundFails;
+        if ( roundFails != 0 && rank == 0 )
+            std::printf( "  [%s] case8 round%d CHECK FAILS: mask=%d part=%d "
+                         "ring=%d conf=%d mid=%d cov=%d euler=%d\n",
+                         tag, round + 1, maskFails, fPart, fRing, fConf, fMid,
+                         fCov, fEuler );
         if ( res.requested <= 0 )
             ++local; // vacuous round
         long long V, E, F;
         counts( mesh, V, E, F );
-        const double q = minRadiusRatio( mesh, local );
+        double minAngle = 180.0;
+        int qFails = 0;
+        const double q = minRadiusRatio( mesh, qFails, minAngle );
+        local += qFails;
+        perRound.push_back( q );
         if ( q < kMinRadiusRatioFloor )
             ++local;
+        if ( minAngle < kMinAngleDegFloor )
+            ++local;
+        if ( qFails != 0 && rank == 0 )
+            std::printf( "  [%s] case8 round%d SHAPE-READ FAILS: %d\n", tag,
+                         round + 1, qFails );
         if ( rank == 0 )
             std::printf( "  [%s] case8 round%d: split=%lld V=%lld E=%lld "
                          "F=%lld |S|=(%lld,%lld,%lld,%lld) minRadiusRatio="
-                         "%.4f\n",
+                         "%.4f minAngle=%.3f\n",
                          tag, round + 1, res.split, V, E, F, res.pattern[0],
-                         res.pattern[1], res.pattern[2], res.pattern[3], q );
+                         res.pattern[1], res.pattern[2], res.pattern[3], q,
+                         minAngle );
     }
+
+    // SATURATION. The worst over the whole drive must already have been reached
+    // before the final kSaturationRounds rounds -- i.e. those rounds set no new
+    // worst. A monotone decline fails this at every depth; a periodic sequence
+    // passes it as soon as the drive is longer than one period.
+    if ( static_cast<int>( perRound.size() ) > kSaturationRounds )
+    {
+        const int nEarly =
+            static_cast<int>( perRound.size() ) - kSaturationRounds;
+        const double worstEarly =
+            *std::min_element( perRound.begin(), perRound.begin() + nEarly );
+        const double worstLate =
+            *std::min_element( perRound.begin() + nEarly, perRound.end() );
+        // Compared to a RELATIVE tolerance, not bit-exactly. The dip rounds
+        // reach the same shape by different arithmetic -- round 6's mesh is
+        // three rounds of splitting further on than round 3's -- so the two
+        // 0.2815 values agree to about 1e-13 but not in the last bits, and a
+        // bit-exact ">=" would fail on that. 1e-6 relative is far below any
+        // decline worth detecting: the unbounded families in
+        // test_split_edges_depth halve the value every round.
+        if ( worstLate < worstEarly * ( 1.0 - 1e-6 ) )
+            ++local; // still declining: the bound is not established
+        if ( rank == 0 )
+            std::printf( "  [%s] case8 saturation: worst over rounds 1-%d "
+                         "%.12f, over the final %d %.12f (must not be lower "
+                         "by more than 1e-6 relative)\n",
+                         tag, nEarly, worstEarly, kSaturationRounds,
+                         worstLate );
+    }
+
     const int glob = gsum( MPI_COMM_WORLD, local );
     if ( rank == 0 )
-        std::printf( "  [%s] case8 (five rounds) %s\n", tag,
+        std::printf( "  [%s] case8 (%d rounds) %s\n", tag, nRounds,
                      glob == 0 ? "ok" : "FAIL" );
     return glob == 0 ? 0 : 1;
 }
