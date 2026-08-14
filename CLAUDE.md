@@ -44,6 +44,12 @@ required section → stop and ask the user before proceeding.
 
 ## General guidelines
 
+- **The full regression gate is a ~30-minute job — don't run it by reflex.** Run
+  only the tests covering the code you touched unless the change is broad enough
+  to require the whole gate. When it is required, submit it from the repo root,
+  save progress, commit and push, and hand off with a prompt that tells a fresh
+  session which output file to read. See
+  [docs/testing.md](docs/testing.md#when-to-run-the-full-gate).
 - **Never run the formatter.** The user formats by hand, or asks for the
   clang-format target explicitly. Do not add it to any workflow or plan.
 - **License/header convention:** every new source file (`.cpp`, `.hpp`, `.h`,
