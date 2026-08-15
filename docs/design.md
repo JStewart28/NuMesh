@@ -1039,6 +1039,144 @@ depth, so the halo is valid on return and a second call may follow immediately.
 An empty mask is a no-op fast path with no communication beyond the collectives
 that establish the global request and face counts.
 
+## Compaction
+
+Every editor described so far only ever **adds** entities: `refine()` and
+`splitEdges()` are split-only, `Level` never falls, and nothing orphans a vertex.
+So the absence of a removal path has been invisible. The moment a coarsening
+operation exists (`collapseEdges()`) it produces dead entities and there is
+nowhere for them to go: the AoSoAs have no delete, the owned-first ordering has no
+way to close a hole, the vertex→face and vertex→edge CSRs would index removed
+slots, the `edgeKeys`/`faceKeys` side tables would carry stale keys, and the halo
+plans would name ghost slots that no longer exist. `compact()`
+(`Tessera_Compact.hpp`) is that removal path, and it exists **before** collapse
+rather than alongside it, so collapse does not grow its own private
+half-compaction.
+
+**The tombstone convention is uniform across the three entity kinds:
+`Gid == invalid_gid` marks a dead entity.** `VertexField::Flags` exists and the
+edge and face packs have no equivalent, so using `Flags` for vertices only would
+mean two mechanisms for one idea. `tombstoneVertex/Edge/Face()` are purely local
+and non-collective; they overwrite `Gid` and repair nothing.
+
+### Compaction is a halo rebuild, not a private permutation
+
+`rebuildHalo()`'s round D already does everything a removal needs: it orders
+owned-first and gid-ascending, whole-tuple copies every AoSoA (so user fields
+travel with no per-field plumbing), rebuilds both CSRs and both key tables, and
+**replaces** the three halo plans. Critically it derives the held vertex and edge
+set purely from the **owned faces**, so a vertex or edge that no surviving face
+references is dropped with no explicit compaction of those two AoSoAs at all. So
+`compact()` has only three steps of its own:
+
+1. verify the tombstone set **closes** (below), before anything is mutated;
+2. drop the dead **owned** faces from the face AoSoA, keeping the survivors in
+   their already-gid-ascending order, and `setOwnedCounts` with the live count —
+   ghost faces go wholesale, because the ghost set genuinely changes under a
+   removal (a ghost whose owner deleted it must disappear), so this cannot be a
+   plan patch;
+3. `rebuildHalo( mesh, halo, effectiveHaloDepth( halo ) )`.
+
+The canonical ordering, the generation bump and halo-depth preservation all fall
+out of round D unchanged. A consequence for `collapseEdges()`: it need not
+tombstone orphaned vertices and edges at all — only the **face** set has to be
+right.
+
+### The closure check is necessarily global
+
+A gid is dead **iff the rank that owns it marked it dead**. A local sweep is wrong
+in both directions. A rank that tombstones a **ghost** while keeping a live face
+on it is fine — round G re-fetches the entity from its owner — so a local sweep
+would reject valid input. And a rank that tombstones a vertex it **owns** whose
+last local face also died, while a neighbour still holds a live face on that
+vertex, is a fatal caller bug that no local sweep on either rank can see. Left
+unchecked that second case does not merely corrupt the mesh, it **crashes**: the
+vertex is gone from the owner's advertisement, so round G's lookup throws
+`std::out_of_range` on one rank while the others sit in the next collective.
+
+So the check is a coordinator round: every rank advertises the live entities it
+**owns** and the vertex/edge references of its live **owned faces** to
+`gid % size`, and the coordinator reports every reference with no live claim back
+to the referencing rank — so the message names a live face *that rank* owns, plus
+the dead gid. The throw is made collective by an `MPI_Allreduce` over the report
+count: a throw on one rank alone would deadlock the rest.
+
+The reference set is exactly "live owned faces" because that is the set
+`rebuildHalo()` reconstructs the mesh from, so it is precisely what must resolve.
+`EdgeField::Faces` is deliberately **not** a reference: it is best-effort by design
+(*Face adjacency*) and already carries gids naming faces no rank holds, and a
+surviving boundary edge whose second incidence was removed is exactly what a
+legitimate compaction produces.
+
+A rank ending with **zero owned entities** is supported: its peers drop it from
+their plans and the collectives still complete. That is a real load-balance state,
+not a pathological one.
+
+### The gid-space hazard, and which paths index densely by gid
+
+`compact()` **preserves gids** — a survivor keeps the gid it had — so no
+communication is needed to agree on a renaming and, since connectivity fields hold
+gids, there is no connectivity rewrite at all. That is what makes it cheap enough
+to call every step, and it is why renumbering is a separate call.
+
+The price is that the gid **space** only grows. Gids are assigned by `MPI_Exscan`
+onto a monotonically **rising** global count, so a long run of split-and-collapse
+rounds inflates the space without bound even while the mesh stays the same size.
+That would be cosmetic if gids were only ever used as keys — but three paths index
+by gid into a **dense host array sized to a max gid**, so each of them grows with
+the *space* rather than with the mesh:
+
+| Path | What it sizes by max gid |
+|---|---|
+| `detail::buildKindPlan` (`Tessera_Distribute.hpp`) | takes `const std::vector<LocalIndex>& gid2local` and indexes it by raw gid |
+| `rebuildHalo()` round D, `detail::make_g2l` (`Tessera_HaloRebuild.hpp`) | **builds** those vectors, sized to the local max gid — so `compact()` is itself on the leak path, not merely a fixer of it |
+| `distribute()`'s `build_order` (`Tessera_Distribute.hpp`) | builds `v2l`/`e2l`/`f2l` the same way |
+
+`migrate()` avoids the hazard entirely (it keys on `std::map<GlobalId, ...>`), so
+it is confined to those three — but it is real, and measured: ten rounds of
+"tombstone a patch, `compact()`" on a subdivision-2 icosphere hold the gid space
+pinned at its initial **962** while the live entity count falls from 925 to 521,
+i.e. 441 wasted slots, 46% of the space. One `compactAndRenumberGids()` returns it
+to exactly 521.
+
+`compactAndRenumberGids()` is the sanctioned mitigation; removing the dense-by-gid
+indexing is separate, larger work. It runs `compact()`, then renumbers gids
+contiguously to `[0, N)` per kind. The new gids ride to the ghosts on the `Gid`
+**field itself** rather than a side channel — `haloExchange()` is whole-AoSoA,
+whole-tuple and Tessera has no generic per-entity value exchange — so the owned
+gids are rewritten in place, all three AoSoAs are exchanged, and the local old→new
+map is reconstructed from the old gids saved beforehand (`haloExchange()` does not
+reorder, so a local index still names the same entity). Then every connectivity
+field and both key side tables are rewritten and the halo is rebuilt a **second**
+time, because the plans were keyed on old gids. Two halo rebuilds is the honest
+cost and is not fused. `EdgeField::Faces` is mapped where the face is held locally
+and set to `invalid_gid` where it is not: a gid left in the old space would
+silently **alias** a different live face, which is worse than absent.
+
+**Renumbering is an order statistic, not an exscan block.** The new gid of an
+entity is *the number of live entities of its kind with a smaller old gid*. An
+`MPI_Exscan` over owned counts would hand rank *r* a contiguous block, making the
+old→new map depend on who owned what, so two runs at different rank counts would
+disagree; an order statistic depends only on the set of live gids, so every rank
+count produces the identical global map — and still yields exactly `[0, N)` per
+kind. It is computed without gathering: gids are bucketed by **value** (one bucket
+per rank), each coordinator sorts its own bucket, and an `MPI_Exscan` over the
+per-bucket counts gives each bucket's base. The bucketing is a load-balance choice
+only; the answer does not depend on it.
+
+`CompactStats` is **entirely global** and identical on every rank — the removal
+counts are owned-count differences summed across ranks — because a local count is
+not a statement about the mesh: a rank's local count also moves when the ghost set
+changes. `gidSpaceBefore`/`gidSpaceAfter` are filled by both calls; for `compact()`
+they are equal, and that equality *is* the statement that gids were preserved,
+unless the removal included the globally maximal gid of some kind, in which case
+the space shrinks by exactly the vacated tail.
+
+Both calls claim `EditFamily::Remesh` (*Editing families*, README), so compacting a
+`refine()`d mesh throws and compacting a freshly built mesh tags it Remesh.
+Non-goals: deciding *what* to tombstone, shrinking AoSoA capacity, and repairing a
+non-closed tombstone set.
+
 ## Quality-based refinement marking
 
 `Tessera::markByQuality(mesh, criterion)` inspects mesh geometry and returns the

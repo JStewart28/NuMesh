@@ -56,7 +56,7 @@ An earlier revision of this task also proposed extracting the halo rebuild out o
 | `a55a8de` | `refine()` rebuilds the halo itself; the identity-`migrate()` workaround is gone |
 | `6282257` | Delete `refineImpl()` step 3j — `rebuildHalo()` rebuilds both CSRs completely |
 
-So `rebuildHalo( mesh, halo )` exists at `src/Tessera_HaloRebuild.hpp:642`,
+So `rebuildHalo( mesh, halo )` exists at `src/Tessera_HaloRebuild.hpp:733`,
 `refine()` calls it at `src/Tessera_RefineParallel.hpp:1077`, `migrate()` calls it
 after its own move rounds, and
 [halo-rebuild-split-edge-design.md](halo-rebuild-split-edge-design.md) is **closed

@@ -79,6 +79,12 @@ static constexpr const char* TIMER_HALO_SCATTER_ADD = "halo_scatter_add";
 static constexpr const char* TIMER_REFINE = "refine";
 static constexpr const char* TIMER_MIGRATE = "migrate";
 static constexpr const char* TIMER_LOAD_BALANCE = "load_balance";
+//! Tombstone removal (Tessera_Compact.hpp). Nested inside it, the halo rebuild
+//! that does the actual reordering is charged to TIMER_HALO_REBUILD as usual --
+//! for compactAndRenumberGids() that is two rebuilds, which is the cost the
+//! renumbering pays and should be visible as such.
+static constexpr const char* TIMER_COMPACT = "compact";
+static constexpr const char* TIMER_COMPACT_RENUMBER = "compact_renumber_gids";
 static constexpr const char* TIMER_WRITE_MESH = "write_mesh";
 static constexpr const char* TIMER_READ_MESH = "read_mesh";
 static constexpr const char* TIMER_MARK_QUALITY = "mark_quality";

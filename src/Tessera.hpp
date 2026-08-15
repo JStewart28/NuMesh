@@ -16,6 +16,7 @@
 // library.
 
 #include "Tessera_AllToAllV.hpp"
+#include "Tessera_Compact.hpp"
 #include "Tessera_CsrAdjacency.hpp"
 #include "Tessera_Distribute.hpp"
 #include "Tessera_DistributedBuilder.hpp"

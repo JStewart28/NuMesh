@@ -784,6 +784,44 @@ tessera_add_test(
     SOURCES  test_split_edges.cpp
 )
 
+# Mesh compaction (tasks/mesh-compaction.md) -- tombstone removal, and the
+# periodic gid renumbering that closes the gid-space leak. The prerequisite of
+# edge collapse: without it a coarsening operation has nowhere to put its dead
+# entities, and would grow its own private half-compaction.
+#
+# The fixture is CLOSED SUB-MESH REMOVAL against a replicated MPI_COMM_SELF
+# reference mesh -- remove one base-icosahedron patch (face gids [16i, 16i+16)
+# at subdivision 2) plus exactly the vertices and edges no surviving face
+# references -- so every expected count, gid set and position is computed rather
+# than hardcoded, and the result is a surface WITH BOUNDARY whose Euler number
+# is 2 minus its boundary-component count. Checks: the no-op and its
+# idempotence; gid PRESERVATION through a removal (against a pre-edit gid ->
+# position snapshot) and gid RENUMBERING to a contiguous [0, N) with the
+# rank-count determinism the order-statistic definition buys, asserted against
+# an MPI_COMM_SELF reference; the halo, ownership partition and owned 1-ring
+# after a removal; a rank emptied to zero owned AND zero local entities that no
+# peer names in any plan; the collective throw on a non-closing tombstone set;
+# the editing-family guard both ways; and ten remove-and-compact rounds showing
+# the gid space pinned while the mesh shrinks, then returned to exactly the live
+# count by one compactAndRenumberGids().
+#
+# TIER regression, ranks 1-5, both backends: gate promotion is pre-authorized
+# for this task by tasks/mesh-compaction.md.
+tessera_add_test(
+    NAME     compact
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_compact.cpp
+)
+tessera_add_test(
+    NAME     compact
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_compact.cpp
+)
+
 # splitEdges() SHAPE QUALITY OVER SPLIT DEPTH (tasks/edge-split.md, risk R12).
 # The DIAGNOSTIC behind test_split_edges case 8's floor. Case 8 runs five
 # length-driven rounds; five are consistent with a bound but do not establish

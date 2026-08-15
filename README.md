@@ -364,7 +364,7 @@ exactly one of them**:
 | Family | Operations | Invariant maintained | `Level` semantics |
 |---|---|---|---|
 | **Hierarchical** | `refine()`, `refineLocal()` | 2:1 level balance; conforming closure | `Level` is **authoritative** |
-| **Remesh** | `splitEdges()` *(`collapseEdges()`, `flipEdges()`, `compact()` to follow)* | conformity and manifoldness only | `Level` is **advisory** |
+| **Remesh** | `splitEdges()`, `compact()`, `compactAndRenumberGids()` *(`collapseEdges()`, `flipEdges()` to follow)* | conformity and manifoldness only | `Level` is **advisory** |
 
 `refine()`'s whole design rests on the level model, and that model is coherent
 only because `refine()` performs the uniform 1→4 red split. Bisecting *one* edge
@@ -392,6 +392,87 @@ compatible balance rule) is a much larger design that no known consumer needs; i
 is recorded under *Future Optimizations* below, not attempted. See
 `docs/design.md` → *Edge-addressed splitting* and
 [tasks/edge-split.md](tasks/edge-split.md).
+
+### Compaction: removing entities
+
+Every other editor only *adds* entities. `compact()` is the one call that removes
+them, and it exists so that a coarsening operation (`collapseEdges()`, to follow)
+has somewhere to put its dead entities instead of growing a private
+half-compaction.
+
+```cpp
+#include <Tessera.hpp>   // Tessera_Compact.hpp
+
+// Mark entities dead. Purely local, non-collective. The convention is uniform
+// across the three kinds: Gid == invalid_gid marks a dead entity.
+tombstoneFace  ( mesh, f );   // a face is removed ONLY if it is marked
+tombstoneEdge  ( mesh, e );   // optional -- see below
+tombstoneVertex( mesh, v );   // optional -- see below
+
+CompactStats st = compact( mesh, halo );          // collective; rebuilds `halo`
+// st.verticesRemoved / edgesRemoved / facesRemoved -- GLOBAL owned-count drops
+// st.gidSpaceBefore / gidSpaceAfter                -- GLOBAL gid-space size
+
+// Periodically, instead of compact():
+CompactStats st2 = compactAndRenumberGids( mesh, halo );
+```
+
+**What is removed.** Every tombstoned **owned face**, plus every vertex and edge
+that no surviving face references — *whether or not it was tombstoned*. So
+marking a vertex or an edge is optional for removal; what the mark buys is the
+**check**. The tombstone set must **close**: a live face may not reference an
+entity its owner marked dead. `compact()` verifies this before mutating anything
+and throws `std::runtime_error` naming the offending live face and the dead gid,
+rather than producing a corrupt mesh. Deadness is **owner-scoped** — a mark on a
+ghost copy says nothing about the entity and is silently repaired — so the check
+is collective, and so is the throw (every rank throws, so a caller bug cannot
+deadlock the ranks that do not see it).
+
+**Gids are preserved, and renumbering is a separate, periodic call.** A surviving
+entity keeps the gid it had, so every cross-rank reference a peer holds stays
+valid, no communication is needed to agree on a renaming, and — since connectivity
+fields hold gids — there is **no connectivity rewrite at all**. That is what makes
+`compact()` cheap enough to call every step: a local face filter plus one
+`rebuildHalo()`, which does the owned-first reordering, both CSRs, both key side
+tables and the three halo plans.
+
+The cost of preservation is that the gid **space** only ever grows: gids are
+assigned by `MPI_Exscan` onto a monotonically rising global count, so a long run
+of split-and-collapse rounds inflates the space without bound even while the mesh
+stays the same size — and several code paths index by gid into a **dense** host
+array sized to a max gid. `compactAndRenumberGids()` is the sanctioned fix: it
+renumbers gids contiguously to `[0, N)` per kind, at the price of invalidating
+every gid a peer holds, rewriting every connectivity field, and a **second** halo
+rebuild. Call it every few hundred steps, not every step. See `docs/design.md` →
+*Compaction* for the hazard and the affected paths.
+
+The new gid of an entity is *the number of live entities of its kind with a
+smaller old gid* — an order statistic rather than an exscan over owned counts, so
+the resulting global gid→entity map is identical at every rank count.
+
+**`CompactStats` is entirely global** and identical on every rank: a *local* count
+is not a statement about the mesh, since a rank's local count also moves when the
+ghost set changes. `gidSpaceBefore`/`gidSpaceAfter` are filled by both calls; for
+`compact()` they are equal — that equality *is* the statement that gids were
+preserved — unless the removal happened to include the globally maximal gid of
+some kind, in which case the space shrinks by exactly the vacated tail.
+
+A rank may legitimately end with **zero owned entities**; its peers drop it from
+their plans and the collectives still complete. That is a real load-balance state,
+not a pathological one.
+
+**Family consequence.** Both calls claim `EditFamily::Remesh`, so compacting a
+`refine()`d mesh throws, and compacting a freshly built mesh **tags** it Remesh —
+a later `refine()` on it is then refused. See *Editing families* above.
+
+Not provided: deciding *what* to tombstone (that is the caller's, or
+`collapseEdges()`'s, job), shrinking AoSoA capacity, and repairing a non-closed
+tombstone set. `EdgeField::Faces` is neither checked nor repaired by `compact()` —
+it is best-effort by design, and a surviving boundary edge whose second incidence
+was removed is exactly what a legitimate compaction produces —
+but `compactAndRenumberGids()` *does* map it, to `invalid_gid` where the named
+face is not held locally, because a gid left in the old space would silently alias
+a different live face.
 
 ### Example programs
 
