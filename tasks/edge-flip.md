@@ -1,10 +1,40 @@
 # Edge flip
 
-**Status:** NOT STARTED. **Read the "Editing families" section of
+**Status:** DONE (2026-08-17). **Read the "Editing families" section of
 [edge-split.md](edge-split.md) first** — a flip is a remesh-family operation.
 
-**Verified against `08dd346`** (branch `conforming-refinement`) — the code this task
-cites was re-read at that commit.
+**Met.** `src/Tessera_EdgeFlip.hpp` implements `flipEdges()`, `FlipResult` and
+`DefaultFlipPolicy`; the mesh's `EditFamily::Remesh` claim is made through
+`requireEditFamily`. `tests/test_flip_edges.cpp` is registered at TIER
+`regression`, SERIAL + HIP, ranks 1–5, and is **green in all ten registrations**
+in both execution spaces. Verified there: counts invariant with Euler 2,
+conformity and no interior vertex after every flip (check 1); the flip is an exact
+**involution** on the multiset of face corner-**gid** triples and on the edge key
+set (check 2); flipping into an existing edge is rejected across the extra
+coordinator round, on a hand-built subdivided tetrahedron whose original corners
+keep valence 3 (check 3, `rejectedDuplicateEdge == 1`, `accepted == 0`, mesh
+bitwise unchanged); no face is rewritten twice with every owned edge marked
+(check 4, 480 requested → 80 accepted, 400 conflict); **rank-count invariance**
+against an `MPI_COMM_SELF` reference — identical `accepted`, identical verdict
+histogram and an identical multiset of face corner-**position** triples (check 5);
+`minQuality = 0.99` rejects all 480 and moves nothing (check 6); the valence
+histogram does not degrade over three valence-driven rounds (check 7); the edge
+gid set is unchanged while the edge key set moves by **exactly** the accepted
+flips, and `edgeKeys()`/`faceKeys()` match the AoSoA entry for entry with no
+global duplicates (check 8); the halo is valid on return and a second
+`flipEdges()` follows immediately (check 9); the empty mask is a no-op with all
+counters zero (check 10); the family guard throws both ways and flip-after-split
+is allowed and still involutive (check 11); and five split+flip rounds hold above
+the measured floor of 0.025 (check 12). README documents `flipEdges`,
+`DefaultFlipPolicy`, the three decisions and the caller-loop idiom, and the
+*Editing families* row now names `flipEdges()`; `docs/design.md` gains *Edge
+flip*. Full gate **250/250**.
+
+**Verified against `2dd8da1`** (branch `conforming-refinement`) — the code this task
+cites was re-read at that commit, which is where implementation started.
+`splitEdges()`, `compact()`/`compactAndRenumberGids()`, configurable halo depth and
+the distributed initial build have all landed since `08dd346`, which this document
+was originally stamped against.
 
 ## Problem
 
@@ -103,9 +133,11 @@ one selection criterion into a general operation. Document the intended pattern
    what lets the coordinator run the geometric test without needing a second round,
    and it is cheap (one `double[3]` per advertisement).
    **There is in-tree precedent: `refine()`'s Phase-2 coordinator reply already
-   carries the split edge's squared length** (`SplitLenMsg`, with its `double len2`,
-   `Tessera_RefineParallel.hpp:182`), added as Decision 15 in `4cee602` so the blue
-   closure diagonal could be chosen geometrically. Follow that message shape, and
+   carries the split edge's squared length** — `detail::KeyGid`'s `double len2`
+   rider (`Tessera_RefineParallel.hpp:196–201`, whose rationale is the comment at
+   `:183–195`), added as Decision 15 in `4cee602` so the blue closure diagonal
+   could be chosen geometrically. (Earlier revisions of this document named a
+   `SplitLenMsg` at `:182`; no such struct exists.) Follow that message shape, and
    compute every length comparison through `Tessera::edgeLen2Canonical()`
    (`Tessera_RefineClosure.hpp:212`) so two ranks comparing the same edge get
    bit-identical doubles regardless of endpoint order — that helper is what makes
@@ -135,9 +167,15 @@ one selection criterion into a general operation. Document the intended pattern
    exchange their local decisions back through the coordinator so both sides of
    each edge agree before anything is written.
 4. **Apply.** Each face owner rewrites its face's `Verts`/`Edges`; the edge owner
-   rewrites the edge's `Verts`/`Faces`. Rebuild `edgeKeys()`/`faceKeys()` and both
-   CSRs; `setOwnedCounts` with unchanged counts to bump the generation.
-5. **Halo.** `rebuildHalo()` before returning, preserving `halo.depth`.
+   rewrites the edge's `Verts`/`Faces`. `setOwnedCounts` with unchanged counts to
+   bump the generation. **Do not hand-roll the side-table rebuild:** step 5's
+   `rebuildHalo()` round D already redoes `edgeKeys()`, `faceKeys()` and both CSRs
+   (`Tessera_HaloRebuild.hpp:474`, `:646`, `:661`), so step 5 subsumes most of this
+   step. Follow the finalize sequence in `src/Tessera_EdgeSplit.hpp:834–866`
+   verbatim.
+5. **Halo.** `rebuildHalo( mesh, halo, effectiveHaloDepth( halo ) )` before
+   returning (`src/Tessera_Distribute.hpp:56`), as every other editor does, so the
+   depth the caller chose at setup is preserved rather than silently narrowed to 1.
 6. **Empty mask** and **all-rejected** are no-ops with the counters reporting why.
 
 **Decision 3 — one independent set per call, not a loop to exhaustion.** Iterating
@@ -209,7 +247,21 @@ New `tests/test_flip_edges.cpp`, registered at **TIER `regression`**, backends
     rounds of valence flips, five times over. Euler `== 2` and `checkConforming`
     after every operation; report the minimum radius ratio per round and assert it
     stays above a floor **measured in the first implementation run and recorded
-    here** rather than guessed.
+    here** rather than guessed. **Measured** (inradius/circumradius, 0.5 for an
+    equilateral triangle; byte-identical at np1–5 on both backends and in both
+    execution spaces — all twenty instances print the same five lines):
+
+    | round | 1 | 2 | 3 | 4 | 5 |
+    |---|---|---|---|---|---|
+    | min r/R | 0.2452 | 0.0727 | 0.0727 | **0.0309** | 0.0330 |
+    | min angle (deg) | 30.382 | 14.744 | 14.744 | 8.666 | 5.968 |
+    | F | 800 | 1880 | 4520 | 9126 | 21284 |
+
+    so the floor is **0.025**, just below the measured worst of 0.0309 — which is
+    itself just above `DefaultFlipPolicy::minQuality`'s bound expressed in these
+    units (0.05 in the convention where an equilateral triangle scores 1 is 0.025
+    where it scores 0.5). The floor is a statement about the DRIVE, not about
+    either operation; see the `kMinRadiusRatioFloor` comment.
 
 ## Exit criterion
 
@@ -233,7 +285,8 @@ New `tests/test_flip_edges.cpp`, registered at **TIER `regression`**, backends
 **Requires [edge-split.md](edge-split.md)** (Editing families, Decision 1).
 `rebuildHalo()` already exists in tree (`Tessera_HaloRebuild.hpp`, `25980f2`), so
 [halo-depth.md](halo-depth.md) is **not** a prerequisite — Decision 2 keeps this
-operation depth-1-safe on purpose. [face-adjacency.md](face-adjacency.md) is useful
+operation depth-1-safe on purpose. halo-depth has nonetheless landed since, so the
+call must PRESERVE the depth: `rebuildHalo( mesh, halo, effectiveHaloDepth( halo ) )`. [face-adjacency.md](face-adjacency.md) is useful
 context for step 3 but the final design avoids needing the face graph. See the
 ordering diagram in [halo-depth.md](halo-depth.md).
 
@@ -241,3 +294,172 @@ ordering diagram in [halo-depth.md](halo-depth.md).
 
 - 2026-08-07 — Task written, then re-checked against `08dd346` after pulling
   `../tessera`. Nothing implemented.
+
+- 2026-08-17 — **Implemented.** New `src/Tessera_EdgeFlip.hpp` (`flipEdges()`,
+  `FlipResult`, `DefaultFlipPolicy`), added to the `Tessera.hpp` umbrella; new
+  `tests/test_flip_edges.cpp` at TIER `regression`, SERIAL + HIP, ranks 1–5.
+  `minRadiusRatio()` moved from `tests/test_split_edges.cpp` into
+  `tests/MeshInvariants.hpp` and is now shared by both tests, following the
+  precedent set when `edgeSetOf()`/`checkSplitEdgeCoverage()` were moved there —
+  `test_split_edges` is unchanged in behaviour and in every measured number.
+  README gains the API line, an *Edge flip* subsection and a new Known Issue; the
+  *Editing families* row now reads `splitEdges(), flipEdges(), compact(),
+  compactAndRenumberGids()` with only `collapseEdges()` left as "to follow".
+  `docs/design.md` gains *Edge flip*.
+
+  **The three decisions handed down with the task, all taken as stated:**
+
+  1. **The advertisement carries the opposite vertex's position** (and, in the
+     end, all three of the advertising face's corner positions). `splitEdges()`
+     deliberately did *not* put a length in a message (its log, 2026-08-10,
+     departure 2) because its operands were the deciding face's own corners; that
+     reasoning does not transfer, because the flip coordinator is a **third rank
+     holding neither incident face** and needs all four of `a`, `b`, `c`, `d`. The
+     precedent followed is `detail::KeyGid`'s `len2` rider.
+  2. **The independent-set priority is `(squared length descending, EdgeKey
+     ascending)` and contains no gid.** Every length goes through
+     `edgeLen2Canonical()`. Check 5 passes at np1–5, which is the direct evidence
+     that the rule is total and rank-count invariant.
+  3. **`EdgeField::Faces` is not trusted as input.** Incidence is derived from the
+     advertisements, which are built from owned faces and are therefore true.
+
+  **Two things the task text got wrong, corrected in the implementation and in
+  the document above:**
+
+  1. **The winding.** The task says the two new faces are `(a,c,d)` and `(b,d,c)`;
+     that pair is REVERSED relative to the input. With the incident faces written
+     `(u,v,w)` and `(v,u,x)` — which is what a consistently oriented manifold
+     gives — the quad's boundary cycle is `u → x → v → w` and the only
+     orientation-preserving retriangulation on the diagonal `(w,x)` is
+     **`(u,x,w)` and `(v,w,x)`**. Implemented that way; the header states it.
+  2. **Which of the two old face gids lands on which new face is not free**, and
+     most rules fail check 2. The rule that works is stated in canonical terms:
+     with `p < q` the EdgeKey's ids and `r < s` the two opposite corners, the old
+     face `{p,q,r}` keeps its gid on the new face `{p,r,s}` and `{p,q,s}` on
+     `{q,r,s}`. Applying the same rule to the flipped edge maps them back exactly,
+     which is why a second flip restores the original (corners, gid) pairing. The
+     obvious alternatives — "the forward face keeps the face containing `u`", or
+     "smallest old gid to the canonically-first new face" — both fail the
+     involution, and the failure is not visible without check 2.
+
+  **Signatures as they ended up:**
+
+  ```cpp
+  struct FlipResult
+  {
+      long long requested = 0, accepted = 0;
+      long long rejectedBoundary = 0, rejectedDuplicateEdge = 0;
+      long long rejectedGeometric = 0, rejectedConflict = 0;
+      //! ADDED beyond the task's API: (old EdgeKey, new EdgeKey) for every flip
+      //! this rank TOUCHES, sorted and unique by the old key. The same role
+      //! SplitResult::midpoints plays -- without it, checks 4 and 8 would have to
+      //! instrument the library at the call site to learn the accepted set.
+      std::vector<std::pair<EdgeKey, EdgeKey>> flipped;
+  };
+
+  struct DefaultFlipPolicy
+  {
+      double maxNormalDeviation = 0.35;   // radians
+      double minQuality = 0.05;           // r/R, 1 for an equilateral triangle
+  };
+
+  template <class MeshT, class Policy = DefaultFlipPolicy>
+  FlipResult flipEdges( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
+                        const std::vector<char>& edgeMask,
+                        const Policy& policy = Policy{} );
+  ```
+
+  as designed. The five verdict counters partition `requested`, which the test
+  asserts after every call. Rounds: one advertisement pair, one duplicate-edge
+  query/reply pair, one offer/vote pair, one apply — seven `allToAllV`s plus the
+  rebuild, against `splitEdges()`' six.
+
+  **Two bugs only running revealed.**
+
+  1. **`rebuildHalo()` keeps a stale ghost edge, and it corrupts the heap.** The
+     first np2 run died with `double free or corruption (out)` before printing a
+     single case line. Cause: `rebuildHalo()` seeds its gid → tuple map from
+     **every locally held edge, owned and ghost**, and round G only fetches the
+     ones that are MISSING — so a rank holding a ghost copy of a flipped edge kept
+     the OLD endpoints and handed them to round D, which derives the edge key,
+     the ownership AND the vertex→edge CSR from them. The CSR build indexes a
+     dense gid → local array, so a stale endpoint the rank does not hold writes
+     out of bounds. `splitEdges()` never meets this because it hands the rebuild a
+     freshly built owned-only mesh; a rewrite-**in-place** operation has to say so
+     explicitly. Fix: `resizeEdges(nOwnedE)` / `resizeFaces(nOwnedF)` before the
+     rebuild, with a comment saying it is correctness and not tidiness. Ghost
+     VERTICES are deliberately left alone — a flip moves no vertex.
+  2. **`distribute()` leaves `edgeKeys()`/`faceKeys()` stale**, which is a
+     PRE-EXISTING defect this task merely tripped over. `distribute()` rebuilds
+     the AoSoAs, both CSRs and the three halo plans but never calls
+     `setEdgeKeys()`/`setFaceKeys()`, so a freshly distributed mesh still carries
+     the REPLICATED builder's tables, sized to the global entity count. Invisible
+     until now because every consumer of those tables runs after an editor or an
+     explicit `rebuildHalo()`, all of which rebuild them, and because at np1 the
+     replicated and distributed meshes coincide. Recorded in README *Known
+     Issues*; NOT fixed here, as it is outside this task. Test-side, check 8's
+     side-table assertion is made in the three cases whose mesh has actually been
+     through a flip, and case 7 carries a comment saying why it is not made there.
+
+  **First-run measurements** (subdivision-2 icosphere, V=162 E=480 F=320; all
+  byte-identical at np1–5, SERIAL and HIP, `Serial` and `Default` execution
+  spaces unless noted):
+
+  | check | result |
+  |---|---|
+  | 1+2. involution | one flip accepted, then the same edge GID flipped back; face corner-gid multiset and edge key set both return exactly; edge gid set never moves |
+  | 3. duplicate edge | subdivided tetrahedron V=10 E=24 F=16; `requested=1 rejectedDuplicateEdge=1 accepted=0`, mesh bitwise unchanged |
+  | 4. independent set | every owned edge marked: `requested=480 accepted=80 conflict=400`, boundary/dup/geometric all 0; **no face has two accepted edges** |
+  | 5. rank-count invariance | `accepted=80` and every verdict counter identical to the `MPI_COMM_SELF` reference; face corner-position multiset bitwise equal |
+  | 6. geometric rejection | `minQuality=0.99` → `rejectedGeometric=480`, `accepted=0`, gid checksums and connectivity signatures unchanged |
+  | 7. valence | fixture is optimal (12 × valence 5, 150 × valence 6); 1440 candidate edges evaluated over three rounds, **0 accepted**, histogram and min r/R (0.4865) / min angle (54.397°) unmoved |
+  | 8. key/gid bookkeeping | post-flip edge key checksum predicted exactly from the pre-flip one plus the flip map; no duplicate edge or face key globally |
+  | 9. halo | 52 ghost positions corrupted and restored at np2, plan size 420; a second `flipEdges()` accepts 124 |
+  | 10. empty mask | all six counters 0, `flipped` empty, checksums unchanged |
+  | 11. family guard | throws in both directions naming both families; flip-after-split accepted and still involutive |
+  | 12. split+flip | see the table under check 12 above; min r/R 0.2452 → 0.0330 with worst 0.0309, floor set to 0.025 |
+
+  The 80-of-480 acceptance in check 4 is the expected shape of a one-round
+  independent set on a closed triangulation: 320 faces, each able to endorse one
+  edge, and an edge needs both of its faces — 80 is a quarter of the faces, i.e.
+  the flips are well spread rather than clustered.
+
+  Case 12's per-round FLIP COUNTS do move with the rank count (up to ~1.5%),
+  while the per-round SHAPE numbers do not. That is the caller's valence mask, not
+  the operation: the mask skips an owned edge whose second incident face is not
+  resident, and which edges those are is a property of the partition. It is a
+  legitimate depth-1 caller choice and is called out in the test; check 5 asserts
+  `flipEdges()`' own rank-count invariance directly, with a mask that has no such
+  dependence.
+
+  **Verification:** `test_flip_edges` green in all ten registrations (SERIAL and
+  HIP × np1–5), 12–23 s each. Full regression gate **250/250, 0 failed**, 1806 s
+  (`tessera-gate.f3Spe2ZDWTFd.out`) — 240/240 before, plus this test's ten
+  entries, and nothing relabelled. `test_split_edges` re-run and unchanged, its
+  seven case-8 round lines and every measured number identical after the
+  `minRadiusRatio()` move.
+
+  **Affects:**
+  * **[edge-collapse.md](edge-collapse.md)** — three findings transfer directly.
+    (a) A collapse also rewrites entities in place around a neighbourhood, so it
+    inherits bug 1 above: it must drop ghost edges/faces before `rebuildHalo()`,
+    or hand the rebuild an owned-only mesh as `splitEdges()` does. (b) Its
+    independent set has the same shape and should reuse this priority rule
+    verbatim — `(squared length ..., EdgeKey ...)`, no gid — rather than inventing
+    one; note the conflict relation is WIDER for a collapse (the whole 1-ring of
+    both endpoints, not just the two incident faces), so the "each face owner
+    decides locally" shortcut does NOT carry over and a real conflict graph or a
+    vertex-coordinator round is needed. (c) The link condition a collapse must
+    test — "the edge's two endpoints share exactly the two opposite corners" — is
+    the same *shape* of query as this task's duplicate-edge round, and can be
+    answered the same way, because the advertisement over every owned face's three
+    edges gives a coordinator the exact global edge set.
+  * **[face-adjacency.md](face-adjacency.md)** — no change, but confirmed in
+    passing: `EdgeField::Faces` really is unusable as an input to a topological
+    operation, and `flipEdges()` only repairs it on the flipped edge (the six side
+    edges of a flipped quad may name the flip's sibling face). If a consumer ever
+    needs `Faces` to be exact, that is a separate task and it needs to state which
+    operations maintain it.
+  * **[halo-depth.md](halo-depth.md)** — no change. Decision 2 held: `flipEdges()`
+    is depth-1-safe in practice, and the only depth-dependent thing in the whole
+    exercise is the caller's valence mask.

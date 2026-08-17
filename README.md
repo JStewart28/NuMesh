@@ -94,6 +94,15 @@ splitEdges( mesh, halo, edge_split_mask );          // bisect EXACTLY the marked
                                                      // rebuilds `halo`. REMESH family --
                                                      // see "Editing families" below
 
+FlipResult fr = flipEdges( mesh, halo, edge_flip_mask );
+                                                     // swap the diagonal of each marked
+                                                     // edge's quad. V, E and F UNCHANGED and
+                                                     // every gid preserved. At most an
+                                                     // INDEPENDENT SET per call, so a caller
+                                                     // loops on fr.accepted. Also rebuilds
+                                                     // `halo`. REMESH family -- see "Edge
+                                                     // flip" below
+
 loadBalance( mesh, halo );           // internal Zoltan2 rebalance + halo rebuild (optional).
                                      // Nothing is gathered to rank 0 -- see "Load
                                      // balancing modes" below for the three modes and
@@ -364,7 +373,7 @@ exactly one of them**:
 | Family | Operations | Invariant maintained | `Level` semantics |
 |---|---|---|---|
 | **Hierarchical** | `refine()`, `refineLocal()` | 2:1 level balance; conforming closure | `Level` is **authoritative** |
-| **Remesh** | `splitEdges()`, `compact()`, `compactAndRenumberGids()` *(`collapseEdges()`, `flipEdges()` to follow)* | conformity and manifoldness only | `Level` is **advisory** |
+| **Remesh** | `splitEdges()`, `flipEdges()`, `compact()`, `compactAndRenumberGids()` *(`collapseEdges()` to follow)* | conformity and manifoldness only | `Level` is **advisory** |
 
 `refine()`'s whole design rests on the level model, and that model is coherent
 only because `refine()` performs the uniform 1→4 red split. Bisecting *one* edge
@@ -392,6 +401,87 @@ compatible balance rule) is a much larger design that no known consumer needs; i
 is recorded under *Future Optimizations* below, not attempted. See
 `docs/design.md` → *Edge-addressed splitting* and
 [tasks/edge-split.md](tasks/edge-split.md).
+
+### Edge flip
+
+`flipEdges()` (`Tessera_EdgeFlip.hpp`) replaces the diagonal of the quad formed
+by the two faces incident on each marked edge. It is the cheapest of the remesh
+operations and the one that does the most for element quality per unit cost:
+**V, E and F are all unchanged and only connectivity moves.**
+
+```cpp
+#include <Tessera.hpp>   // Tessera_EdgeFlip.hpp
+
+std::vector<char> edgeMask( mesh.numOwnedEdges(), 0 );  // OWNED-edge indexing
+// ... the caller decides which edges to flip; see "Choosing the edges" below
+
+DefaultFlipPolicy policy;      // maxNormalDeviation = 0.35 rad, minQuality = 0.05
+FlipResult r = flipEdges( mesh, halo, edgeMask, policy );
+
+r.requested;              // marked owned edges, globally
+r.accepted;               // edges actually flipped
+r.rejectedBoundary;       // other than exactly two incident faces
+r.rejectedDuplicateEdge;  // the edge the flip would create already exists
+r.rejectedGeometric;      // the policy's normal-deviation or quality test failed
+r.rejectedConflict;       // lost the independent-set round
+r.flipped;                // (old EdgeKey, new EdgeKey) for every flip this rank touches
+```
+
+The five verdict counters **partition** `requested`. `DefaultFlipPolicy` has two
+knobs: `maxNormalDeviation` (radians) rejects a flip either of whose new faces
+points more than that far from the area-weighted average of the two old normals,
+which is what stops a nearly-flat pair being folded; and `minQuality` rejects a
+flip either of whose new faces has a radius ratio (inradius/circumradius,
+**scaled to 1 for an equilateral triangle**) below it. Note the scaling — the
+same quantity is conventionally quoted as 0.5 for an equilateral triangle, so a
+`minQuality` of 0.05 is a floor of 0.025 in the unscaled convention that
+`tests/MeshInvariants.hpp`'s `minRadiusRatio()` reports.
+
+Three decisions a caller has to know about:
+
+**Gids are preserved, so `gid ↔ key` is no longer a bijection.** The flipped edge
+keeps its gid and gets new endpoints; the two faces keep theirs and get new
+corners. Nothing is created or destroyed, so there is nothing to assign, and no
+peer's reference to any entity is invalidated by a flip — that is what makes the
+operation cheap. The price is that an edge's `EdgeKey` **changes** while its gid
+does not, so a caller that cached "the edge whose key is K has gid G" across a
+`flipEdges()` call is wrong afterwards. Nothing inside Tessera assumes the
+bijection: the `edgeKeys()`/`faceKeys()` side tables are rebuilt from `Verts` by
+the halo rebuild, and every gid-keyed path is keyed on gid alone.
+
+**Choosing the edges is the caller's, not Tessera's.** The dominant use of
+flipping is valence equalization, which needs the full valence of all four
+corners of the quad. A vertex's valence is a local quantity at its owner, so the
+caller computes it and encodes it in the mask; keeping it out of `flipEdges()` is
+what makes the operation safe at **halo depth 1** — every test it performs is
+evaluable from the two incident faces, which the edge's coordinator supplies.
+Pulling valence inside would force depth 2 and hard-code one selection criterion
+into a general operation.
+
+**At most an independent set is applied per call.** Two flips sharing a *face*
+conflict — that face would be rewritten twice — and only the higher-priority one
+survives; two sharing only a vertex do not conflict. Iterating internally would
+hide an unbounded number of collectives behind one call, so **the caller loops**:
+
+```cpp
+for ( int round = 0; round < maxRounds; ++round )
+{
+    auto mask = myValenceSelection( mesh );   // re-derived every round
+    if ( flipEdges( mesh, halo, mask ).accepted == 0 ) break;
+}
+```
+
+which is also what lets the caller re-derive valences between rounds. The
+priority is `(squared length descending, EdgeKey ascending)` and contains **no
+gid**, so the accepted set is a pure function of the global mesh and is identical
+at every rank count.
+
+Because the independent set is not a serial shortest-first sweep, **the flip set
+differs from a serial pass and both are valid** — a consumer must compare quality
+*statistics*, not edit sets. `flipEdges()` ends by calling `rebuildHalo()` at the
+halo's recorded depth, so the halo is valid on return. An empty mask is a no-op
+fast path. See `docs/design.md` → *Edge flip* and
+[tasks/edge-flip.md](tasks/edge-flip.md).
 
 ### Compaction: removing entities
 
@@ -807,6 +897,24 @@ make -j $(nproc)
 
 ## Known Issues
 
+- **`distribute()` leaves the `edgeKeys()`/`faceKeys()` side tables stale.**
+  *(Predates all current work; found while writing `tests/test_flip_edges.cpp`,
+  which asserts the side tables entry-for-entry.)* `distribute()` rebuilds the
+  local AoSoAs, both vertex CSRs and the three halo plans, but it never calls
+  `setEdgeKeys()`/`setFaceKeys()` — so on a freshly distributed mesh those two
+  Views are still the ones `buildFromTriangleSoup()` produced for the
+  **replicated** mesh: sized to the global entity count and indexed by the
+  replicated local index. Reproduce at any `comm size > 1` by comparing
+  `mesh.edgeKeys().extent(0)` against `mesh.numEdges()` immediately after
+  `distribute()`. It is invisible today because every consumer of the key tables
+  runs after `refine()`, `splitEdges()`, `flipEdges()`, `migrate()` or an
+  explicit `rebuildHalo()`, all of which rebuild them (halo-rebuild round D), and
+  because at `np1` the replicated and distributed meshes coincide. A caller that
+  reads `mesh.edgeKeys()` between `distribute()` and the first topological edit
+  gets wrong keys with no diagnostic. The fix is one round-D-style rebuild at the
+  end of `distribute()`; it was not made as part of the edge-flip task because it
+  is out of that task's scope. `test_flip_edges` case 7 documents the avoidance
+  in place.
 - **One distributed MultiJagged solve (`LoadBalanceMode::Distributed`) is not
   run-to-run reproducible, which is why `Sampled` is the default.** *(Not a
   Tessera defect — a measured property of Zoltan2, recorded because the

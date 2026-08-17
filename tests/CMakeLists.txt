@@ -784,6 +784,47 @@ tessera_add_test(
     SOURCES  test_split_edges.cpp
 )
 
+# Caller-driven EDGE FLIP (tasks/edge-flip.md) -- the second remesh-family
+# operation. A flip changes connectivity only: V, E and F are unchanged and every
+# gid is preserved, so nearly every assertion is an IDENTITY rather than a
+# comparison against a hardcoded number.
+#
+# The two that make the operation trustworthy are INVOLUTION -- flip an edge,
+# flip the same edge GID back, and the multiset of face corner-GID triples and
+# the edge key set must return EXACTLY to the original, which pins the winding,
+# the corner assignment and which of the two old face gids lands on which new
+# face -- and RANK-COUNT INVARIANCE of the accepted set against an
+# MPI_COMM_SELF reference the same run computes, which is what the gid-free
+# independent-set priority (squared length descending, EdgeKey ascending) buys.
+#
+# Also: duplicate-edge rejection on a hand-built SUBDIVIDED TETRAHEDRON, whose
+# four original corners keep valence 3 so that flipping one of their edges would
+# create an edge that already exists (an icosphere has no such vertex); the
+# independent set (no face rewritten twice); a policy nothing can satisfy
+# rejecting everything and moving nothing; the valence-equalization use case
+# written out caller-side; the edge key set moving by exactly the accepted flips
+# while the gid set does not move at all; halo validity on return; the empty-mask
+# identity; the editing-family guard both ways plus flip-after-split; and five
+# rounds of split composed with valence flips against a measured radius-ratio
+# floor.
+#
+# TIER regression, ranks 1-5, both backends: gate promotion is pre-authorized
+# for this task by tasks/edge-flip.md.
+tessera_add_test(
+    NAME     flip_edges
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_flip_edges.cpp
+)
+tessera_add_test(
+    NAME     flip_edges
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_flip_edges.cpp
+)
+
 # Mesh compaction (tasks/mesh-compaction.md) -- tombstone removal, and the
 # periodic gid renumbering that closes the gid-space leak. The prerequisite of
 # edge collapse: without it a coarsening operation has nowhere to put its dead

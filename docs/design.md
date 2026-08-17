@@ -1039,6 +1039,104 @@ depth, so the halo is valid on return and a second call may follow immediately.
 An empty mask is a no-op fast path with no communication beyond the collectives
 that establish the global request and face counts.
 
+## Edge flip
+
+`flipEdges()` (`Tessera_EdgeFlip.hpp`) is the second remesh-family operation and
+the odd one out among the editors: it creates and destroys nothing. For an
+interior manifold edge whose two incident faces are `(u,v,w)` and `(v,u,x)`, it
+deletes the diagonal `(u,v)`, creates `(w,x)`, and replaces the two faces —
+**V, E and F are all unchanged**, only connectivity moves.
+
+### Why it needs the coordinator machinery
+
+A flip needs **both** incident faces, and the 1-deep *vertex* halo does not
+guarantee they are co-resident: an owned face all three of whose corners are
+ghosts can have edge-neighbours held on neither this rank nor on any single other
+rank's local set. A local rewrite is therefore not available, and the operation
+is built on the same `detail::edgeCoordRank` coordinator that `refine()`'s 2:1
+balance and `splitEdges()`' mask agreement use.
+
+**The owner decides; both face owners apply.** Every rank advertises, per owned
+face and per each of its three edges, a message carrying the `EdgeKey`, the
+face's gid and owner, the gids of all three of that face's edges, the opposite
+corner's gid, a winding flag, and the **positions of all three corners**;
+separately, the owner of each marked edge advertises its verdict, whose presence
+at the coordinator *is* the verdict. The coordinator then holds `a`, `b`, `c`,
+`d` and all four positions and evaluates the three tests below, ships the
+resulting rewrite to the two face owners and to the edge's owner, and each of
+them writes its own entities in place.
+
+**Carrying the positions is the deliberate departure from `splitEdges()`.**
+`splitEdges()` computes its one geometric decision — the two-edge diagonal —
+locally and puts no length in any message, because its operands are the deciding
+face's own corners, which `rebuildHalo()` guarantees are held. That reasoning
+does not transfer: the flip's coordinator is a **third rank holding neither
+face**. The in-tree precedent is `detail::KeyGid`'s `len2` rider
+(`Tessera_RefineParallel.hpp`), added so the conforming blue closure could choose
+its diagonal geometrically; a flip advertisement is the same shape, one step
+larger. Every length is nonetheless computed through `edgeLen2Canonical()`, the
+library's one canonical producer, so two ranks comparing the same edge get
+bit-identical doubles regardless of endpoint order.
+
+### The duplicate-edge round
+
+Does the edge the flip would create already exist? Flipping into an existing edge
+produces a **non-manifold** mesh, and on a coarse mesh it happens routinely: any
+valence-3 vertex has it. The coordinator of `(c,d)` is a *different* rank from
+the coordinator of `(a,b)` in general, so the answer costs one extra round — the
+deciding coordinator asks, and only a negative answer lets the flip through. The
+answer is exact rather than best-effort because the advertisement in step 1 is
+over **every owned face's three edges**, so the `(c,d)` coordinator has seen the
+whole global edge set by the time it is asked. `EdgeField::Faces` is *not* used
+for any of this: it is best-effort by design (`migrate()` carries it verbatim, so
+it can name a face no rank holds), and incidence derived from the advertisements
+is true by construction.
+
+### The independent set, and why the priority carries no gid
+
+Two flips sharing a **face** conflict; two sharing only a vertex do not. No graph
+traversal is needed for that relation: each face owner sees its own three edges'
+verdicts, keeps the highest-priority candidate and endorses only that one back
+through the coordinator, which accepts an edge exactly when **both** its faces
+endorse it. A face can endorse at most one candidate, so no face is ever
+rewritten twice.
+
+**The priority is `(squared length descending, EdgeKey ascending)` and contains
+no gid.** Gids come from an `MPI_Exscan`: they are agreed across the ranks of one
+run but are *not* the same values at a different rank count. That is exactly the
+finding that forced `splitEdges()`' diagonal tie-break away from the closure's
+lower-midpoint-gid rule, and it applies with full force here, because the whole
+value of a deterministic independent set is that it is a property of the mesh
+rather than of its decomposition. An `EdgeKey` is built from pre-existing vertex
+gids and *is* invariant, so the pair is a total order on distinct edges and the
+accepted set is a pure function of the global mesh.
+
+The result is an independent set, **not a maximal one**: an edge that loses on
+one face is not reconsidered when that face's winner is itself vetoed by its own
+other face. That is deliberate — one round, one bounded cost — and the caller
+loops, watching `accepted`, which is also what lets it re-derive valences between
+rounds.
+
+### The consequence for consumers
+
+**The result differs from a serial shortest-first pass, and both are valid.** A
+serial sweep rebuilds the edge map after each accepted flip and is therefore
+inherently sequential and order-dependent; the independent-set form applies a
+deterministic, rank-count-invariant subset per call. The two do not produce the
+same edit set and there is no reason they should. A consumer porting from a
+serial remesher must compare **quality statistics** — minimum radius ratio,
+minimum angle, the valence histogram — and not flip sets.
+
+Two smaller consequences are worth stating. Gids are preserved, so `gid ↔ key` is
+no longer a bijection across a flip (see README → *Edge flip*). And because the
+operation rewrites entities **in place** rather than rebuilding the mesh, it must
+drop its ghost edges and faces before calling `rebuildHalo()`: the rebuild seeds
+its gid → tuple map from every locally held edge and only *fetches* the missing
+ones, so a stale ghost copy of a flipped edge would otherwise survive with its
+old endpoints and be handed to the rebuild's round D as if it were current.
+`splitEdges()` never meets that because it hands the rebuild a freshly built
+owned-only mesh.
+
 ## Compaction
 
 Every editor described so far only ever **adds** entities: `refine()` and

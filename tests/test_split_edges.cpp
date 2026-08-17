@@ -343,85 +343,6 @@ static void geoSignature( MeshT& mesh, Chk& verts, Chk& faces, int& fails )
     faces.reduce( mesh.comm() );
 }
 
-//! Global minimum inradius/circumradius over the owned faces. 0.5 exactly for an
-//! equilateral triangle, 0 for a degenerate one. Reduced over mesh.comm().
-//! `minAngleDeg`, also reduced, is the global smallest triangle angle -- the
-//! second statistic because r/R and the min angle degrade for different reasons
-//! and a needle triangle can be caught by one before the other.
-template <class MeshT>
-static double minRadiusRatio( MeshT& mesh, int& fails, double& minAngleDeg )
-{
-    const auto pos = readPositions( mesh );
-    double worst = 1.0, worstAngle = 180.0;
-    for ( const auto& t : ownedFaceVerts( mesh ) )
-    {
-        std::array<double, 3> p[3];
-        bool ok = true;
-        for ( int k = 0; k < 3; ++k )
-        {
-            auto it = pos.find( t[k] );
-            if ( it == pos.end() )
-                ok = false;
-            else
-                p[k] = it->second;
-        }
-        if ( !ok )
-        {
-            ++fails;
-            continue;
-        }
-        double side[3] = { 0, 0, 0 };
-        for ( int k = 0; k < 3; ++k )
-        {
-            double s = 0.0;
-            for ( int d = 0; d < 3; ++d )
-            {
-                const double dd = p[( k + 1 ) % 3][d] - p[k][d];
-                s += dd * dd;
-            }
-            side[k] = std::sqrt( s );
-        }
-        // Area from the cross product of two edge vectors.
-        double u[3], v[3];
-        for ( int d = 0; d < 3; ++d )
-        {
-            u[d] = p[1][d] - p[0][d];
-            v[d] = p[2][d] - p[0][d];
-        }
-        const double cx = u[1] * v[2] - u[2] * v[1];
-        const double cy = u[2] * v[0] - u[0] * v[2];
-        const double cz = u[0] * v[1] - u[1] * v[0];
-        const double area = 0.5 * std::sqrt( cx * cx + cy * cy + cz * cz );
-        const double abc = side[0] * side[1] * side[2];
-        if ( abc <= 0.0 )
-        {
-            ++fails;
-            continue;
-        }
-        const double s = 0.5 * ( side[0] + side[1] + side[2] );
-        // r/R = (area/s) / (abc/(4 area)) = 4 area^2 / (s abc)
-        worst = std::min( worst, 4.0 * area * area / ( s * abc ) );
-
-        // Law of cosines. side[k] runs corner k -> k+1, so the angle at corner
-        // k+1 is between side[k] and side[k+1], opposite side[k+2].
-        for ( int k = 0; k < 3; ++k )
-        {
-            const double a = side[k], b = side[( k + 1 ) % 3],
-                         c = side[( k + 2 ) % 3];
-            double cosA = ( a * a + b * b - c * c ) / ( 2.0 * a * b );
-            cosA = std::max( -1.0, std::min( 1.0, cosA ) );
-            worstAngle = std::min(
-                worstAngle, std::acos( cosA ) * 180.0 / 3.14159265358979323846 );
-        }
-    }
-    double global = worst;
-    MPI_Allreduce( &worst, &global, 1, MPI_DOUBLE, MPI_MIN, mesh.comm() );
-    minAngleDeg = worstAngle;
-    MPI_Allreduce( &worstAngle, &minAngleDeg, 1, MPI_DOUBLE, MPI_MIN,
-                   mesh.comm() );
-    return global;
-}
-
 // ---------------------------------------------------------------------------
 // Rank-count-invariant edge selections
 // ---------------------------------------------------------------------------
@@ -991,7 +912,8 @@ static int caseRepeatedRounds( int rank, const char* tag )
         counts( mesh, V, E, F );
         double minAngle = 180.0;
         int qFails = 0;
-        const double q = minRadiusRatio( mesh, qFails, minAngle );
+        const double q =
+            TesseraTest::minRadiusRatio( mesh, qFails, minAngle );
         local += qFails;
         perRound.push_back( q );
         if ( q < kMinRadiusRatioFloor )

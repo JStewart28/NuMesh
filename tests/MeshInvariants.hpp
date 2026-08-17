@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <iterator>
 #include <map>
 #include <set>
@@ -406,6 +407,119 @@ inline int checkSplitEdgeCoverage(
             ++fails; // incomplete (split but missing) or spurious
     }
     return fails;
+}
+
+// ---------------------------------------------------------------------------
+// Triangle shape statistics
+// ---------------------------------------------------------------------------
+
+//! Global minimum inradius/circumradius over the owned faces. 0.5 exactly for an
+//! equilateral triangle, 0 for a degenerate one. Reduced over mesh.comm().
+//! `minAngleDeg`, also reduced, is the global smallest triangle angle -- the
+//! second statistic because r/R and the min angle degrade for different reasons
+//! and a needle triangle can be caught by one before the other.
+//!
+//! SHARED, not duplicated: test_split_edges asserts a measured floor on it over
+//! a length-driven split sequence and test_flip_edges reports it before and
+//! after a flip pass, and the two numbers are only comparable if they are the
+//! same function. Lives here for the same reason edgeSetOf() and
+//! checkSplitEdgeCoverage() do.
+//!
+//! `fails` is incremented once per owned face whose corners are not all held
+//! locally, or which is degenerate; such a face contributes nothing.
+template <class MeshT>
+double minRadiusRatio( MeshT& mesh, int& fails, double& minAngleDeg )
+{
+    // gid -> position over every locally held vertex, and the owned faces'
+    // corner gids: both read straight from the AoSoAs so the helper depends on
+    // nothing but the mesh.
+    Cabana::AoSoA<typename MeshT::vertex_member_types, Kokkos::HostSpace> hv(
+        "hv", mesh.numVertices() );
+    Cabana::deep_copy( hv, mesh.vertices() );
+    auto vg = Cabana::slice<Tessera::VertexField::Gid>( hv );
+    auto vp = Cabana::slice<Tessera::VertexField::Position>( hv );
+    std::map<GlobalId, std::array<double, 3>> pos;
+    for ( std::size_t i = 0; i < mesh.numVertices(); ++i )
+    {
+        std::array<double, 3> p = { 0, 0, 0 };
+        for ( int d = 0; d < MeshT::dim && d < 3; ++d )
+            p[d] = static_cast<double>( vp( i, d ) );
+        pos[vg( i )] = p;
+    }
+
+    Cabana::AoSoA<typename MeshT::face_member_types, Kokkos::HostSpace> hf(
+        "hf", mesh.numFaces() );
+    Cabana::deep_copy( hf, mesh.faces() );
+    auto fv = Cabana::slice<Tessera::FaceField::Verts>( hf );
+
+    double worst = 1.0, worstAngle = 180.0;
+    for ( std::size_t f = 0; f < mesh.numOwnedFaces(); ++f )
+    {
+        std::array<double, 3> p[3];
+        bool ok = true;
+        for ( int k = 0; k < 3; ++k )
+        {
+            auto it = pos.find( fv( f, k ) );
+            if ( it == pos.end() )
+                ok = false;
+            else
+                p[k] = it->second;
+        }
+        if ( !ok )
+        {
+            ++fails;
+            continue;
+        }
+        double side[3] = { 0, 0, 0 };
+        for ( int k = 0; k < 3; ++k )
+        {
+            double s = 0.0;
+            for ( int d = 0; d < 3; ++d )
+            {
+                const double dd = p[( k + 1 ) % 3][d] - p[k][d];
+                s += dd * dd;
+            }
+            side[k] = std::sqrt( s );
+        }
+        // Area from the cross product of two edge vectors.
+        double u[3], v[3];
+        for ( int d = 0; d < 3; ++d )
+        {
+            u[d] = p[1][d] - p[0][d];
+            v[d] = p[2][d] - p[0][d];
+        }
+        const double cx = u[1] * v[2] - u[2] * v[1];
+        const double cy = u[2] * v[0] - u[0] * v[2];
+        const double cz = u[0] * v[1] - u[1] * v[0];
+        const double area = 0.5 * std::sqrt( cx * cx + cy * cy + cz * cz );
+        const double abc = side[0] * side[1] * side[2];
+        if ( abc <= 0.0 )
+        {
+            ++fails;
+            continue;
+        }
+        const double s = 0.5 * ( side[0] + side[1] + side[2] );
+        // r/R = (area/s) / (abc/(4 area)) = 4 area^2 / (s abc)
+        worst = std::min( worst, 4.0 * area * area / ( s * abc ) );
+
+        // Law of cosines. side[k] runs corner k -> k+1, so the angle at corner
+        // k+1 is between side[k] and side[k+1], opposite side[k+2].
+        for ( int k = 0; k < 3; ++k )
+        {
+            const double a = side[k], b = side[( k + 1 ) % 3],
+                         c = side[( k + 2 ) % 3];
+            double cosA = ( a * a + b * b - c * c ) / ( 2.0 * a * b );
+            cosA = std::max( -1.0, std::min( 1.0, cosA ) );
+            worstAngle = std::min(
+                worstAngle, std::acos( cosA ) * 180.0 / 3.14159265358979323846 );
+        }
+    }
+    double global = worst;
+    MPI_Allreduce( &worst, &global, 1, MPI_DOUBLE, MPI_MIN, mesh.comm() );
+    minAngleDeg = worstAngle;
+    MPI_Allreduce( &worstAngle, &minAngleDeg, 1, MPI_DOUBLE, MPI_MIN,
+                   mesh.comm() );
+    return global;
 }
 
 // ---------------------------------------------------------------------------
