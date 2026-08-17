@@ -400,6 +400,10 @@ ordering diagram in [halo-depth.md](halo-depth.md).
      Issues*; NOT fixed here, as it is outside this task. Test-side, check 8's
      side-table assertion is made in the three cases whose mesh has actually been
      through a flip, and case 7 carries a comment saying why it is not made there.
+     *Since fixed inside `distribute()` itself* — one round-D-style local rebuild
+     of both key Views after `setOwnedCounts()`, with `checkKeyTables()` moved to
+     `tests/MeshInvariants.hpp` and now asserted by `test_distribute` and by case
+     7; the README *Known Issues* bullet has been removed.
 
   **First-run measurements** (subdivision-2 icosphere, V=162 E=480 F=320; all
   byte-identical at np1–5, SERIAL and HIP, `Serial` and `Default` execution

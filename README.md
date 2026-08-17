@@ -897,24 +897,6 @@ make -j $(nproc)
 
 ## Known Issues
 
-- **`distribute()` leaves the `edgeKeys()`/`faceKeys()` side tables stale.**
-  *(Predates all current work; found while writing `tests/test_flip_edges.cpp`,
-  which asserts the side tables entry-for-entry.)* `distribute()` rebuilds the
-  local AoSoAs, both vertex CSRs and the three halo plans, but it never calls
-  `setEdgeKeys()`/`setFaceKeys()` — so on a freshly distributed mesh those two
-  Views are still the ones `buildFromTriangleSoup()` produced for the
-  **replicated** mesh: sized to the global entity count and indexed by the
-  replicated local index. Reproduce at any `comm size > 1` by comparing
-  `mesh.edgeKeys().extent(0)` against `mesh.numEdges()` immediately after
-  `distribute()`. It is invisible today because every consumer of the key tables
-  runs after `refine()`, `splitEdges()`, `flipEdges()`, `migrate()` or an
-  explicit `rebuildHalo()`, all of which rebuild them (halo-rebuild round D), and
-  because at `np1` the replicated and distributed meshes coincide. A caller that
-  reads `mesh.edgeKeys()` between `distribute()` and the first topological edit
-  gets wrong keys with no diagnostic. The fix is one round-D-style rebuild at the
-  end of `distribute()`; it was not made as part of the edge-flip task because it
-  is out of that task's scope. `test_flip_edges` case 7 documents the avoidance
-  in place.
 - **One distributed MultiJagged solve (`LoadBalanceMode::Distributed`) is not
   run-to-run reproducible, which is why `Sampled` is the default.** *(Not a
   Tessera defect — a measured property of Zoltan2, recorded because the

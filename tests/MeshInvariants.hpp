@@ -409,6 +409,104 @@ inline int checkSplitEdgeCoverage(
     return fails;
 }
 
+//! The canonical-key side tables agree with the AoSoA connectivity entry for
+//! entry over every LOCAL entity, and no two OWNED edges (or faces) share a key
+//! globally. The duplicate test is routed through the same coordinators
+//! flipEdges() uses, so it sees the whole global key set.
+//!
+//! SHARED, not duplicated, for the same reason edgeSetOf() and
+//! checkSplitEdgeCoverage() are: test_distribute asserts it on the mesh
+//! distribute() just produced and test_flip_edges asserts it as its check 8
+//! after a flip pass, and the two only mean the same thing if they are the same
+//! function.
+//!
+//! `breakdown`, if given, receives the four partial counts in order: local edge
+//! table, local face table, duplicate owned edge key, duplicate owned face key.
+//! Returns LOCAL fails (sum across ranks == global).
+template <class MeshT>
+int checkKeyTables( MeshT& mesh, int* breakdown = nullptr )
+{
+    int fails = 0;
+    int part[4] = { 0, 0, 0, 0 };
+    const int size = mesh.commSize();
+
+    Cabana::AoSoA<typename MeshT::edge_member_types, Kokkos::HostSpace> he(
+        "he", mesh.numEdges() );
+    Cabana::deep_copy( he, mesh.edges() );
+    auto ev = Cabana::slice<Tessera::EdgeField::Verts>( he );
+    auto ek = Kokkos::create_mirror_view_and_copy( Kokkos::HostSpace(),
+                                                   mesh.edgeKeys() );
+    if ( ek.extent( 0 ) != mesh.numEdges() )
+        ++part[0];
+    else
+        for ( std::size_t e = 0; e < mesh.numEdges(); ++e )
+            if ( !( ek( e ) ==
+                    Tessera::makeEdgeKey( ev( e, 0 ), ev( e, 1 ) ) ) )
+                ++part[0];
+
+    Cabana::AoSoA<typename MeshT::face_member_types, Kokkos::HostSpace> hf(
+        "hf", mesh.numFaces() );
+    Cabana::deep_copy( hf, mesh.faces() );
+    auto fv = Cabana::slice<Tessera::FaceField::Verts>( hf );
+    auto fk = Kokkos::create_mirror_view_and_copy( Kokkos::HostSpace(),
+                                                   mesh.faceKeys() );
+    if ( fk.extent( 0 ) != mesh.numFaces() )
+        ++part[1];
+    else
+        for ( std::size_t f = 0; f < mesh.numFaces(); ++f )
+            if ( !( fk( f ) == Tessera::makeFaceKey( fv( f, 0 ), fv( f, 1 ),
+                                                     fv( f, 2 ) ) ) )
+                ++part[1];
+
+    // Global duplicate test over the OWNED edge keys.
+    struct KeyMsg
+    {
+        Tessera::EdgeKey key;
+    };
+    std::vector<std::vector<KeyMsg>> adv( size );
+    for ( std::size_t e = 0; e < mesh.numOwnedEdges(); ++e )
+    {
+        const Tessera::EdgeKey k =
+            Tessera::makeEdgeKey( ev( e, 0 ), ev( e, 1 ) );
+        adv[Tessera::detail::edgeCoordRank( k, size )].push_back( { k } );
+    }
+    auto got = Tessera::allToAllV( mesh.comm(), adv );
+    std::map<Tessera::EdgeKey, int> seen;
+    for ( const auto& m : got.data )
+        ++seen[m.key];
+    for ( const auto& kv : seen )
+        if ( kv.second > 1 )
+            ++part[2]; // two owned edges with the same endpoints
+
+    // ... and over the OWNED face keys, routed on the face key's first id.
+    struct FKeyMsg
+    {
+        Tessera::FaceKey key;
+    };
+    std::vector<std::vector<FKeyMsg>> fadv( size );
+    for ( std::size_t f = 0; f < mesh.numOwnedFaces(); ++f )
+    {
+        const Tessera::FaceKey k =
+            Tessera::makeFaceKey( fv( f, 0 ), fv( f, 1 ), fv( f, 2 ) );
+        fadv[k.id[0] % static_cast<GlobalId>( size )].push_back( { k } );
+    }
+    auto fgot = Tessera::allToAllV( mesh.comm(), fadv );
+    std::map<Tessera::FaceKey, int> fseen;
+    for ( const auto& m : fgot.data )
+        ++fseen[m.key];
+    for ( const auto& kv : fseen )
+        if ( kv.second > 1 )
+            ++part[3];
+
+    for ( int i = 0; i < 4; ++i )
+    {
+        fails += part[i];
+        if ( breakdown )
+            breakdown[i] = part[i];
+    }
+    return fails;
+}
+
 // ---------------------------------------------------------------------------
 // Triangle shape statistics
 // ---------------------------------------------------------------------------

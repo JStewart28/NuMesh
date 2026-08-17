@@ -16,6 +16,9 @@
 //   - ownership is a partition of every entity kind (sum of owned == global,
 //     no gid owned twice),
 //   - every owned vertex has its full 1-ring held locally,
+//   - the edgeKeys()/faceKeys() side tables are sized to the LOCAL entity counts
+//     and agree with the local connectivity entry for entry, with no duplicate
+//     owned key globally,
 //   - a halo exchange fills every ghost with its owner's data: ghost tuples are
 //     corrupted, haloExchange() is run, and each ghost must be restored to the
 //     gid/owner its owner holds (owned entities untouched). At one rank there are
@@ -115,6 +118,11 @@ int run( int rank, int size, const char* tag )
     distribute( mesh, halo, faceOwner );
 
     int fails = 0;
+    // Immediately after distribute(), before anything else has touched the mesh:
+    // the canonical-key side tables must describe THIS rank's local entities, not
+    // the replicated mesh the builder produced. The extent half of this check is
+    // the direct reproducer for the defect distribute() used to have.
+    fails += TesseraTest::checkKeyTables( mesh );
     fails += TesseraTest::checkOwnershipPartition( mesh, NvG, NeG, NfG );
     fails += TesseraTest::owned1RingLocal( mesh );
     fails += corrupt_sync_verify( MPI_COMM_WORLD, rank, mesh.vertices(),

@@ -171,8 +171,10 @@ std::vector<Rank> facePartitionByAxis( const MeshT& mesh, int axis = 2 )
 // face partition (indexed by face gid). Postconditions: the mesh holds only this
 // rank's local entities, ordered owned-first then ghost; connectivity fields keep
 // global gids; ownership follows the lowest-rank rule; the vertex 1-ring CSR is
-// rebuilt in local indices; owned counts are set; and `halo` holds the three plans
-// so a subsequent haloExchange() fills every ghost from its owner.
+// rebuilt in local indices; owned counts are set; the edgeKeys()/faceKeys() side
+// tables are rebuilt to the LOCAL entity counts and local indexing, so they are
+// valid before the first topological edit; and `halo` holds the three plans so a
+// subsequent haloExchange() fills every ghost from its owner.
 //
 // Ownership (lowest-rank rule), computable locally because the mesh is replicated:
 //   face f   -> faceOwner[f]
@@ -319,11 +321,14 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
     const int nlf = static_cast<int>( forder.size() );
 
     // ---- build compact local AoSoAs, then hand them to the mesh ------------
-    // INVALIDATION: the resize/deep_copy calls below (and the CSR rebuild
-    // further down) reallocate and reassign this mesh's storage, invalidating
-    // every slice/CSR/key-View handed out before this call. Call clear() and
-    // rebuild any HaloExchangePlan (already done for halo below); re-slice from
-    // the mesh after distribute() returns.
+    // INVALIDATION: the resize/deep_copy calls below (and, further down, the
+    // edgeKeys()/faceKeys() rebuild and the two CSR rebuilds) reallocate and
+    // reassign this mesh's storage, invalidating every slice, CSR and key View
+    // handed out before this call -- edgeKeys() and faceKeys() included; they
+    // are reassigned to freshly allocated Views sized to the local counts. Call
+    // clear() and rebuild any HaloExchangePlan (already done for halo below);
+    // re-slice and re-fetch the key Views from the mesh after distribute()
+    // returns.
     {
         Cabana::AoSoA<typename MeshT::vertex_member_types, Kokkos::HostSpace>
             lv( "lv", nlv );
@@ -395,6 +400,42 @@ void distribute( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
         Cabana::deep_copy( mesh.faces(), lf );
     }
     mesh.setOwnedCounts( nov, noe, nof );
+
+    // ---- rebuild the canonical-key side tables -----------------------------
+    // Same rebuild the halo's round D and the serial builder do, but purely
+    // local: the replicated connectivity is still in host memory here and the
+    // local orderings are in scope, so the keys of this rank's local entities
+    // are read straight off e_v/f_v. No communication at any depth. Without
+    // this the mesh would keep the REPLICATED builder's tables -- sized to the
+    // global entity count and indexed by the replicated local index -- and a
+    // caller reading edgeKeys() before the first topological edit would get
+    // wrong keys with no diagnostic.
+    {
+        Kokkos::View<EdgeKey*, memory_space> ek(
+            Kokkos::view_alloc( Kokkos::WithoutInitializing, "edge_keys" ),
+            nle );
+        auto h_ek = Kokkos::create_mirror_view( ek );
+        for ( int li = 0; li < nle; ++li )
+        {
+            const int g = eorder[li];
+            h_ek( li ) = makeEdgeKey( e_v( g, 0 ), e_v( g, 1 ) );
+        }
+        Kokkos::deep_copy( ek, h_ek );
+        mesh.setEdgeKeys( ek );
+
+        Kokkos::View<FaceKey*, memory_space> fk(
+            Kokkos::view_alloc( Kokkos::WithoutInitializing, "face_keys" ),
+            nlf );
+        auto h_fk = Kokkos::create_mirror_view( fk );
+        for ( int li = 0; li < nlf; ++li )
+        {
+            const int g = forder[li];
+            h_fk( li ) =
+                makeFaceKey( f_v( g, 0 ), f_v( g, 1 ), f_v( g, 2 ) );
+        }
+        Kokkos::deep_copy( fk, h_fk );
+        mesh.setFaceKeys( fk );
+    }
 
     // ---- rebuild local CSR 1-ring (local indices) --------------------------
     {

@@ -52,7 +52,9 @@
 //   8. KEY AND GID BOOKKEEPING. After an accepted flip the edge GID set is
 //      unchanged and the edge KEY set has changed by EXACTLY the accepted
 //      flips; edgeKeys()/faceKeys() match the AoSoA connectivity entry for
-//      entry and contain no duplicates globally.
+//      entry and contain no duplicates globally. The side-table half is
+//      asserted in every case, flipped or not -- including case 7, whose mesh
+//      is exactly what distribute() produced.
 //   9. HALO VALID ON RETURN. Corrupting every ghost position and exchanging
 //      restores the owners' values; a SECOND flipEdges() with nothing in
 //      between succeeds; checkOwnershipPartition passes.
@@ -731,87 +733,6 @@ static int checkCountersPartition( const FlipResult& r )
                : 1;
 }
 
-//! Check 8's side-table half: edgeKeys()/faceKeys() agree with the AoSoA
-//! connectivity entry for entry over every LOCAL entity, and no two OWNED edges
-//! (or faces) share a key globally. The duplicate test is routed through the
-//! same coordinators flipEdges() uses, so it sees the whole global key set.
-template <class MeshT>
-static int checkKeyTables( MeshT& mesh, int* breakdown = nullptr )
-{
-    int fails = 0;
-    int part[4] = { 0, 0, 0, 0 };
-    const int size = mesh.commSize();
-
-    Cabana::AoSoA<typename MeshT::edge_member_types, Kokkos::HostSpace> he(
-        "he", mesh.numEdges() );
-    Cabana::deep_copy( he, mesh.edges() );
-    auto ev = Cabana::slice<EdgeField::Verts>( he );
-    auto ek = Kokkos::create_mirror_view_and_copy( Kokkos::HostSpace(),
-                                                   mesh.edgeKeys() );
-    if ( ek.extent( 0 ) != mesh.numEdges() )
-        ++part[0];
-    else
-        for ( std::size_t e = 0; e < mesh.numEdges(); ++e )
-            if ( !( ek( e ) == makeEdgeKey( ev( e, 0 ), ev( e, 1 ) ) ) )
-                ++part[0];
-
-    Cabana::AoSoA<typename MeshT::face_member_types, Kokkos::HostSpace> hf(
-        "hf", mesh.numFaces() );
-    Cabana::deep_copy( hf, mesh.faces() );
-    auto fv = Cabana::slice<FaceField::Verts>( hf );
-    auto fk = Kokkos::create_mirror_view_and_copy( Kokkos::HostSpace(),
-                                                   mesh.faceKeys() );
-    if ( fk.extent( 0 ) != mesh.numFaces() )
-        ++part[1];
-    else
-        for ( std::size_t f = 0; f < mesh.numFaces(); ++f )
-            if ( !( fk( f ) ==
-                    makeFaceKey( fv( f, 0 ), fv( f, 1 ), fv( f, 2 ) ) ) )
-                ++part[1];
-
-    // Global duplicate test over the OWNED edge keys.
-    struct KeyMsg
-    {
-        EdgeKey key;
-    };
-    std::vector<std::vector<KeyMsg>> adv( size );
-    for ( const EdgeKey& k : ownedEdgeKeys( mesh ) )
-        adv[Tessera::detail::edgeCoordRank( k, size )].push_back( { k } );
-    auto got = allToAllV( mesh.comm(), adv );
-    std::map<EdgeKey, int> seen;
-    for ( const auto& m : got.data )
-        ++seen[m.key];
-    for ( const auto& kv : seen )
-        if ( kv.second > 1 )
-            ++part[2]; // two owned edges with the same endpoints
-
-    // ... and over the OWNED face keys, routed on the face key's first id.
-    struct FKeyMsg
-    {
-        FaceKey key;
-    };
-    std::vector<std::vector<FKeyMsg>> fadv( size );
-    for ( std::size_t f = 0; f < mesh.numOwnedFaces(); ++f )
-    {
-        const FaceKey k = makeFaceKey( fv( f, 0 ), fv( f, 1 ), fv( f, 2 ) );
-        fadv[k.id[0] % static_cast<GlobalId>( size )].push_back( { k } );
-    }
-    auto fgot = allToAllV( mesh.comm(), fadv );
-    std::map<FaceKey, int> fseen;
-    for ( const auto& m : fgot.data )
-        ++fseen[m.key];
-    for ( const auto& kv : fseen )
-        if ( kv.second > 1 )
-            ++part[3];
-
-    for ( int i = 0; i < 4; ++i )
-    {
-        fails += part[i];
-        if ( breakdown )
-            breakdown[i] = part[i];
-    }
-    return fails;
-}
 
 //! Build -> partition -> distribute the subdiv-2 fixture on `comm`.
 template <class MeshT, class Exec>
@@ -888,7 +809,7 @@ static int caseInvolution( int rank, const char* tag )
         ++local; // NOT an involution on the edge key set
     if ( gids2 != gids0 )
         ++local;
-    local += checkKeyTables( mesh );
+    local += TesseraTest::checkKeyTables( mesh );
 
     const int glob = gsum( MPI_COMM_WORLD, local );
     if ( rank == 0 )
@@ -999,7 +920,8 @@ static int caseDuplicateEdge( int rank, const char* tag )
     edgeSignatures( mesh, keys1, gids1 );
     if ( faces1 != faces0 || keys1 != keys0 || gids1 != gids0 )
         ++local; // a rejected flip must leave the mesh alone
-    local += checkKeyTables( mesh ); // no duplicate edge key afterwards
+    // no duplicate edge key afterwards
+    local += TesseraTest::checkKeyTables( mesh );
 
     const int glob = gsum( MPI_COMM_WORLD, local );
     if ( rank == 0 )
@@ -1044,7 +966,7 @@ static int caseIndependentSet( int rank, int size, const char* tag )
         o.res = flipEdges( mesh, halo, mask );
         local += checkAll( mesh, o.V, o.E, o.F );
         local += checkCountersPartition( o.res );
-        local += checkKeyTables( mesh );
+        local += TesseraTest::checkKeyTables( mesh );
 
         const auto flips = globalFlipSet( comm, o.res );
         if ( static_cast<long long>( flips.size() ) != o.res.accepted )
@@ -1213,15 +1135,13 @@ static int caseValence( int rank, const char* tag )
                          res.rejectedDuplicateEdge, res.rejectedGeometric,
                          res.rejectedConflict );
     }
-    // NO checkKeyTables() HERE, deliberately. The fixture starts valence-optimal,
-    // so the mask marks nothing, flipEdges() takes its empty-mask fast path and
-    // the mesh is still exactly what distribute() produced -- and distribute()
-    // rebuilds the CSRs and the halo plans but NOT edgeKeys()/faceKeys(), so on
-    // a freshly distributed mesh at np > 1 those side tables are still the
-    // replicated builder's, sized to the global mesh. That is a pre-existing
-    // wart (README Known Issues), not something a flip introduces, and check 8
-    // is asserted in the three cases whose mesh has actually been through a
-    // flip: case 1+2, case 4+5+8 and case 9+10.
+    // Check 8 HERE is the strongest of the five places it is asserted: the
+    // fixture starts valence-optimal, so the mask marks nothing, flipEdges()
+    // takes its empty-mask fast path and the mesh is still exactly what
+    // distribute() produced. That made it the one case that could not assert the
+    // side tables while distribute() left them stale, and it is now the case
+    // that proves distribute() rebuilds them.
+    local += TesseraTest::checkKeyTables( mesh );
 
     const std::map<int, long long> h1 = valence::histogram( mesh );
     double angle1 = 180.0;
@@ -1341,7 +1261,7 @@ static int caseEmptyAndHalo( int rank, int size, const char* tag )
         res = flipEdges( mesh, halo, mask2 );
         accepted2 = res.accepted;
         local += checkAll( mesh, V, E, F );
-        local += checkKeyTables( mesh );
+        local += TesseraTest::checkKeyTables( mesh );
         if ( res.requested <= 0 )
             ++local;
 
