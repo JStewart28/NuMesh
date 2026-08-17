@@ -115,7 +115,9 @@ haloExchange( mesh, halo );                         // re-sync the field pack (r
                                                      // migrate() leave ghost values already
                                                      // equal to the owners')
 
-writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf
+writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf; returns an
+                                     // XdmfFrame describing the frame (discardable)
+// writeMesh( mesh, "bubble_0001", 1.5 );  // same, plus <Time Value="1.5"/> in the .xmf
 ```
 
 ### Halo: gather and scatter-add

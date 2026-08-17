@@ -1540,9 +1540,15 @@ templated on the mesh type):
 ```cpp
 // Collective on mesh.comm(). Writes <stem>.h5 (parallel HDF5) + <stem>.xmf
 // (XDMF sidecar, rank 0 only). Ghost dense indices are fetched from each
-// ghost's Owner field -- no halo plan needed.
+// ghost's Owner field -- no halo plan needed. Returns the frame's XDMF
+// metadata (h5 basename, dim, Nv/Nf, attribute list) -- discardable, and
+// discarded by every caller that does not build a time series. The second
+// overload adds a <Time Value=> child to the sidecar's grid; `time` is the
+// caller's own quantity (physical time or a step index).
 template <class MeshT>
-void writeMesh( const MeshT& mesh, const std::string& stem );
+XdmfFrame writeMesh( const MeshT& mesh, const std::string& stem );
+template <class MeshT>
+XdmfFrame writeMesh( const MeshT& mesh, const std::string& stem, double time );
 
 // Collective. Fills an empty mesh (constructed on the same comm) + its halo
 // by block-reading <stem>.h5 and re-running migrate() (a self-destination

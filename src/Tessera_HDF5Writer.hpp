@@ -74,10 +74,16 @@ namespace Tessera
 // with no closure bookkeeping. It is written in BOTH modes — the version bump
 // from 1 to 2 is what makes that safe, since a v1 file carries no such
 // attribute and the reader would fail to open it.
-template <class MeshT>
-void writeMesh( const MeshT& mesh, const std::string& stem )
+namespace detail
 {
-    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_WRITE_MESH );
+
+//! The collective HDF5 half of writeMesh(): everything except the rank-0 XDMF
+//! sidecar. Returns the metadata the sidecar (or a later temporal-collection
+//! master) needs to describe `<stem>.h5`, so the XML can be re-emitted without
+//! reopening the file. Collective; every rank returns the same XdmfFrame.
+template <class MeshT>
+XdmfFrame writeMeshH5( const MeshT& mesh, const std::string& stem )
+{
     using Scalar = typename MeshT::scalar_type;
     constexpr int Dim = MeshT::dim;
     using VMT = typename MeshT::vertex_member_types;
@@ -95,7 +101,6 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
         numFaceUserFields<typename MeshT::face_user_fields>();
 
     MPI_Comm comm = mesh.comm();
-    const int R = mesh.rank();
     const int size = mesh.commSize();
 
     const long long nOwnedV = static_cast<long long>( mesh.numOwnedVertices() );
@@ -194,7 +199,7 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
     hid_t gFaces =
         H5Gcreate2( file, "/faces", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT );
 
-    std::vector<detail::XdmfField> vXdmf, fXdmf;
+    std::vector<XdmfField> vXdmf, fXdmf;
 
     // ---- /vertices ----------------------------------------------------------
     {
@@ -405,12 +410,48 @@ void writeMesh( const MeshT& mesh, const std::string& stem )
     H5Gclose( gFaces );
     H5Fclose( file );
 
+    // The .xmf can only reference an .h5 in its own directory, so the frame
+    // carries the basename, not `filename`.
+    return XdmfFrame{ detail::xdmfBasename( stem ) + ".h5",
+                      Dim,
+                      static_cast<int>( sizeof( Scalar ) ),
+                      static_cast<unsigned long long>( gcV.N ),
+                      static_cast<unsigned long long>( gcF.N ),
+                      std::move( vXdmf ),
+                      std::move( fXdmf ) };
+}
+
+} // namespace detail
+
+//! Write `<stem>.h5` collectively plus the timeless `<stem>.xmf` sidecar on
+//! rank 0, and return the frame's XDMF metadata (a discarded return value is
+//! the pre-existing behavior).
+template <class MeshT>
+XdmfFrame writeMesh( const MeshT& mesh, const std::string& stem )
+{
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_WRITE_MESH );
+    XdmfFrame frame = detail::writeMeshH5( mesh, stem );
+
     // ---- XDMF sidecar (rank 0, after the collective write completes) ------
-    MPI_Barrier( comm );
-    if ( R == 0 )
-        writeXdmf( stem, Dim, static_cast<int>( sizeof( Scalar ) ),
-                   static_cast<unsigned long long>( gcV.N ),
-                   static_cast<unsigned long long>( gcF.N ), vXdmf, fXdmf );
+    MPI_Barrier( mesh.comm() );
+    if ( mesh.rank() == 0 )
+        writeXdmf( stem, frame );
+    return frame;
+}
+
+//! As above, but the sidecar's grid carries a `<Time Value=>` child. `time` is
+//! the caller's own quantity -- physical time or a step index -- in the
+//! caller's own units; nothing here interprets or validates it.
+template <class MeshT>
+XdmfFrame writeMesh( const MeshT& mesh, const std::string& stem, double time )
+{
+    TESSERA_SCOPED_TIMER( ::Tessera::Profiling::TIMER_WRITE_MESH );
+    XdmfFrame frame = detail::writeMeshH5( mesh, stem );
+
+    MPI_Barrier( mesh.comm() );
+    if ( mesh.rank() == 0 )
+        writeXdmf( stem, frame, time );
+    return frame;
 }
 
 } // namespace Tessera

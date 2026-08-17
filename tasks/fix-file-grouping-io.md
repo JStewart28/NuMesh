@@ -216,7 +216,7 @@ that.
 
 ## Task sequence
 
-### T1 — `XdmfFrame` record; `writeMesh()` returns it; byte-identical output — **NOT STARTED**
+### T1 — `XdmfFrame` record; `writeMesh()` returns it; byte-identical output — **DONE**
 
 **Depends on:** none
 
@@ -252,147 +252,26 @@ capture in `XdmfFrame` is the current argument list at
 Failure direction: with the timed overload called instead, `cmp` must report a
 difference and the only difference must be an added `<Time Value=` line.
 
-**Session prompt:**
-
-`````markdown
-Read `tasks/fix-file-grouping-io.md` and implement `T1` — introduce `XdmfFrame`,
-have `writeMesh()` return it, and keep the emitted `.xmf` byte-identical.
-
-Read these before starting, and skip the rest of the document:
-- `tasks/fix-file-grouping-io.md`: the `T1` task entry, the **Conventions** table,
-  the **Deliberate deviations** section, and risk `R3` (T1's whole reason for
-  factoring the grid emitter into one function is so R3's fix is one-function-wide
-  later).
-- `src/Tessera_Xdmf.hpp` — the whole file (155 lines); `detail::XdmfField` at 33-38,
-  `writeXdmf()` at 80-150, the exact bytes to preserve at 91-148.
-- `src/Tessera_HDF5Writer.hpp:77-79` (the `writeMesh` signature), `:197` (the only
-  `detail::XdmfField` use), `:245` and `:356` (the `vXdmf`/`fXdmf` field-list
-  construction), `:407-413` (the barrier + rank-0 sidecar block to lift out).
-
-`tasks/fix-file-grouping-io-progress-log.md` has no entries yet; yours is the first.
-
-Decisions already made — do not reopen, and record them in
-`tasks/fix-file-grouping-io-progress-log.md` under `## T1`:
-- **The byte-comparison vehicle is `examples/02_mesh_pipeline`, not `test_io`.**
-  `test_io.cpp` deletes its `.xmf` at lines 294-295 and 523-524, so it leaves
-  nothing to `cmp`. The example leaves one `.xmf` per frame on disk.
-- **Establish determinism before attributing any difference to your change.** In
-  the baseline job, run the example twice into two different `--out` stems and
-  `cmp` the corresponding frame `.xmf` files against each other. If those differ,
-  stop and report — the byte-identity criterion is not measurable and the task
-  needs a different vehicle.
-- **The failure-direction check is temporary and reverted.** To prove the timed
-  overload adds exactly one `<Time Value=` line and nothing else, temporarily
-  switch one `writeMesh()` call in `mesh_pipeline.cpp` to the timed overload,
-  capture the `cmp`/`diff` output, then revert that edit. T3 owns the permanent
-  example change; do not leave a timed call site behind.
-- **Scope of test running:** the full regression gate is not required. Build all
-  targets — compilation is what proves the `void` → `XdmfFrame` return change is
-  source-compatible with `test_io.cpp:226`, `test_io.cpp:458`,
-  `test_latlon_sphere.cpp:709`, `test_distributed_build.cpp:697`,
-  `mesh_pipeline.cpp:155` and `:221` — then run only `io_SERIAL` np1-5. `io_HIP` is
-  not required: the sidecar is rank-0 text with no device involvement.
-
-Constraints specific to this task:
-- Do not change any call site other than `src/Tessera_HDF5Writer.hpp:411-413`.
-- Keep the `dim != 2 && dim != 3` attribute-only branch
-  (`src/Tessera_Xdmf.hpp:115-121`) verbatim inside the new emitter.
-- `XdmfField` moves out of `Tessera::detail` into `Tessera`; `XdmfFrame` is new in
-  `Tessera`. No new header in T1 — `src/Tessera_XdmfSeries.hpp` is T2's.
-- Do not fix the silent `return` on `fopen` failure at `src/Tessera_Xdmf.hpp:87-89`.
-  It is pre-existing and out of scope; T2's new emitter is where loud failure lands.
-- Never run the formatter. Match surrounding style by hand.
-- Out of scope, deliberately: `writeXdmfSeries()`, `MeshSeries`, any `<Time>`
-  emission from a permanent call site, and the `Version="3.0"`-with-XDMF2-spellings
-  mismatch (R3 — V1 decides that, not you).
-
-Running on the cluster — this machine uses Flux:
-
-- Do not run executables directly. No `flux run`, no bare `mpirun` or `srun`, and
-  no invoking the binary or `ctest` on the login node — not a single-rank smoke
-  test, not `--help`. Everything that executes goes in a job script submitted to
-  the `pdebug` queue. Building is the exception: build on the login node.
-- Build in a **login shell** with the Spack user config exported, per
-  `systems/tuolumne/claude.md:52-59`:
-  ```bash
-  bash -lc 'export SPACK_USER_CONFIG_PATH=$HOME/.spack/tuolumne
-            . /usr/WS2/stewartj/spack/share/spack/setup-env.sh
-            spack env activate ~/spack_envs/tuolumne_trilinos/
-            cd /g/g20/stewartj/research-bridges/tessera-dev/Tessera/build-tuolumne
-            make -j 64'
-  ```
-  A non-login shell has no PrgEnv module, so the Cray CC wrapper fails; and without
-  `SPACK_USER_CONFIG_PATH` the Tuolumne system externals silently disappear.
-- Export `TESSERA_REPO` in the submitting shell before every `flux batch` —
-  `export TESSERA_REPO=$(pwd)` from the repo root. Flux copies the script to a temp
-  dir, so the resolver cannot locate the repo from its own path, and the committed
-  runners die in seconds with an `unbound variable` error without it.
-- Submission preambles are already written; copy them, do not invent one. Queue
-  `pdebug`, `--nodes=1 --exclusive`, `-t 20m`, resolver sourced via
-  `scripts/lib/tessera_env.sh`:
-  - example runs: `scripts/tuolumne/run_mesh_pipeline_example.flux` — takes
-    `mesh_pipeline` args straight through, output at
-    `tessera-mesh-pipeline-example.<jobid>.out` in the submit directory.
-  - ctest runs: `scripts/tuolumne/run_unit_tests.flux <LABEL> [CTEST_ARGS...]` —
-    for this task `flux batch scripts/tuolumne/run_unit_tests.flux regression -R "io_SERIAL"`,
-    output at `tessera-unit.<jobid>.out`.
-  Request the shortest walltime the run needs; `pdebug` allows more, and a short
-  limit makes a hang fail fast instead of holding an allocation.
-- Submit, then poll every 30 seconds until the job leaves the queue, and continue
-  the moment it does. Do not sleep for the walltime.
-  ```bash
-  jobid=$(flux batch scripts/tuolumne/run_unit_tests.flux regression -R "io_SERIAL")
-  while flux jobs "$jobid" 2>/dev/null | grep -q "$jobid"; do sleep 30; done
-  flux job status "$jobid"
-  ```
-- Leaving the queue is not success. Check the exit status above and read the job's
-  stdout at the paths named before concluding anything. A job killed at the
-  walltime limit or lost to a node failure disappears from the queue exactly like
-  one that passed.
-- If the job is still pending after ten minutes, stop polling and report the queue
-  state instead of waiting silently.
-- Cancel any job you started and are no longer waiting on (`flux cancel <jobid>`)
-  before you finish.
-- Copy the rank-to-GPU launch line from `scripts/tuolumne/run_mesh_pipeline_example.flux`
-  exactly — `flux run --ntasks 4 --nodes=1 --exclusive --cores-per-task=16
-  --env=GLIBC_TUNABLES=glibc.rtld.optional_static_tls=8388608`. Do not simplify it
-  and do not leave it to the default; Tuolumne has 4 GPUs per node, so a wrong
-  binding oversubscribes one device and still returns plausible output. If you use
-  a different rank count, say what the binding then was in the log entry.
-- Have any job script you write echo its provenance to stdout before doing work —
-  `spack env status`, the compiler version, the commit SHA, and the submit command.
-  The committed runners already echo system, build dir and args; add the rest.
-- Stop and report rather than work around. If the build fails twice for the same
-  reason, or a job dies twice the same way, write up what you tried and what the
-  error was, and stop. Do not loosen the byte-identity check, skip the
-  failure-direction case, or drop rank counts — that silently changes what **DONE**
-  means and the substitution is invisible in the diff.
-
-Order of operations, because the baseline must be captured before you edit:
-1. Build at current `HEAD`, submit `run_mesh_pipeline_example.flux --iters 1` twice
-   with distinct `--out` stems, and save the resulting `.xmf` files outside the
-   run directory. Confirm run-to-run byte-identity.
-2. Implement T1. Rebuild. Re-run the example with the same args and the original
-   `--out` stem, and `cmp` each frame `.xmf` against its saved baseline.
-3. Do the temporary timed-overload check, then revert it.
-4. Submit `io_SERIAL` at np1-5.
-
-Exit criterion: `ctest -L regression -R "io_SERIAL"` passes at np1-5 and the newly
-produced `.xmf` for the same case is **byte-identical** (`cmp` exits 0) to the saved
-copy. Failure direction: with the timed overload called instead, `cmp` must report a
-difference and the only difference must be an added `<Time Value=` line.
-
-When done: mark `T1` **DONE** in `tasks/fix-file-grouping-io.md` with a **Met.**
-paragraph stating what was actually verified — including the rank counts run and
-which `.xmf` files were compared — and append a `## T1` section to
-`tasks/fix-file-grouping-io-progress-log.md` covering the decisions above, the final
-shape of `XdmfFrame` and both `writeXdmf`/`writeMesh` overload pairs, any bug only
-running revealed, and an `**Affects:**` line naming the later task IDs your findings
-change (T2 consumes `detail::writeXdmfGrid` and `XdmfFrame` directly, so any
-departure from their stated signatures belongs there). Delete this
-`**Session prompt:**` block from the `T1` entry in the same edit; it describes work
-that is now finished.
-`````
+**Met.** `ctest -L regression -R "io_SERIAL"` passes at np1, np2, np3, np4 and
+np5 (5/5, job `f3Ss7AUnAj8j`), and every target in the build tree compiles — which
+is what proves the `void` -> `XdmfFrame` return change is source-compatible with
+the six untouched call sites. Byte-identity was measured on
+`examples/02_mesh_pipeline --iters 1` at 4 ranks: run-to-run determinism first
+(two runs, `--out runA/mesh` vs `--out runB/mesh`, all 6 sidecars identical),
+then the 6 post-change sidecars
+`mesh_{Serial,Default,OpenMP}_conforming_np4_frame{0,1}.xmf` against their saved
+pre-change copies -- `cmp` exit 0 on all 6. That example has empty field packs
+and `Dim=3`, so the user-field attribute loop and the `dim != 2 && dim != 3`
+branch were covered separately by a throwaway header-only probe diffing the pre-
+and post-change headers over dim 3 / dim 2 / dim 4 / empty-field cases with
+scalar and multi-extent user fields on both centerings: all identical (see the
+log). Failure direction: with `writeMesh( ..., 0.0 )` temporarily substituted at
+[mesh_pipeline.cpp:155](../examples/02_mesh_pipeline/mesh_pipeline.cpp#L155),
+each `frame0.xmf` differed from its baseline at byte 102 by exactly one added
+line, `    <Time Value="0"/>`, and nothing else, while every `frame1.xmf` (the
+untouched call site) stayed identical. That edit is reverted. See
+[the progress log](fix-file-grouping-io-progress-log.md#t1) for the two internal
+departures from the **Do** steps and the `/tmp`-is-node-local job trap.
 
 ### T2 — `writeXdmfSeries()` + `MeshSeries`: a master `.xmf` Paraview opens as one timestepped dataset — **NOT STARTED**
 
