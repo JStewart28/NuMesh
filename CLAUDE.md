@@ -6,7 +6,7 @@ short — task-specific detail lives in the reference docs below, read on demand
 
 | Read this doc | Before |
 |---|---|
-| [docs/build-and-run.md](docs/build-and-run.md) | Building, running an example, submitting a job, or setting up a fresh checkout |
+| [docs/compile-and-run.md](docs/compile-and-run.md) | Building, running an example, submitting a job, or setting up a fresh checkout |
 | [docs/testing.md](docs/testing.md) | Running tests or changing what the ship gate covers |
 | [docs/framework-maintenance.md](docs/framework-maintenance.md) | Adding a system, changing build/run plumbing, or planning a large multi-commit change |
 | [docs/design.md](docs/design.md) | Changing algorithms or data structures (data model, halo, refinement, load balancing, I/O) |
