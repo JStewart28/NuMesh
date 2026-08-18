@@ -368,7 +368,7 @@ writes at [lines 155](../examples/02_mesh_pipeline/mesh_pipeline.cpp#L155) and
    per-frame `.h5`/`.xmf`, and the master is what to open.
 
 **Exit criterion:** running the example (Tuolumne: `scripts/tuolumne/run_mesh_pipeline_example.flux`;
-see [docs/build-and-run.md](../docs/build-and-run.md)) with `--iters 3` produces
+see [docs/compile-and-run.md](../docs/compile-and-run.md)) with `--iters 3` produces
 exactly one `<out>_<tag>_np<size>.xmf` per execution-space tag, each containing 4
 `<Time Value=` entries (frame 0 plus 3 iterations) with values `0,1,2,3`, and the
 run exits 0. Failure direction: an `.xmf` naming an `.h5` that does not exist on

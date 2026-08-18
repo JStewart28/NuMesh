@@ -16,7 +16,7 @@ large change. The never-violate invariants stay in [CLAUDE.md](../CLAUDE.md).
 5. Add `scripts/<system>/runtime_env.sh` if launch-time env vars are needed.
 6. Add `scripts/<system>/run_regression_minset.<scheduler>`.
 7. Declare the system's backends in both
-   [build-and-run.md](build-and-run.md#compute-backends) and
+   [compile-and-run.md](compile-and-run.md#compute-backends) and
    `systems/<system>/claude.md`.
 8. Commit an env snapshot under `systems/<system>/` if one is used (e.g. spack.yaml).
 
