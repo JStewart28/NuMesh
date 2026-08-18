@@ -1,6 +1,6 @@
 # XDMF time-series grouping: one dataset in Paraview instead of N
 
-**Status:** NOT STARTED
+**Status:** IN PROGRESS
 
 ## Problem
 
@@ -47,19 +47,23 @@ The brief's framing — "they are not grouped together in paraview" — is accur
 about the symptom but suggests grouping is something that failed. Nothing ever
 attempted it. Three specific facts a later session should not re-derive:
 
-1. **There is no `<Time>` element anywhere in the emitted XML, and the grid is a
-   lone `GridType="Uniform"`.**
-   [src/Tessera_Xdmf.hpp:91-93](../src/Tessera_Xdmf.hpp#L91-L93) writes
-   `<Xdmf Version="3.0"><Domain>` then `<Grid Name="Tessera"
-   GridType="Uniform">`, and [src/Tessera_Xdmf.hpp:147-148](../src/Tessera_Xdmf.hpp#L147-L148)
-   closes it. A reader handed this file has one timeless grid; there is no
-   timestep for a time slider to show.
+1. **There is no collection wrapper in the emitted XML: the sidecar is a lone
+   `GridType="Uniform"` grid.**
+   [src/Tessera_Xdmf.hpp:211](../src/Tessera_Xdmf.hpp#L211) writes
+   `<Xdmf Version="3.0"><Domain>` and
+   [src/Tessera_Xdmf.hpp:213](../src/Tessera_Xdmf.hpp#L213) closes it, with a
+   single `<Grid Name="Tessera" GridType="Uniform">`
+   ([src/Tessera_Xdmf.hpp:112](../src/Tessera_Xdmf.hpp#L112)) between them. A
+   `<Time>` child can be emitted since T1, but one timed grid in one file is
+   still not a series: a reader handed the file sees one grid, so there is
+   nothing for a time slider to step through.
 
-2. **`writeMesh()` cannot know a series exists.** Its signature is
-   `writeMesh( const MeshT& mesh, const std::string& stem )`
-   ([src/Tessera_HDF5Writer.hpp:77-79](../src/Tessera_HDF5Writer.hpp#L77-L79))
-   and it returns `void`. No time argument, no frame index, no state carried
-   between calls. The caller invents the stem (`frameStem()` in the example,
+2. **`writeMesh()` cannot know a series exists.** Its signatures are
+   `writeMesh( const MeshT& mesh, const std::string& stem )` and the timed
+   overload ([src/Tessera_HDF5Writer.hpp:430](../src/Tessera_HDF5Writer.hpp#L430),
+   [:446](../src/Tessera_HDF5Writer.hpp#L446)). A `time` argument exists, but no
+   frame index and no state carried between calls. The caller invents the stem
+   (`frameStem()` in the example,
    [examples/02_mesh_pipeline/mesh_pipeline.cpp:107-114](../examples/02_mesh_pipeline/mesh_pipeline.cpp#L107-L114)),
    so the *only* place in the system that knows which files form a sequence, and
    in what time order, is the caller. That is why the fix necessarily adds a
@@ -81,7 +85,7 @@ A fourth observation, deliberately **not** acted on by this design: the emitted
 XML declares `Xdmf Version="3.0"` while using XDMF2 element spellings
 (`TopologyType=`, `GeometryType=`, `NumberOfElements=`, `NumberType=`/
 `Precision=`, e.g.
-[src/Tessera_Xdmf.hpp:99-113](../src/Tessera_Xdmf.hpp#L99-L113)). This currently
+[src/Tessera_Xdmf.hpp:112-123](../src/Tessera_Xdmf.hpp#L112-L123)). This currently
 works — the readers accept the legacy spellings — and changing it is a separate
 risk with no bearing on grouping. It is why **V1 must confirm the master file in
 more than one Paraview reader** (see R2).
@@ -93,12 +97,12 @@ that names them in time order.
 
 Three pieces, in the same header-only style as the rest of the library:
 
-1. **A frame record.** The information `writeXdmf()` currently receives as seven
-   loose arguments becomes one `XdmfFrame` struct, and `writeMesh()` **returns**
-   it. Returning it is what makes the series possible without duplicating the
-   writer's metadata derivation (`gcV.N`, `gcF.N`, the `vXdmf`/`fXdmf` field
-   lists built at [src/Tessera_HDF5Writer.hpp:245](../src/Tessera_HDF5Writer.hpp#L245)
-   and [src/Tessera_HDF5Writer.hpp:356](../src/Tessera_HDF5Writer.hpp#L356)) in a
+1. **A frame record.** The metadata the XML needs is one `XdmfFrame` struct, and
+   `writeMesh()` **returns** it. Returning it is what makes the series possible
+   without duplicating the writer's metadata derivation (`gcV.N`, `gcF.N`, the
+   `vXdmf`/`fXdmf` field lists built at
+   [src/Tessera_HDF5Writer.hpp:250](../src/Tessera_HDF5Writer.hpp#L250)
+   and [src/Tessera_HDF5Writer.hpp:361](../src/Tessera_HDF5Writer.hpp#L361)) in a
    second place, where it would silently drift from the writer.
 
 2. **A stateless master-file emitter.** `writeXdmfSeries( masterStem, steps )`
@@ -130,9 +134,9 @@ reload never observes a half-written file.
 generating `<base>_%06u`. The master lists each frame's file explicitly, so
 frame names need not be numeric or even ordered — and Beantik keeps whatever
 naming it already uses. The cost is one real constraint that must be enforced
-loudly, not worked around: `writeXdmf()` references the HDF5 file by **basename**
-([src/Tessera_Xdmf.hpp:40-44](../src/Tessera_Xdmf.hpp#L40-L44), used at
-[src/Tessera_Xdmf.hpp:85](../src/Tessera_Xdmf.hpp#L85)), so an `.xmf` can only
+loudly, not worked around: the XML references the HDF5 file by **basename** —
+that is what `XdmfFrame::h5name` holds and documents
+([src/Tessera_Xdmf.hpp:43](../src/Tessera_Xdmf.hpp#L43)) — so an `.xmf` can only
 reference `.h5` files sitting beside it. The master must therefore live in the
 same directory as every frame it names, and `MeshSeries` hard-fails on a frame
 stem whose directory differs from the master's.
@@ -142,7 +146,7 @@ stem whose directory differs from the master's.
 | Choice | Decision |
 |---|---|
 | Header | New public API in a new header `src/Tessera_XdmfSeries.hpp`; add it to `src/Tessera.hpp` in alphabetical position (after `Tessera_Xdmf.hpp`, [src/Tessera.hpp:52](../src/Tessera.hpp#L52)) |
-| Namespace | `Tessera::` for `XdmfFrame`, `XdmfTimeStep`, `XdmfField`, `writeXdmf`, `writeXdmfSeries`, `MeshSeries`. `XdmfField` **moves out** of `Tessera::detail` because it is now reachable through a public return type; its only two current uses are in `Tessera_Xdmf.hpp` and [src/Tessera_HDF5Writer.hpp:197](../src/Tessera_HDF5Writer.hpp#L197) |
+| Namespace | `Tessera::` for `XdmfFrame`, `XdmfTimeStep`, `XdmfField`, `writeXdmf`, `writeXdmfSeries`, `MeshSeries`. `XdmfField` lives in `Tessera`, not `Tessera::detail`, because it is reachable through a public return type; its only two uses are in `Tessera_Xdmf.hpp` and [src/Tessera_HDF5Writer.hpp:202](../src/Tessera_HDF5Writer.hpp#L202) |
 | Time argument | Always an explicit `double time` from the caller. No default, no frame-index fallback, no NaN sentinel. A caller with no physical time passes the step index — an explicit choice at the call site |
 | Optional time | Expressed as an **overload pair**, not a pointer or sentinel: `writeXdmf( stem, frame )` emits no `<Time>`; `writeXdmf( stem, frame, time )` emits one. Same for the two `writeMesh` overloads |
 | Failure behavior | Loud. `MeshSeries::write()` throws `std::runtime_error` on a non-increasing time or a frame stem in a different directory from the master. `writeXdmfSeries()` throws if it cannot open the temp file or if `steps` is empty. No best-effort partial master |
@@ -150,6 +154,7 @@ stem whose directory differs from the master's.
 | Child grid names | Every child keeps `Name="Tessera"`, as today — a stable grid name across timesteps is what lets Paraview track the same object through the collection |
 | Comments | Units/ownership/monotonicity contracts on the declarations. Cite the XDMF temporal-collection shape as the provenance on `writeXdmfSeries()` |
 | Test tier | `unit`, `SERIAL`, ranks `1;2;3` — new file `tests/test_xdmf_series.cpp`. The gate is untouched. Assertions are on XML text plus file existence; a Python `xml.etree` well-formedness check runs from the test via `python3` (present at `/usr/tce/bin/python3`; `pvpython` and `paraview` are **not** installed on this system, so no in-test Paraview check is possible) |
+| Test output paths | Same convention as [tests/test_io.cpp:553-559](../tests/test_io.cpp#L553-L559): the stem is the executable basename plus `_np<size>`, in the cwd, prefixed by `$TESSERA_IO_TMPDIR` when that variable is set. Whatever directory is used must be on a **shared** filesystem — `/tmp` is node-local on Tuolumne, so a job that writes there leaves output unreachable and still exits 0 (see [the T1 log](fix-file-grouping-io-progress-log.md#t1)) |
 | License header | Every new file carries the project BSD-3-Clause `/* */` block with `SPDX-License-Identifier: BSD-3-Clause`, per `CLAUDE.md` |
 | Formatting | Never run the formatter. Match surrounding style by hand |
 
@@ -168,29 +173,46 @@ stem whose directory differs from the master's.
   path with the fewest reader bugs; hoisting shared data into the `<Domain>` is
   reported to break. The XML is O(frames) but each child is ~10 lines of text
   referencing HDF5 — heavy data never enters the XML.
-- **`writeMesh()`'s return type changes from `void` to `XdmfFrame`.** This is
+- **`writeMesh()` returns `XdmfFrame` rather than `void`.** This is
   source-compatible with every existing caller (a discarded return value), so no
-  caller is modified by T1 — but it is a change to a documented public signature
-  and must be mirrored into `README.md` and `docs/design.md`.
+  caller was modified by T1 — but it is a change to a documented public signature
+  and is mirrored into `README.md` and `docs/design.md`.
 
 ## Current state
 
-Everything described here is unbuilt. What exists:
+T1 is done; T2 onward are unbuilt. What exists:
 
-- `writeMesh( const MeshT&, const std::string& )` → `void`, writes `<stem>.h5`
-  collectively and then, on rank 0 after an `MPI_Barrier`, the sidecar
-  ([src/Tessera_HDF5Writer.hpp:408-413](../src/Tessera_HDF5Writer.hpp#L408-L413)).
-- `writeXdmf( stem, dim, scalarBytes, Nv, Nf, vFields, fFields )` →
-  one timeless `GridType="Uniform"` grid
-  ([src/Tessera_Xdmf.hpp:80-150](../src/Tessera_Xdmf.hpp#L80-L150)). Note it
-  **returns silently if `fopen` fails** ([src/Tessera_Xdmf.hpp:87-89](../src/Tessera_Xdmf.hpp#L87-L89));
-  that is a pre-existing quiet-degradation path this design does not fix, and
-  the new emitter must not copy it.
-- `detail::XdmfField { dataset, name, extent }`
-  ([src/Tessera_Xdmf.hpp:33-38](../src/Tessera_Xdmf.hpp#L33-L38)), populated by
-  the writer's user-field loops.
-- No time concept, no collection, no series type, no master file, nothing that
-  reads a written frame's metadata back for a restart.
+- `Tessera::XdmfField` ([src/Tessera_Xdmf.hpp:32](../src/Tessera_Xdmf.hpp#L32))
+  and `Tessera::XdmfFrame` ([:43](../src/Tessera_Xdmf.hpp#L43)), the latter
+  documenting `h5name` as a basename.
+- `detail::writeXdmfGridImpl( fp, frame, indent, const double* time )`
+  ([src/Tessera_Xdmf.hpp:106](../src/Tessera_Xdmf.hpp#L106)) emits one whole
+  `<Grid>` and is the single place any child grid's element spellings come from —
+  which is what keeps R3's fix one function wide. It is private plumbing: callers
+  go through the public `detail::writeXdmfGrid( fp, frame, indent )`
+  ([:186](../src/Tessera_Xdmf.hpp#L186)) and
+  `detail::writeXdmfGrid( fp, frame, indent, double time )`
+  ([:194](../src/Tessera_Xdmf.hpp#L194)).
+- `detail::writeXdmfFile( stem, frame, const double* )`
+  ([src/Tessera_Xdmf.hpp:202](../src/Tessera_Xdmf.hpp#L202)) wraps a single grid
+  in `<Xdmf><Domain>`, behind `Tessera::writeXdmf( stem, frame )`
+  ([:222](../src/Tessera_Xdmf.hpp#L222)) and
+  `writeXdmf( stem, frame, time )` ([:229](../src/Tessera_Xdmf.hpp#L229)). It
+  **returns silently if `fopen` fails**
+  ([:206-208](../src/Tessera_Xdmf.hpp#L206-L208)); that is a pre-existing
+  quiet-degradation path this design does not fix, and the new emitter must not
+  copy it.
+- `detail::writeMeshH5( mesh, stem ) -> XdmfFrame`
+  ([src/Tessera_HDF5Writer.hpp:85](../src/Tessera_HDF5Writer.hpp#L85)) does the
+  collective HDF5 write. The two public `writeMesh()` overloads
+  ([:430](../src/Tessera_HDF5Writer.hpp#L430),
+  [:446](../src/Tessera_HDF5Writer.hpp#L446)) each call it, `MPI_Barrier`, emit
+  the matching sidecar on rank 0, and return the frame.
+  `TESSERA_SCOPED_TIMER( TIMER_WRITE_MESH )` sits in those two overloads and
+  **not** in `writeMeshH5()`, so `MeshSeries` must go through `writeMesh()` to
+  keep the frame timed.
+- No collection, no series type, no master file, nothing that reads a written
+  frame's metadata back for a restart.
 - `examples/02_mesh_pipeline` writes N independent frames
   ([mesh_pipeline.cpp:155](../examples/02_mesh_pipeline/mesh_pipeline.cpp#L155),
   [mesh_pipeline.cpp:221](../examples/02_mesh_pipeline/mesh_pipeline.cpp#L221)) —
@@ -283,8 +305,13 @@ departures from the **Do** steps and the `/tmp`-is-node-local job trap.
 - `src/Tessera_XdmfSeries.hpp` (new) — `class MeshSeries`.
 - `src/Tessera.hpp` — add the include.
 - `tests/test_xdmf_series.cpp` (new), `tests/CMakeLists.txt` — one `unit`,
-  `SERIAL`, `RANKS 1;2;3` registration, following the block shape at
-  [tests/CMakeLists.txt:537-550](../tests/CMakeLists.txt#L537-L550).
+  `SERIAL` registration written as `RANKS    "1;2;3"`. Copy the *shape* of the
+  block at [tests/CMakeLists.txt:537-550](../tests/CMakeLists.txt#L537-L550),
+  which is the `regression`-tier `io` block registered for two backends; T2
+  registers one SERIAL block at `unit` tier. The literal rank list works because
+  the macro iterates `foreach(_np IN LISTS TAT_RANKS)`, but T2's is the file's
+  first literal multi-rank list — every existing block passes `"1"` or
+  `${TESSERA_TEST_MPI_RANKS}`.
 
 **Reference:** the master's required shape —
 `<Grid Name="Tessera" GridType="Collection" CollectionType="Temporal">`
@@ -294,16 +321,17 @@ Cite this shape and the "`<Time>` is mandatory or Paraview can crash" fact on
 `writeXdmfSeries()` as provenance.
 
 **Do:**
-1. `writeXdmfSeries()`: throw on empty `steps`; open `masterStem + ".xmf.tmp"`, throw `std::runtime_error` naming the path if `fopen` fails (do **not** copy the silent-return at [src/Tessera_Xdmf.hpp:87-89](../src/Tessera_Xdmf.hpp#L87-L89)); emit the collection reusing `detail::writeXdmfGrid( fp, s.frame, indent, s.time )` per step; `fclose`; `std::rename` the temp over `masterStem + ".xmf"`, throwing if the rename fails.
-2. `MeshSeries`: `explicit MeshSeries( std::string masterStem )`. Members: master stem, `std::vector<XdmfTimeStep>`, last time. Method `template <class MeshT> void write( const MeshT& mesh, const std::string& frameStem, double time )` — collective on `mesh.comm()`, documented as such.
-3. `write()` order: validate, then `XdmfFrame f = writeMesh( mesh, frameStem, time )` (collective; also writes the per-frame sidecar), then on rank 0 only append the step, append one `"<stem> <time>\n"` line to `masterStem + ".xmfindex"` (flushed each frame — T4 consumes it; write it now so a run predating T4 is still restartable), and call `writeXdmfSeries()`.
+1. `writeXdmfSeries()`: throw on empty `steps`; open `masterStem + ".xmf.tmp"`, throw `std::runtime_error` naming the path if `fopen` fails (do **not** copy the silent-return at [src/Tessera_Xdmf.hpp:206-208](../src/Tessera_Xdmf.hpp#L206-L208)); emit the collection reusing `detail::writeXdmfGrid( fp, s.frame, indent, s.time )` per step; `fclose`; `std::rename` the temp over `masterStem + ".xmf"`, throwing if the rename fails.
+2. `MeshSeries`: `explicit MeshSeries( std::string masterStem )`. Members: master stem and `std::vector<XdmfTimeStep>`. No separate last-time member — the previous frame's time is the vector's `back().time`. Method `template <class MeshT> void write( const MeshT& mesh, const std::string& frameStem, double time )` — collective on `mesh.comm()`, documented as such.
+3. `write()` order: validate, then `XdmfFrame f = writeMesh( mesh, frameStem, time )` (collective; also writes the per-frame sidecar), then append the step to the vector on **every** rank, and on rank 0 only append one `"<stem> <time>\n"` line to `masterStem + ".xmfindex"` (flushed each frame — T4 consumes it; write it now so a run predating T4 is still restartable) and call `writeXdmfSeries()`. The accumulator is rank-uniform so that `numFrames()` and the monotonic-time check mean the same thing on every rank; a rank-dependent accessor is a footgun. The cost is one replicated vector of per-frame metadata — a handful of strings and integers per frame — on every rank.
 4. Validation, on **every** rank before any I/O so the throw is symmetric and cannot deadlock: `time` strictly greater than the previous frame's (message naming both values); the directory component of `frameStem` equal to that of the master stem (message naming both, and stating why — an `.xmf` references `.h5` by basename).
-5. Accessors: `std::size_t numFrames() const`, `const std::string& masterStem() const`.
+5. Accessors: `std::size_t numFrames() const` (rank-uniform, per step 3), `const std::string& masterStem() const`.
 6. Document in `README.md` (a `MeshSeries` snippet in the I/O part of Usage/API near [README.md:118](../README.md#L118)) and in the Parallel I/O section of `docs/design.md` ([docs/design.md:1528-1580](../docs/design.md#L1528-L1580)): what the master is, that it must sit beside the frames, and that the frame `.h5` layout is unchanged so `readMesh()` still reads any single frame.
 
 **Exit criterion:** `ctest -L unit -R xdmf_series_SERIAL` passes at np1, 2 and 3.
 The test builds a small icosphere, distributes it, writes three frames through
-one `MeshSeries` at times `0.0, 0.5, 1.25`, and asserts on rank 0: the master
+one `MeshSeries` at times `0.0, 0.5, 1.25` — stems per the Test output paths
+convention above — and asserts on rank 0: the master
 `.xmf` exists and `<master>.xmf.tmp` does not; it contains exactly one
 `CollectionType="Temporal"`, exactly three `<Time Value=` occurrences whose
 parsed values are `0.0, 0.5, 1.25` in that order, exactly three `<Topology`,
@@ -368,8 +396,8 @@ blocking anything else.
    `dim`, `scalar_bytes`, `Nv`, `Nf`, `n_user_v_fields` / `n_user_f_fields`, and
    `uv_ext_<j>` / `uf_ext_<j>` for the extents. Reconstruct the field display
    names by the same rule the writer uses — `"v" + "u<j>"` and `"f" + "u<j>"`
-   ([src/Tessera_HDF5Writer.hpp:245](../src/Tessera_HDF5Writer.hpp#L245),
-   [src/Tessera_HDF5Writer.hpp:356](../src/Tessera_HDF5Writer.hpp#L356)). Do not
+   ([src/Tessera_HDF5Writer.hpp:250](../src/Tessera_HDF5Writer.hpp#L250),
+   [src/Tessera_HDF5Writer.hpp:361](../src/Tessera_HDF5Writer.hpp#L361)). Do not
    validate against the mesh template here: this constructor takes no mesh.
 4. Rewrite the master immediately from the reconstructed steps, so a reopen that
    succeeds is visible on disk before any new frame is written.
