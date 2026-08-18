@@ -882,6 +882,57 @@ tessera_add_test(
     SOURCES  test_compact.cpp
 )
 
+# Caller-driven EDGE COLLAPSE (tasks/edge-collapse.md) -- the FOURTH and last
+# remesh-family operation, and the only one that removes degrees of freedom:
+# each accepted collapse merges an edge's two endpoints for V-1, E-3, F-2, so
+# the Euler number is preserved. Without it a remesher is monotone and a long
+# run dies on memory or on timestep.
+#
+# It is also the only one of the four that can silently corrupt a mesh in three
+# distinct ways, so each is detected and reported through a NAMED COUNTER: the
+# LINK CONDITION (link(a) INTERSECT link(b) == {c,d}, answered from
+# vertex-coordinator advertisements rather than local residency, since the edge's
+# owner may own neither endpoint) tested both ways -- three edges of one face
+# accepting at most one, and a hand-built soup whose two endpoints share a third
+# neighbour giving rejectedLinkCondition == 1; the NORMAL-FLIP guard on a closed
+# decagonal bipyramid with one apex pulled into a spike, with every surviving
+# face's normal checked against its own pre-collapse normal by face gid; and the
+# CONNECTIVITY REWRITE, whose failure mode is a tombstone set that does not
+# close -- caught by compact()'s global closure check and by asserting that no
+# tombstone survives after every single call.
+#
+# Also: the exact one-edge deltas with the surviving vertex at min(a,b) and at
+# the midpoint; the DEPTH GUARD (throws iff 0 < haloDepth() < 2 -- depth 0 means
+# "never distributed", which is what lets the soup fixtures run); the
+# independent set (no two accepted collapses share a vertex) and its RANK-COUNT
+# INVARIANCE against an MPI_COMM_SELF reference the same run computes, which is
+# what the gid-free priority (squared length ASCENDING, EdgeKey ascending) buys;
+# a policy nothing can satisfy rejecting everything and leaving even the local
+# gid ORDERING unmoved; the t-aware user-field blend on a double and a
+# double[3]; halo validity, depth preservation and a second call with nothing in
+# between; the empty-mask identity; the family guard in BOTH refinement modes;
+# twenty rounds of decimation to the quality floor; a split-then-collapse round
+# trip landing within a factor of two of the original face count; and TWENTY
+# COMPOSED { split, flip, collapse } ROUNDS -- the test that proves the four
+# remesh operations compose, which is the deliverable of the family.
+#
+# TIER regression, ranks 1-5, both backends: gate promotion is pre-authorized
+# for this task by tasks/edge-collapse.md.
+tessera_add_test(
+    NAME     collapse_edges
+    BACKEND  SERIAL
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_collapse_edges.cpp
+)
+tessera_add_test(
+    NAME     collapse_edges
+    BACKEND  HIP
+    TIER     regression
+    RANKS    ${TESSERA_TEST_MPI_RANKS}
+    SOURCES  test_collapse_edges.cpp
+)
+
 # splitEdges() SHAPE QUALITY OVER SPLIT DEPTH (tasks/edge-split.md, risk R12).
 # The DIAGNOSTIC behind test_split_edges case 8's floor. Case 8 runs five
 # length-driven rounds; five are consistent with a bound but do not establish

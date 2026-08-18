@@ -85,6 +85,11 @@ static constexpr const char* TIMER_LOAD_BALANCE = "load_balance";
 //! renumbering pays and should be visible as such.
 static constexpr const char* TIMER_COMPACT = "compact";
 static constexpr const char* TIMER_COMPACT_RENUMBER = "compact_renumber_gids";
+//! Caller-driven edge collapse (Tessera_EdgeCollapse.hpp). The compaction it
+//! ends with is charged to TIMER_COMPACT and the rebuild inside that to
+//! TIMER_HALO_REBUILD, so this key covers only the coordinator rounds and the
+//! in-place connectivity rewrite.
+static constexpr const char* TIMER_COLLAPSE = "collapse_edges";
 static constexpr const char* TIMER_WRITE_MESH = "write_mesh";
 static constexpr const char* TIMER_READ_MESH = "read_mesh";
 static constexpr const char* TIMER_MARK_QUALITY = "mark_quality";

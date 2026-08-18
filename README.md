@@ -103,6 +103,18 @@ FlipResult fr = flipEdges( mesh, halo, edge_flip_mask );
                                                      // `halo`. REMESH family -- see "Edge
                                                      // flip" below
 
+CollapseResult cr = collapseEdges( mesh, halo, edge_collapse_mask );
+                                                     // merge each marked edge's two
+                                                     // endpoints: V-1, E-3, F-2 per accepted
+                                                     // collapse, so Euler is preserved. The
+                                                     // ONLY operation that removes degrees of
+                                                     // freedom. REQUIRES haloDepth() >= 2 and
+                                                     // throws otherwise. At most an
+                                                     // INDEPENDENT SET per call, so a caller
+                                                     // loops on cr.accepted. Compacts and
+                                                     // rebuilds `halo`. REMESH family -- see
+                                                     // "Edge collapse" below
+
 loadBalance( mesh, halo );           // internal Zoltan2 rebalance + halo rebuild (optional).
                                      // Nothing is gathered to rank 0 -- see "Load
                                      // balancing modes" below for the three modes and
@@ -408,7 +420,11 @@ exactly one of them**:
 | Family | Operations | Invariant maintained | `Level` semantics |
 |---|---|---|---|
 | **Hierarchical** | `refine()`, `refineLocal()` | 2:1 level balance; conforming closure | `Level` is **authoritative** |
-| **Remesh** | `splitEdges()`, `flipEdges()`, `compact()`, `compactAndRenumberGids()` *(`collapseEdges()` to follow)* | conformity and manifoldness only | `Level` is **advisory** |
+| **Remesh** | `splitEdges()`, `flipEdges()`, `collapseEdges()`, `compact()`, `compactAndRenumberGids()` | conformity and manifoldness only | `Level` is **advisory** |
+
+The remesh family is **complete**: split, flip and collapse are the three
+edge-addressed edits a metric-driven remesher is built out of, and `compact()`
+is what makes the third of them possible.
 
 `refine()`'s whole design rests on the level model, and that model is coherent
 only because `refine()` performs the uniform 1→4 red split. Bisecting *one* edge
@@ -518,12 +534,153 @@ halo's recorded depth, so the halo is valid on return. An empty mask is a no-op
 fast path. See `docs/design.md` → *Edge flip* and
 [tasks/edge-flip.md](tasks/edge-flip.md).
 
+### Edge collapse
+
+`collapseEdges()` (`Tessera_EdgeCollapse.hpp`) merges the two endpoints of each
+marked edge into one vertex. It is the **only operation that removes degrees of
+freedom**: without it a remesher is monotone — it can refine where a metric
+demands resolution but never coarsen where it does not, so the mesh grows without
+bound and a long run dies on memory or on timestep.
+
+Each accepted collapse deletes the edge's two incident faces, the edge itself,
+and one of each pair of edges that become coincident: **V−1, E−3, F−2**, so the
+Euler number is preserved.
+
+```cpp
+#include <Tessera.hpp>   // Tessera_EdgeCollapse.hpp
+
+// REQUIRES halo depth >= 2 -- see "The depth 2 precondition" below.
+distribute( mesh, halo, faceOwner, 2 );
+
+std::vector<char> edgeMask( mesh.numOwnedEdges(), 0 );  // OWNED-edge indexing
+// ... the caller decides which edges to collapse, e.g. every edge shorter than
+//     4/5 of a target length
+
+DefaultCollapsePolicy policy;   // t = 0.5, maxNormalRotation = 0.5 rad,
+                                // minQuality = 0.05
+CollapseResult r = collapseEdges( mesh, halo, edgeMask, policy );
+
+r.requested;               // marked owned edges, globally
+r.accepted;                // edges actually collapsed
+r.rejectedBoundary;        // other than exactly two incident faces
+r.rejectedLinkCondition;   // link(a) ∩ link(b) != {c,d}, or the merge would
+                           // fuse two faces into one
+r.rejectedNormalFlip;      // a surviving incident face's normal would rotate
+                           // more than policy.maxNormalRotation
+r.rejectedQuality;         // a surviving incident face would fall below
+                           // policy.minQuality
+r.rejectedConflict;        // lost the independent-set round
+r.verticesRemoved;         // == accepted
+r.edgesRemoved;            // == 3 * accepted
+r.facesRemoved;            // == 2 * accepted
+r.collapsed;               // EdgeKey of every accepted collapse this rank touches
+```
+
+The five verdict counters **partition** `requested`. `DefaultCollapsePolicy` has
+three knobs and two hooks:
+
+```cpp
+struct DefaultCollapsePolicy
+{
+    double t = 0.5;                  // 0 keeps a, 1 keeps b, a = the LOWER-gid endpoint
+    double maxNormalRotation = 0.5;  // radians; the fold guard
+    double minQuality = 0.05;        // radius ratio, 1 for an equilateral triangle
+
+    void interpolatePosition( double* out, const double* a, const double* b,
+                              double t, int dim ) const;         // (1-t)a + t b
+    template <std::size_t M>
+    double interpolateVertexField( double a, double b, double t ) const;
+};
+```
+
+`minQuality` is in the convention where an equilateral triangle scores **1**, the
+same as `DefaultFlipPolicy::minQuality`, so 0.05 is a floor of 0.025 in the
+unscaled convention `tests/MeshInvariants.hpp`'s `minRadiusRatio()` reports.
+
+**The hooks carry `t`, and that is why this is a separate policy from
+`DefaultRefinePolicy`.** `DefaultRefinePolicy::interpolatePosition( mid, a, b,
+dim )` and `interpolateVertexField<M>( a, b )` are hard-coded 0.5 averages with
+no `t` argument, so a collapse at `t != 0.5` is not expressible through them. The
+per-field override pattern is otherwise identical — derive, shadow
+`interpolateVertexField`, dispatch on `M` with `if constexpr` — so a consumer's
+existing refine policy transfers by inspection:
+
+```cpp
+struct MyPolicy : Tessera::DefaultCollapsePolicy
+{
+    template <std::size_t M>
+    double interpolateVertexField( double a, double b, double t ) const
+    {
+        if constexpr ( M == Tessera::VertexField::UserBegin + 0 )
+            return conserve_vorticity( a, b, t );
+        else
+            return Tessera::DefaultCollapsePolicy::
+                template interpolateVertexField<M>( a, b, t );
+    }
+};
+```
+
+**The surviving vertex is `min(gid(a), gid(b))`** — deterministic, rank-count
+independent, and derivable on every rank with no agreement round. Because an
+`EdgeKey` is canonical `(lo, hi)`, the survivor is always `key.id[0]`, which is
+also what orients `t`.
+
+**The depth 2 precondition.** The link condition below is a statement about the
+full one-ring of *both* endpoints — a two-ring around the edge — so
+`collapseEdges()` **throws** `std::runtime_error` naming the required and the
+actual depth if `0 < mesh.haloDepth() < 2`. Depth `0` means *never distributed* —
+a replicated mesh straight out of the builder, where every entity is local and no
+ring is missing — and is accepted, the same convention `buildVertexStencil()`
+uses. Correctness itself does **not** rest on local ring residency: the owner of
+an edge may own neither endpoint, so both one-rings are assembled from
+vertex-coordinator advertisements, which are exact at any depth.
+
+**The link condition is what stops a collapse corrupting the mesh silently.** A
+collapse of `(a,b)` with incident faces `(a,b,c)` and `(b,a,d)` is topologically
+valid iff `link(a) ∩ link(b) == {c, d}`. If some other vertex `x` is adjacent to
+both endpoints, the edges `(a,x)` and `(b,x)` become coincident and the result is
+non-manifold — two distant parts of the surface welded together, which no later
+check untangles. The vertex link test alone misses one case (a mesh that is a
+single tetrahedron, where the merge fuses two triangles into one face), so the
+coordinator also rejects a candidate whose rewritten face set would contain a
+duplicate face key; both are counted as `rejectedLinkCondition`.
+
+**At most an independent set is applied per call, and it is not the serial
+shortest-first set.** The priority is `(squared length ascending, EdgeKey
+ascending)` — shortest first, matching the serial *preference* — and a candidate
+is accepted only if it holds the strictly best priority among all candidates
+incident on either endpoint's one-ring. The priority contains **no gid** and every
+length goes through `edgeLen2Canonical()`, so the accepted set is a pure function
+of the global mesh and is identical at every rank count. **The consequence: the
+accepted set is a strict subset of what a serial shortest-first pass with
+re-evaluation would take.** On the subdivision-2 icosphere with every edge marked,
+8 of 480 are accepted in one call, because accepting one excludes every candidate
+in its two-ring. **Compare statistics — face count, quality distribution,
+edge-length histogram — never edit sets.** The caller loops:
+
+```cpp
+while ( collapseEdges( mesh, halo, shortEdges( mesh ) ).accepted > 0 ) {}
+```
+
+**Vertex positions and vertex user fields must be halo-consistent on entry.** The
+merged values are blended by the surviving vertex's owner from its local copies of
+the two endpoints, one of which is in general a ghost, so call `haloExchange()`
+after mutating them and before collapsing. `splitEdges()` reads its endpoints the
+same way and carries the same requirement.
+
+`collapseEdges()` ends by calling `compact()`, which itself ends with a halo
+rebuild at the recorded depth — so the mesh is compact and fully haloed on return,
+a caller never sees a tombstone, and a second `collapseEdges()` may follow
+immediately. An empty mask, **and a call in which every candidate is rejected**,
+are both genuine no-ops: no rewrite, no compaction, and every gid, key and local
+ordering unchanged. See `docs/design.md` → *Edge collapse* and
+[tasks/edge-collapse.md](tasks/edge-collapse.md).
+
 ### Compaction: removing entities
 
 Every other editor only *adds* entities. `compact()` is the one call that removes
-them, and it exists so that a coarsening operation (`collapseEdges()`, to follow)
-has somewhere to put its dead entities instead of growing a private
-half-compaction.
+them, and it is what lets `collapseEdges()` put its dead entities somewhere
+instead of growing a private half-compaction.
 
 ```cpp
 #include <Tessera.hpp>   // Tessera_Compact.hpp
@@ -932,6 +1089,35 @@ make -j $(nproc)
 
 ## Known Issues
 
+- **`collapseEdges()` has three accepted limits, all deliberate.** *(Not defects —
+  recorded because each one is a case where the operation declines to do something
+  a caller might reasonably expect.)*
+  1. **Collapse is undefined on a `refine()`d mesh**, in either refinement mode,
+     and the `EditFamily` guard throws rather than trying. Under
+     `RefinementMode::Conforming` the visible layer is a *transient* closure whose
+     children reference retired red parents, and collapsing across it would have
+     to un-close first; under `HangingNode2to1` there are T-junctions and the link
+     condition is not even well posed at one. The alternative — a true inverse to
+     `refine()`, un-refining a red split back to its parent — is a different and
+     much larger feature (it needs the parent's identity retained, sibling
+     co-residency, and an inverse to the closure) and is **out of scope**; it is
+     also not what a metric remesher wants, since it can only coarsen along the
+     refinement tree. Reproduce: `refine()` then `collapseEdges()` — throws naming
+     both families (`tests/test_collapse_edges.cpp` check 13, both modes).
+  2. **A boundary edge is always rejected** (`rejectedBoundary`), where "boundary"
+     means anything other than exactly two incident faces. A boundary-preserving
+     collapse needs its own rule for what happens to the boundary polyline and is
+     a separate feature. Note the consequence for an *interior* edge one of whose
+     endpoints lies on a boundary: that collapse is **allowed** if it clears the
+     link condition and the geometric tests, and it moves the boundary.
+  3. **One call applies at most an independent set**, so a single
+     `collapseEdges()` on a mesh with every edge marked coarsens by only a few
+     percent — 8 accepted of 480 marked on the subdivision-2 icosphere, because
+     accepting one candidate excludes every candidate in its two-ring. This is not
+     a throughput bug to be fixed by loosening the conflict relation; the relation
+     is what makes the accepted set rank-count invariant and pairwise
+     non-conflicting. **The caller loops on `accepted`** — twenty rounds take that
+     same mesh from 320 faces to 174.
 - **One distributed MultiJagged solve (`LoadBalanceMode::Distributed`) is not
   run-to-run reproducible, which is why `Sampled` is the default.** *(Not a
   Tessera defect — a measured property of Zoltan2, recorded because the

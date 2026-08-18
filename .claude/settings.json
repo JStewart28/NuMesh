@@ -136,6 +136,11 @@
       "Bash(bash -lc 'cd build-tuolumne *)",
       "Bash(jobs)",
       "Bash(bash -lc 'export SPACK_USER_CONFIG_PATH=$HOME/.spack/tuolumne; . scripts/lib/tessera_env.sh >/dev/null 2>&1; cd build-tuolumne && cmake . >/dev/null && make -j 32 tessera_test_global_reduce_SERIAL tessera_test_global_reduce_HIP 2>&1 | tail -40')",
+      "Bash(command -v flux)",
+      "Bash(export SPACK_USER_CONFIG_PATH=$HOME/.spack/tuolumne)",
+      "Bash(bash -lc '. /usr/WS2/stewartj/spack/share/spack/setup-env.sh *)",
+      "Bash(awk '/np4: /{p=1} p' tessera-collapse.f3T3JaRPGk7Z.out)",
+      "Bash(sort -u -t']' -k2)"
       "Bash(awk 'NR>=548&&NR<=562{printf \"%d\\\\t%s\\\\n\",NR,$0}' tests/test_io.cpp)",
       "Bash(echo \"attach rc=$?\")",
       "Bash(echo \"status rc=$?\")"
