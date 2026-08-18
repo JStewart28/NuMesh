@@ -132,6 +132,39 @@ writeMesh( mesh, "bubble_0000" );    // bubble_0000.h5 + bubble_0000.xmf; return
 // writeMesh( mesh, "bubble_0001", 1.5 );  // same, plus <Time Value="1.5"/> in the .xmf
 ```
 
+#### Time series: one Paraview dataset instead of N
+
+A run that calls `writeMesh()` once per frame produces N unrelated `.xmf` files:
+Paraview opens each separately, with no time slider over the sequence. `MeshSeries`
+adds **one master `.xmf`** — an XDMF temporal collection — which Paraview opens as a
+single dataset with one timestep per frame, animatable, with the same attribute set
+selectable at every step. Per-frame `.h5` and `.xmf` files are still written and
+unchanged, so `readMesh()` still reads any individual frame and a single frame stays
+individually inspectable.
+
+```cpp
+#include <Tessera.hpp>   // Tessera_XdmfSeries.hpp
+
+Tessera::MeshSeries series( "bubble" );          // -> bubble.xmf, the file to open
+for ( int step = 0; step < nsteps; ++step )
+{
+    // ... refine / migrate / advance ...
+    series.write( mesh, "bubble_" + pad( step ), t );   // collective on mesh.comm()
+}
+```
+
+- `time` is the caller's own quantity (physical time, or the step index if there is
+  no physical time) and must be **strictly increasing** across a series.
+- The master is **rewritten after every frame** (via a temp file and `rename`), so a
+  run killed at frame 40 leaves a valid master with 40 timesteps rather than a
+  missing or truncated file.
+- The master must sit in the **same directory** as every frame it names, because an
+  `.xmf` references its `.h5` by basename. `write()` throws `std::runtime_error` on a
+  frame stem in a different directory, and on a non-increasing `time`.
+- In Paraview, only the **temporal** XDMF3 reader (`Xdmf3ReaderT`) walks a temporal
+  collection. If the master opens showing a single timestep, check the reader choice
+  first: `grep -c '<Time Value=' bubble.xmf` tells you what the file actually holds.
+
 ### Halo: gather and scatter-add
 
 `haloExchange()` is a **gather** — owner → ghost, overwrite, the whole AoSoA tuple

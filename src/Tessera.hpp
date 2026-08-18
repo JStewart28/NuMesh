@@ -51,6 +51,7 @@
 #include "Tessera_Stencil.hpp"
 #include "Tessera_Types.hpp"
 #include "Tessera_Xdmf.hpp"
+#include "Tessera_XdmfSeries.hpp"
 #include "Tessera_Zoltan2Balancer.hpp"
 
 #endif // TESSERA_HPP
