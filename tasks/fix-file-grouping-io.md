@@ -47,8 +47,9 @@ The brief's framing — "they are not grouped together in paraview" — is accur
 about the symptom but suggests grouping is something that failed. Nothing ever
 attempted it. Three specific facts a later session should not re-derive:
 
-1. **There is no collection wrapper in the emitted XML: the sidecar is a lone
-   `GridType="Uniform"` grid.**
+1. **There is no collection wrapper in a single-shot `writeMesh()`'s emitted
+   XML: the sidecar is a lone `GridType="Uniform"` grid.** (Still true after T2 —
+   the collection lives in the *master*, which only `MeshSeries` writes.)
    [src/Tessera_Xdmf.hpp:211](../src/Tessera_Xdmf.hpp#L211) writes
    `<Xdmf Version="3.0"><Domain>` and
    [src/Tessera_Xdmf.hpp:213](../src/Tessera_Xdmf.hpp#L213) closes it, with a
@@ -180,7 +181,7 @@ stem whose directory differs from the master's.
 
 ## Current state
 
-T1 is done; T2 onward are unbuilt. What exists:
+T1 and T2 are done; T3 onward are unbuilt. What exists:
 
 - `Tessera::XdmfField` ([src/Tessera_Xdmf.hpp:32](../src/Tessera_Xdmf.hpp#L32))
   and `Tessera::XdmfFrame` ([:43](../src/Tessera_Xdmf.hpp#L43)), the latter
@@ -211,8 +212,20 @@ T1 is done; T2 onward are unbuilt. What exists:
   `TESSERA_SCOPED_TIMER( TIMER_WRITE_MESH )` sits in those two overloads and
   **not** in `writeMeshH5()`, so `MeshSeries` must go through `writeMesh()` to
   keep the frame timed.
-- No collection, no series type, no master file, nothing that reads a written
-  frame's metadata back for a restart.
+- `Tessera::XdmfTimeStep` and `Tessera::writeXdmfSeries( masterStem, steps )`
+  ([src/Tessera_Xdmf.hpp](../src/Tessera_Xdmf.hpp)) — the stateless, MPI-free
+  temporal-collection emitter, writing via `<masterStem>.xmf.tmp` + `rename` and
+  throwing `std::runtime_error` on empty `steps` or any fopen/fclose/rename
+  failure (it deliberately does **not** copy `writeXdmfFile()`'s silent return).
+- `Tessera::MeshSeries` ([src/Tessera_XdmfSeries.hpp](../src/Tessera_XdmfSeries.hpp),
+  included from `Tessera.hpp`) — the caller-held handle: `write( mesh, frameStem,
+  time )` validates on every rank, calls the public timed `writeMesh()`, appends
+  the step on every rank, and on rank 0 appends to `<masterStem>.xmfindex` and
+  rewrites the master. Nothing reads a written frame's metadata back for a
+  restart yet — that is T4, and `MeshSeries` keeps every frame in memory.
+- `tests/test_xdmf_series.cpp`, `unit`/`SERIAL`, ranks `1;2;3` — the first
+  in-repo assertions on emitted XDMF text, including the user-field attribute
+  block.
 - `examples/02_mesh_pipeline` writes N independent frames
   ([mesh_pipeline.cpp:155](../examples/02_mesh_pipeline/mesh_pipeline.cpp#L155),
   [mesh_pipeline.cpp:221](../examples/02_mesh_pipeline/mesh_pipeline.cpp#L221)) —
@@ -221,7 +234,7 @@ T1 is done; T2 onward are unbuilt. What exists:
 - `tests/test_io.cpp` exercises the round trip and deletes `<stem>.xmf`
   ([test_io.cpp:294-295](../tests/test_io.cpp#L294-L295),
   [test_io.cpp:523-524](../tests/test_io.cpp#L523-L524)) but asserts nothing
-  about its contents. The XML has no test coverage at all today.
+  about its contents; all XML coverage lives in `tests/test_xdmf_series.cpp`.
 
 **Not read, deliberately:** nothing in Paraview's reader sources, and no Beantik
 code (not in this repository). T4 is the first task that reads HDF5 root
@@ -295,7 +308,7 @@ untouched call site) stayed identical. That edit is reverted. See
 [the progress log](fix-file-grouping-io-progress-log.md#t1) for the two internal
 departures from the **Do** steps and the `/tmp`-is-node-local job trap.
 
-### T2 — `writeXdmfSeries()` + `MeshSeries`: a master `.xmf` Paraview opens as one timestepped dataset — **NOT STARTED**
+### T2 — `writeXdmfSeries()` + `MeshSeries`: a master `.xmf` Paraview opens as one timestepped dataset — **DONE**
 
 **Depends on:** T1
 
@@ -342,6 +355,30 @@ Failure direction, both asserted to throw `std::runtime_error` and to leave the
 previously written master byte-unchanged: a fourth `write()` at time `1.25`
 (non-increasing), and a `write()` whose frame stem is in a subdirectory of the
 master's directory.
+
+**Met.** `ctest -L unit -R xdmf_series_SERIAL` passes 3/3 — np1, np2 and np3 —
+at commit `0645f88` + this change, job `f3T2sWHo5ZMy`, spack env
+`~/spack_envs/tuolumne_trilinos/`. Every target in the build tree also compiles.
+Assertions that ran, all of them on the master produced by three
+`MeshSeries::write()` calls on a distributed icosphere(2) carrying one vertex and
+one face user field: `<master>.xmf` exists and `<master>.xmf.tmp` does not;
+exactly one `CollectionType="Temporal"`; exactly three `<Time Value=` parsing to
+`0.0`, `0.5`, `1.25` in that order; exactly three `<Topology` and three
+`<Geometry`; each child grid carries `Format="HDF"` references to its own frame's
+`.h5` basename **and to no other** `.h5`, and each of those three files exists on
+disk; the `<Attribute Name=` list is identical in the same order across all three
+children (R1's diagnostic — `v_gid`, `f_level`, `vu0`, `fu0`); `python3 -c
+"import xml.etree.ElementTree as E; E.parse(...)"` exits 0 on the master; and
+`numFrames()`/`masterStem()` are checked on **every** rank, which is what pins
+the accumulator as rank-uniform. Both failure directions throw
+`std::runtime_error` and leave the master byte-identical to the string read
+before the attempt: a fourth `write()` at `1.25` (also asserted to leave no
+`_frame3.h5` behind, i.e. it threw before any I/O) and a `write()` into a `sub/`
+subdirectory of the master's directory. The emitted master was additionally
+inspected by hand once, with the test's cleanup temporarily suppressed (that edit
+is reverted), confirming the collection shape and the user-field attribute block
+rather than only the counts. See
+[the progress log](fix-file-grouping-io-progress-log.md#t2).
 
 ### T3 — `mesh_pipeline` writes a series, so the reported symptom is gone from the shipped example — **NOT STARTED**
 

@@ -549,6 +549,25 @@ tessera_add_test(
     SOURCES  test_io.cpp
 )
 
+# XDMF time-series grouping (T2 of tasks/fix-file-grouping-io.md): three frames
+# written through one MeshSeries produce ONE master .xmf holding a temporal
+# collection -- exactly one CollectionType="Temporal", three fully independent
+# child grids with their own <Time>/<Topology>/<Geometry>, each referencing only
+# its own frame's .h5 basename, and an identically ordered <Attribute Name= set
+# across all three (risk R1's diagnostic). Also asserts the .xmf.tmp rename-over
+# leaves no temp behind, that python3's xml.etree parses the master, and that a
+# non-increasing time and an out-of-directory frame stem each throw
+# std::runtime_error leaving the master byte-unchanged. The master is rank-0
+# text with no device involvement, so SERIAL only; unit tier, so the ship gate
+# definition is untouched.
+tessera_add_test(
+    NAME     xdmf_series
+    BACKEND  SERIAL
+    TIER     unit
+    RANKS    "1;2;3"
+    SOURCES  test_xdmf_series.cpp
+)
+
 # Edge-length quality-based refinement marking (Step 10a): markByQuality's
 # marked owned-face gid set matches an independent, partition-free reference
 # (rank-count independence), monotone edge-length progress after refine(),

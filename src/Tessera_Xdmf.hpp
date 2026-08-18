@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,17 @@ struct XdmfFrame
     unsigned long long Nf;          // global owned-face count
     std::vector<XdmfField> vFields; // node-centered user fields
     std::vector<XdmfField> fFields; // cell-centered user fields
+};
+
+//! One timestep of a series: a frame plus the time it was written at. `time` is
+//! the caller's own quantity (physical time or a step index) in the caller's
+//! own units; nothing here interprets it. Within a series the times must be
+//! strictly increasing -- see MeshSeries in Tessera_XdmfSeries.hpp, which is
+//! what enforces that.
+struct XdmfTimeStep
+{
+    XdmfFrame frame;
+    double time;
 };
 
 namespace detail
@@ -230,6 +242,70 @@ inline void writeXdmf( const std::string& stem, const XdmfFrame& frame,
                        double time )
 {
     detail::writeXdmfFile( stem, frame, &time );
+}
+
+//! Write `<masterStem>.xmf`: one XDMF **temporal collection** naming every step
+//! in `steps`, which Paraview opens as a single dataset with one timestep per
+//! step on the time slider.
+//!
+//! The shape is the idiomatic one -- a
+//! `<Grid GridType="Collection" CollectionType="Temporal">` wrapping one FULL
+//! child `<Grid>` per step, each with its own `<Time Value=>`, `<Topology>` and
+//! `<Geometry>`. Repeating topology per child is deliberate: an adaptively
+//! remeshing series genuinely changes Nv/Nf frame to frame, and hoisting shared
+//! data into the `<Domain>` is reported to break readers. The `<Time>` child is
+//! MANDATORY, not decorative -- a child grid with no `<Time>` has been reported
+//! to crash Paraview. Paraview's XDMF readers are not file-series readers, so
+//! this collection is the only way N frames become one dataset; note also that
+//! only the *temporal* XDMF3 reader (`Xdmf3ReaderT`) walks a collection.
+//!
+//! Every `steps[i].frame.h5name` is a BASENAME, so the master must be written
+//! to the same directory as every frame it names.
+//!
+//! Rank-agnostic pure text: the caller decides who calls this (rank 0).
+//! The file is written to `<masterStem>.xmf.tmp` and renamed over the real
+//! path, so a Paraview reload never observes a half-written master. Throws
+//! std::runtime_error on an empty `steps`, or on any failure of fopen or
+//! rename, naming the path -- there is no best-effort partial master.
+inline void writeXdmfSeries( const std::string& masterStem,
+                             const std::vector<XdmfTimeStep>& steps )
+{
+    if ( steps.empty() )
+        throw std::runtime_error(
+            "Tessera::writeXdmfSeries: refusing to write an empty temporal "
+            "collection for master stem '" +
+            masterStem + "'" );
+
+    const std::string xmfname = masterStem + ".xmf";
+    const std::string tmpname = xmfname + ".tmp";
+
+    std::FILE* fp = std::fopen( tmpname.c_str(), "w" );
+    if ( !fp )
+        throw std::runtime_error(
+            "Tessera::writeXdmfSeries: cannot open '" + tmpname +
+            "' for writing" );
+
+    std::fprintf( fp, "<?xml version=\"1.0\" ?>\n" );
+    std::fprintf( fp, "<Xdmf Version=\"3.0\"><Domain>\n" );
+    // A stable grid name across timesteps is what lets Paraview track the same
+    // object through the collection, so the collection and every child below it
+    // keep the same Name as a single-shot sidecar's grid.
+    std::fprintf( fp, "  <Grid Name=\"Tessera\" GridType=\"Collection\" "
+                      "CollectionType=\"Temporal\">\n" );
+    // indent 4: the child grids nest one level deeper than in a standalone
+    // sidecar, which is the only reason writeXdmfGrid() takes an indent.
+    for ( const auto& s : steps )
+        detail::writeXdmfGrid( fp, s.frame, 4, s.time );
+    std::fprintf( fp, "  </Grid>\n" );
+    std::fprintf( fp, "</Domain></Xdmf>\n" );
+
+    if ( std::fclose( fp ) != 0 )
+        throw std::runtime_error( "Tessera::writeXdmfSeries: error closing '" +
+                                  tmpname + "'" );
+
+    if ( std::rename( tmpname.c_str(), xmfname.c_str() ) != 0 )
+        throw std::runtime_error( "Tessera::writeXdmfSeries: cannot rename '" +
+                                  tmpname + "' over '" + xmfname + "'" );
 }
 
 } // namespace Tessera
