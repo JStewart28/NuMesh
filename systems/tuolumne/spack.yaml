@@ -1,0 +1,30 @@
+# Tuolumne Spack environment.
+#
+# All system externals (cray-mpich, cray-libsci, ROCm 6.4.2, cray hdf5-parallel,
+# cmake, the compilers) are declared in ~/.spack/tuolumne/packages.yaml, NOT here.
+# Spack only reads that file when SPACK_USER_CONFIG_PATH points at it:
+#
+#     export SPACK_USER_CONFIG_PATH=$HOME/.spack/$CLUSTER
+#
+# ~/.profile sets this, but $CLUSTER is only populated in *login* shells. In a
+# non-login shell (VS Code terminal, `bash -c`, a script) it expands to
+# ~/.spack/, every external disappears, and Spack silently plans to build
+# openmpi, mesa, ROCm 7.x, etc. from source instead.
+#
+# This only matters when concretizing or installing -- using an already-installed
+# env does not need it. Before `spack concretize` or `spack install`, export the
+# variable and confirm the scope is live:
+#
+#     spack config blame packages | grep -c tuolumne   # must be non-zero
+#
+spack:
+  specs:
+  - kokkos@4 +rocm amdgpu_target=gfx942
+  - cabana@master +grid +mpi +arborx +rocm amdgpu_target=gfx942
+  - hdf5 +mpi
+  - trilinos +zoltan2 +rocm amdgpu_target=gfx942 ~muelu ~ml ~ifpack2 ~ifpack ~fortran ~epetraext ~epetra ~belos ~aztec ~anasazi ~amesos2 ~amesos ldflags="-L/opt/cray/pe/mpich/9.0.1/gtl/lib" ldlibs="-lmpi_gtl_hsa"  ^kokkos +rocm amdgpu_target=gfx942 %cce
+  - googletest
+  repos:
+    COMPASSRepo:
+      git: https://github.com/COMPASS-PSAAP/spack-packages.git
+      destination: /g/g20/stewartj/.spack/package_repos/COMPASS

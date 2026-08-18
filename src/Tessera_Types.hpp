@@ -1,226 +1,163 @@
+/****************************************************************************
+ * Copyright (c) 2024, JStewart28                                           *
+ * All rights reserved.                                                     *
+ *                                                                          *
+ * This file is part of the Tessera library. Tessera is distributed under a *
+ * BSD 3-Clause license. For the licensing terms see the LICENSE file in   *
+ * the top-level directory.                                                 *
+ *                                                                          *
+ * SPDX-License-Identifier: BSD-3-Clause                                    *
+ ****************************************************************************/
+
 #ifndef TESSERA_TYPES_HPP
 #define TESSERA_TYPES_HPP
 
-#include <Cabana_Core.hpp>
-#include <type_traits>
-#include <tuple>
+#include <Kokkos_Core.hpp>
+
+#include <cstdint>
 
 namespace Tessera
 {
 
-// Design ideas for the Tessera::Array taken from Cabana::Grid:Array
+// ============================================================================
+// Fundamental identifier / index types
+// ============================================================================
+//
+// GlobalId    Globally-unique 64-bit identifier of an entity
+// (vertex/edge/face).
+//             64 bits comfortably addresses the 100M+ entities per rank the
+//             design targets across all ranks.
+// LocalIndex  Dense per-rank array position of an entity in its AoSoA. `int`
+//             matches Kokkos::RangePolicy's index type used in device kernels.
+// Level       Adaptive-refinement level (0 = coarse). Small signed integer.
+// Rank        MPI rank that owns / holds an entity.
+//
+using GlobalId = std::uint64_t;
+using LocalIndex = int;
+using Level = std::int16_t;
+using Rank = std::int32_t;
 
-//---------------------------------------------------------------------------//
-// Enums
-//---------------------------------------------------------------------------//
+//! Sentinel for an unset / invalid global id.
+inline constexpr GlobalId invalid_gid = ~static_cast<GlobalId>( 0 );
 
-enum BoundaryType {FREE = 0, PERIODIC = 1};
+//! Sentinel for an unset / invalid local index.
+inline constexpr LocalIndex invalid_local = -1;
 
-//---------------------------------------------------------------------------//
-// Entity type tags.
-//---------------------------------------------------------------------------//
-
-/*!
-  \brief Mesh vertex tag.
-*/
-struct Vertex {};
-
-/*!
-  \brief Mesh edge tag.
-*/
-struct Edge {};
-
-/*!
-  \brief Mesh face tag.
-*/
-struct Face {};
-
-//---------------------------------------------------------------------------//
-// Decomposition tags.
-//---------------------------------------------------------------------------//
-
-/*!
-  \brief Owned decomposition tag.
-*/
-struct Own {};
-
-/*!
-  \brief Ghosted decomposition tag.
-*/
-struct Ghost {};
-
-//---------------------------------------------------------------------------//
-// Index type tags.
-//---------------------------------------------------------------------------//
-
-/*!
-  \brief Local index tag.
-*/
-struct Local {};
-
-/*!
-  \brief Global index tag.
-*/
-struct Global {};
-
-/*!
-  \brief Element index tag.
-*/
-struct Element {};
-
-//---------------------------------------------------------------------------//
-// Mesh type tags.
-//---------------------------------------------------------------------------//
-
-/*!
-  \brief Unstructured 2D surface mesh tag.
-*/
-template <class Scalar, std::size_t NumSpaceDim = 2>
-struct Unstructured2DMesh
+// ============================================================================
+// Key<N> — structured canonical entity key
+// ============================================================================
+//
+// The cross-rank *identity* of a composite entity is a structured, order-
+// invariant tuple of the GlobalIds it is built from — NOT a hash. Sorting the
+// constituent ids on construction makes the key independent of the order they
+// are supplied, so every rank that touches a shared entity computes the exact
+// same key with no communication and with zero collision risk (a hash of two
+// 64-bit ids into 64 bits has a ~27% collision probability at 1e8 entities and
+// would silently merge distinct entities across a partition boundary).
+//
+//   EdgeKey = Key<2>  : the two endpoint vertex gids   (min, max)
+//   FaceKey = Key<3>  : the three corner vertex gids   (sorted ascending)
+//
+// The key is a trivially-copyable POD and every operation is device-callable so
+// keys can be built and compared inside Kokkos kernels and shipped over MPI as
+// raw bytes.
+//
+template <int N>
+struct Key
 {
-    //! Scalar type for mesh floating point operations.
-    using scalar_type = Scalar;
+    static_assert( N >= 1, "Key must have at least one component" );
 
-    //! Number of spatial dimensions.
-    static constexpr std::size_t num_space_dim = NumSpaceDim;
+    GlobalId id[N];
+
+    KOKKOS_DEFAULTED_FUNCTION Key() = default;
+
+    KOKKOS_INLINE_FUNCTION
+    bool operator==( const Key& o ) const
+    {
+        for ( int i = 0; i < N; ++i )
+            if ( id[i] != o.id[i] )
+                return false;
+        return true;
+    }
+
+    KOKKOS_INLINE_FUNCTION
+    bool operator!=( const Key& o ) const { return !( *this == o ); }
+
+    //! Lexicographic ordering — for sorting and ordered lookup during
+    //! halo/ghost matching and deterministic global renumbering.
+    KOKKOS_INLINE_FUNCTION
+    bool operator<( const Key& o ) const
+    {
+        for ( int i = 0; i < N; ++i )
+        {
+            if ( id[i] < o.id[i] )
+                return true;
+            if ( id[i] > o.id[i] )
+                return false;
+        }
+        return false;
+    }
 };
 
-/*!
-  \brief Unstructured 3D surface mesh tag.
-*/
-template <class Scalar, std::size_t NumSpaceDim = 3>
-struct Unstructured3DMesh
+using EdgeKey = Key<2>;
+using FaceKey = Key<3>;
+
+//! Ascending insertion sort of a key's components (N is small: 2 or 3).
+//! Branch-light and device-callable; makes the key order-invariant.
+template <int N>
+KOKKOS_INLINE_FUNCTION void sortKey( Key<N>& k )
 {
-    //! Scalar type for mesh floating point operations.
-    using scalar_type = Scalar;
+    for ( int i = 1; i < N; ++i )
+    {
+        const GlobalId x = k.id[i];
+        int j = i - 1;
+        while ( j >= 0 && k.id[j] > x )
+        {
+            k.id[j + 1] = k.id[j];
+            --j;
+        }
+        k.id[j + 1] = x;
+    }
+}
 
-    //! Number of spatial dimensions.
-    static constexpr std::size_t num_space_dim = NumSpaceDim;
-};
-
-//! Helpers to determine is T is a Cabana::MemberTypes<...> type
-// Primary template: Assume false
-template <typename T, typename Enable = void>
-struct IsCabanaMemberTypes : std::false_type {};
-
-// Specialization for Cabana::MemberTypes<Ts...>
-template <typename... Ts>
-struct IsCabanaMemberTypes<Cabana::MemberTypes<Ts...>> : std::true_type {};
-
-// Primary template: Invalid case (multiple or empty types)
-template <typename Tuple, typename Enable = void>
-struct ExtractSingleType;
-
-// Specialization for a tuple with exactly one type
-template <typename T>
-struct ExtractSingleType<std::tuple<T>>
+//! Canonical edge key from its two endpoint vertex gids (order-invariant).
+KOKKOS_INLINE_FUNCTION
+EdgeKey makeEdgeKey( GlobalId a, GlobalId b )
 {
-    using type = T;
-};
+    EdgeKey k;
+    k.id[0] = a;
+    k.id[1] = b;
+    sortKey( k );
+    return k;
+}
 
-//! Helpers to extract the type T in a Tuple<T>
-// Specialization for invalid cases (empty or multiple types)
-template <typename T, typename U, typename... Rest>
-struct ExtractSingleType<std::tuple<T, U, Rest...>>
+//! Canonical face key from its three corner vertex gids (order-invariant).
+KOKKOS_INLINE_FUNCTION
+FaceKey makeFaceKey( GlobalId a, GlobalId b, GlobalId c )
 {
-    static_assert(sizeof...(Rest) == 0, 
-                  "ExtractSingleType can only be used with a single-type tuple.");
-};
+    FaceKey k;
+    k.id[0] = a;
+    k.id[1] = b;
+    k.id[2] = c;
+    sortKey( k );
+    return k;
+}
 
-// Specialization for empty tuple (should not occur)
-template <>
-struct ExtractSingleType<std::tuple<>>
-{
-    static_assert(sizeof(std::tuple<>) != 0, 
-                  "ExtractSingleType cannot be used with an empty tuple.");
-};
+// ----------------------------------------------------------------------------
+// Refinement identity note (assignment lives in Step 6, not here)
+// ----------------------------------------------------------------------------
+//
+// A refinement midpoint vertex is *identified* across ranks by the EdgeKey of
+// the edge it bisects — identical on both sides of a partition boundary with no
+// communication. Its persistent 64-bit GlobalId is assigned later (Step 6): a
+// per-rank exclusive scan for interior midpoints, with boundary-shared
+// midpoints taking the owner's (lowest-rank's) id during the refinement
+// re-halo. Because every vertex therefore always carries a 64-bit gid,
+// edge/face keys are always built from 64-bit gids and stay bounded at
+// Key<2>/Key<3> regardless of refinement depth. This header provides only the
+// key *type and construction*; the id-assignment scheme is implemented with the
+// refinement step.
 
-//! Helpers to extract base types of Cabana::MemberTypes<...>
-// General template (for non-Cabana::MemberTypes)
-template <typename T, typename Enable = void>
-struct ExtractBaseTypes
-{
-    using type = std::tuple<T>;  // Default case: Wrap T in a tuple
-};
-
-// Specialization for array types in Cabana::MemberTypes<T[N]>
-template <typename T, std::size_t N>
-struct ExtractBaseTypes<Cabana::MemberTypes<T[N]>>
-{
-    using type = std::tuple<T>;  // Extract just 'T' from 'T[N]'
-};
-
-// Specialization for general Cabana::MemberTypes (handles multiple types)
-template <typename... Ts>
-struct ExtractBaseTypes<Cabana::MemberTypes<Ts...>>
-{
-    using type = std::tuple<std::remove_extent_t<Ts>...>;  // Extract base types
-};
-
-//! Utility to check if a tuple has exactly one unique base type
-template <typename Tuple>
-struct HasSingleUniqueType;
-
-// Specialization for empty tuple (should not occur in practice)
-template <>
-struct HasSingleUniqueType<std::tuple<>>
-{
-    static constexpr bool value = false;
-};
-
-// Specialization for single-type tuple
-template <typename T>
-struct HasSingleUniqueType<std::tuple<T>>
-{
-    static constexpr bool value = true;
-};
-
-// Specialization for multi-type tuple (not allowed)
-template <typename T, typename U, typename... Rest>
-struct HasSingleUniqueType<std::tuple<T, U, Rest...>>
-{
-    static constexpr bool value = false;
-};
-
-//! Main check function for Cabana::MemberTypes
-template <typename MemberTypes>
-struct IsSinglePartMemberTypes
-{
-    // Ensure we have a fully resolved type before using it
-    using extracted_base_types = typename ExtractBaseTypes<MemberTypes>::type;
-    
-    // Static check for a single unique base type
-    static constexpr bool value = HasSingleUniqueType<extracted_base_types>::value;
-};
-
-//! Extract array size from Cabana::MemberTypes<T[N]> or return 1 for scalars.
-template <typename T>
-struct ExtractArraySize
-{
-    static constexpr std::size_t value = 1; // Default case for scalars
-};
-
-// Specialization for array types in Cabana::MemberTypes<T[N]>
-template <typename T, std::size_t N>
-struct ExtractArraySize<Cabana::MemberTypes<T[N]>>
-{
-    static constexpr std::size_t value = N;
-};
-
-// Specialization for general Cabana::MemberTypes<T>
-template <typename T>
-struct ExtractArraySize<Cabana::MemberTypes<T>>
-{
-    static constexpr std::size_t value = 1;
-};
-
-// Specialization for multiple types (invalid case, prevents compilation)
-template <typename... Ts>
-struct ExtractArraySize<Cabana::MemberTypes<Ts...>>
-{
-    static_assert(sizeof...(Ts) == 1, "ExtractArraySize can only be used with a single Cabana::MemberType.");
-};
-
-} // end namespace Tessera
+} // namespace Tessera
 
 #endif // TESSERA_TYPES_HPP

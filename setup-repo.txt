@@ -1,0 +1,358 @@
+# Task: Establish (or migrate to) a system-aware, build-mode-aware project framework
+
+**This prompt is fully self-contained. Do NOT search the web, clone, or look up
+any external project to use as a reference or template.** Any names that appear
+in `e.g. ...` parentheses below (project names, system names, test names) are
+*illustrative placeholders only* — they are not real repositories and must not be
+searched for or imitated. Everything you need to build this framework is
+described here; the only repository you read from is the current one (to migrate
+its existing infrastructure).
+
+Set up the documentation + build/run + test + examples + CI framework described
+below in this repository. There are two scenarios and you must detect which
+applies:
+
+- **Greenfield** — little or no existing build/run/test infrastructure. Create
+  the framework from scratch, asking me for the facts you can't infer (system
+  names, environment-activation commands, scheduler, build + test commands,
+  backends, CI system).
+- **Migration** — the repo already has build scripts, README build sections,
+  machine-specific notes, CI config, hardcoded module/spack/conda commands, a
+  test setup, or example programs. **Convert that existing information into this
+  framework** rather than inventing it — discover first, then relocate. Do not
+  throw away real information.
+
+Throughout, substitute *this* project's real name for the placeholders:
+`<Project>` = the repo/library name (illustrative form: `Acme`); `<proj>` = a
+lowercase short token for script/file names (illustrative: `acme`); `<PROJ>` =
+the uppercase prefix for environment variables (illustrative: `ACME`). Derive
+these from the current repository, not from any external source, and use them
+consistently.
+
+**Non-HPC repos:** this framework is shaped for HPC projects (multiple machines,
+an environment manager like spack, a batch scheduler, multiple compute
+backends). If the target is a plain repo with none of those, collapse to a
+single build mode and single backend, skip `runtime_env.sh` and the scheduler
+wrappers, and let the resolver simply locate binaries and run the test command
+directly — but keep the rest intact (CLAUDE.md structure, the
+`profile.defaults.sh` + gitignored `profile.local.sh` override, test labels,
+`tasks/`, examples, CI, README sections). HPC is the focus; this is the fallback.
+
+## How to handle ambiguity (applies to every step)
+
+Whenever something is ambiguous, contradictory, or underspecified — and you
+cannot resolve it confidently from the current repo itself — **stop and walk me
+through it interactively** instead of guessing, searching externally, or
+silently picking a default. Prefer a focused multiple-choice question
+(recommended option first) over an open-ended one, and batch related questions so
+I'm not interrupted repeatedly. Examples:
+- Two conflicting build paths (README says `make`, a script uses `spack install`)
+  — which is canonical, or are both valid build modes?
+- A machine-specific command whose scope is unclear (which hostnames, whether a
+  module load is still current).
+- Which tests gate a change, at what backend(s) and parameterization (ranks).
+- Whether a discovered script/example is current infrastructure or dead/legacy.
+- The build system / test runner / scheduler / CI system in use, if not obvious.
+
+Only proceed on your own when the answer is genuinely unambiguous from the repo.
+
+## Step 0 — Discover what already exists
+
+Before writing anything, survey **this repository** (only) and report briefly:
+- **Build system & toolchain**, and how the project is configured/built today.
+- **Environment management** — spack/module/conda/venv, and any env file/lockfile.
+- **Systems/machines** — existing machine-specific instructions, cluster
+  hostnames, scheduler scripts (slurm/flux/pbs).
+- **Build modes** — more than one way the project is built (fast local vs
+  installed/packaged)? Note both.
+- **Compute backends** — does the project build for multiple backends (e.g.
+  Serial, OpenMP, CUDA, HIP)? Which backend(s) are tested, and on which systems?
+- **Test infrastructure** — framework, runner, how tests register, whether
+  tiered/labeled, which are the ship gate, backends + rank counts.
+- **Examples / demo drivers** — any runnable example or driver programs.
+- **CI** — existing CI config (GitHub Actions, GitLab CI, etc.) and what it runs.
+- **Formatter config** and any format helper script.
+- **License/header convention** — do source files carry a license/SPDX header?
+- **Known problems** — documented bugs / deferred defects / "doesn't work yet".
+- **Ongoing efforts** — design docs or progress logs for multi-session work.
+- **Existing `CLAUDE.md`** — if one exists, you will *merge* into it, not
+  overwrite.
+
+For every gap or ambiguity, follow the "How to handle ambiguity" rule (ask me;
+do not search externally). If greenfield, say so and collect the minimum facts
+before proceeding.
+
+## Step 1 — Create or merge the top-level `CLAUDE.md`
+
+`CLAUDE.md` is the **control document for this framework** — it tells a future
+session both how to build/run/test and how to *extend and keep the framework
+consistent*. If a `CLAUDE.md` already exists, **merge** these sections in,
+preserving existing project-specific guidance; do not overwrite wholesale. It
+must contain, adapted to the project's real toolchain:
+
+### New-checkout quickstart
+A short block at the top for a human (or agent) picking up a fresh checkout:
+run `hostname` and read the matching `systems/<system>/claude.md`; create a
+`profile.local.sh` only if overriding the committed defaults; pick a build mode;
+build; run the gate (`scripts/<system>/run_<gate>_minset.<scheduler>` or the
+documented `ctest` command). Keep it to a handful of lines — it points at the
+detailed sections, it doesn't duplicate them.
+
+### Background / task logs
+- Ongoing multi-phase problems live in `tasks/`, one file per topic, each
+  recording *why* a problem is worked and *how* it's attacked, with a dated
+  progress log so a later session can resume. At the start of a session touching
+  one, read `tasks/<topic>.md` first and append progress as work lands. List
+  current logs; migrate any existing design/progress docs into `tasks/`.
+- Provide a canonical skeleton at `tasks/TEMPLATE.md` (referenced from here) so
+  logs are uniform:
+  ```markdown
+  # <Topic>
+
+  ## Problem
+  What is wrong / what we want, and why it matters.
+
+  ## Approach
+  The strategy, the phases, and the key decisions/constraints.
+
+  ## Progress log
+  - YYYY-MM-DD — <what was done, what was learned, what's next>
+  ```
+
+### System detection
+- Build/run commands differ by system: before building/running, run `hostname`
+  and match a **Hostname pattern → Instructions file** table mapping each host
+  prefix (illustrative: `alpha*` → `systems/alpha/claude.md`) to
+  `systems/<system>/claude.md`. Explain the prefix-match rule and how to add a
+  system. If per-system environment snapshots are used (e.g. `spack.yaml`), each
+  `systems/<system>/` holds one kept in sync with the live env. Fallback: unmatched
+  hostname or a doc missing a required section ⇒ stop and ask me.
+
+### Build & run profile
+Orthogonal to *which system* is *how the work is being done* this session —
+changing the env to activate, where binaries land, and how the gate runs. Define
+the build modes the project supports; for the common HPC split document both:
+- **manual** — package manager provides only *dependencies*; binaries
+  hand-compiled out-of-tree into `build-<system>/`; gate = in-tree runner
+  (`ctest`) in the build dir.
+- **spack/installed** — `spack develop <proj>` + `spack install`; binaries on
+  `PATH`; no build tree, so the gate runs installed binaries via the scheduler.
+  A **dev** env and optional **prod** env.
+
+Then describe the profile mechanism (built in Step 2): per-checkout choice in
+gitignored `scripts/<system>/profile.local.sh` overriding committed
+`scripts/<system>/profile.defaults.sh`, both sourced by the resolver
+`scripts/lib/<proj>_env.sh`; missing local ⇒ committed defaults (zero-config).
+Document the session-start flow (read `profile.local.sh` if present — don't
+re-ask; else **AskUserQuestion** for build mode + envs/build dir; then write it),
+the resolver knobs (`<PROJ>_BUILD_MODE`, `<PROJ>_BIN_MODE`, `<PROJ>_SPACK_ENV`,
+`<PROJ>_SPACK_PROD_ENV`, `<PROJ>_BUILD_DIR`, `<PROJ>_USE_PROD=1`,
+`<PROJ>_NO_SPACK_ACTIVATE=1`), and the `<proj>_exe <relpath|name>` helper.
+
+### Per-system runtime environment
+- Launch-time env vars that must reach scheduler-launched tasks live in **one**
+  file per system, `scripts/<system>/runtime_env.sh`, sourced automatically by
+  the resolver — batch scripts must **not** re-export them inline (avoid drift).
+  Skipped under `<PROJ>_NO_SPACK_ACTIVATE=1`; omit if none are needed.
+
+### Compute backends
+- Document that the project may build for multiple backends (e.g. Serial,
+  OpenMP, CUDA, HIP) and that **which backends build/run is a per-system fact**
+  declared in each `systems/<system>/claude.md`. Define which backend(s) the ship
+  gate runs on (e.g. SERIAL everywhere; add OpenMP/GPU gates per system where
+  supported). Tests carry a backend suffix (illustrative: `MPI_SERIAL`) so the
+  gate selects a backend with `-R <backend>` on top of the tier label.
+
+### Required sections in every `systems/<system>/claude.md`
+1. **Environment** — concrete env path(s) + any pre-activation step (e.g.
+   `module load`). 2. **Build-config args**. 3. **Build command** (per mode).
+4. **Run command for binaries** (scheduler launch template; binary via
+   `<proj>_exe`). 5. **Job-scheduler batch template** (concrete scripts in
+   `scripts/<system>/`, source the resolver first, branch on `<PROJ>_BIN_MODE`).
+6. **Running non-test binaries** — when asked to run an `examples/` problem, ask
+   for the example name + args and plug into sections 4–5. 7. **Backends** — which
+   compute backends build and run on this system, and which the gate runs here.
+
+### Minimum test set
+- Define the gate by **tier label + backend(s) + ranks**, not by enumerating
+  names: e.g. every `regression`-labeled test on the SERIAL backend at ranks 1–6,
+  with the exact command. Explain the tiers (Step 4): `regression` = end-to-end
+  gate; `unit` = diagnostic. Point at the test file and `run_*_minset.*`
+  wrappers. Promoting a test into the gate requires confirming with me.
+
+### Plans
+- Plan-mode plan files are saved to `./plans/` in this repo.
+
+### General guidelines
+- **Checkpoint commits in plans.** **Follow the formatter config** (mention the
+  fast-format helper, or offer to create one). **Match the license/header
+  convention** — every new source/script file carries the project's license/SPDX
+  header block as existing files do. **Keep `README.md` in sync** when a public
+  API *or an example's accepted arguments* change. **Track optimization
+  opportunities** (ask before adding to README "Future Optimizations").
+  **Record known issues** in README "Known Issues" (what fails, how it
+  reproduces, regression vs pre-existing).
+
+### Maintaining this framework
+Meta-rules that keep the framework self-consistent:
+- **Adding a system:** create `systems/<system>/claude.md`, add a hostname-table
+  row, add a resolver `case`, add `scripts/<system>/profile.defaults.sh`
+  (+ `runtime_env.sh` if needed) and the gate wrapper, declare the system's
+  backends, and commit an env snapshot under `systems/<system>/`.
+- **Env snapshots stay in sync** with the live environment in the same change.
+- **No inline runtime-env in batch scripts** — source the resolver.
+- **Gate definition is single-sourced:** the tier label + backend(s) + rank set
+  must stay identical across `CLAUDE.md`, the test file, the wrappers, **and CI**;
+  changing it is deliberate and confirmed.
+- **Example argument changes mirror into README.**
+- **New files carry the license/SPDX header.**
+
+## Step 2 — Create the build/run resolver and profile infrastructure
+
+Create (or migrate existing build scripts into):
+- **`scripts/lib/<proj>_env.sh`** — shared resolver sourced FIRST by every batch
+  script: resolve repo root (`<PROJ>_REPO`); detect system from `hostname` (a
+  `case` mirroring the CLAUDE.md table, overridable via `<PROJ>_SYSTEM`); source
+  `profile.defaults.sh` then overlay `profile.local.sh`; derive `<PROJ>_BIN_MODE`
+  from `<PROJ>_BUILD_MODE`; activate the env (dev, or prod under
+  `<PROJ>_USE_PROD=1`), honoring `<PROJ>_NO_SPACK_ACTIVATE=1`; source
+  `runtime_env.sh` if present (unless dry-run); expose `<proj>_exe()`. Use
+  `${VAR:=default}` so env > local > default.
+- **`scripts/<system>/profile.defaults.sh`** — committed per-system defaults
+  reproducing historical hardcoded values (zero-config manual mode).
+- **`scripts/<system>/profile.local.sh`** — *not committed* (add
+  `scripts/**/profile.local.sh` to `.gitignore`); per-checkout override.
+- **`scripts/<system>/runtime_env.sh`** — per-system launch-time exports (omit if
+  none).
+- **`scripts/<system>/run_<gate>_minset.<scheduler>`** — gate wrapper(s): pin
+  `<PROJ>_REPO`, source the resolver, branch on `<PROJ>_BIN_MODE` (in-tree runner
+  for the gate label + backend in the build dir vs loop the installed gate binary
+  over the required ranks via the scheduler). Keep any `module load` before the
+  resolver source.
+
+When migrating: hardcoded env paths/build dirs → `profile.defaults.sh`; inline
+launch-time exports → `runtime_env.sh`; bespoke run scripts → resolver-sourcing,
+bin-mode-aware wrappers. Ask before deleting any script whose role is unclear.
+New scripts carry the license/header block.
+
+## Step 3 — Create/migrate the per-system instructions and the design docs
+
+**Directory split — keep these two apart:**
+- **`systems/<system>/`** — per-system *machine* instructions and env snapshots.
+  This is the only place hostname-keyed build/run facts live.
+- **`docs/`** — human-facing project documentation. In particular
+  **`docs/design.md`** holds the detailed descriptions of the algorithms and
+  design decisions used in the repository (data structures, parallel
+  decomposition, numerical choices, and *why* each was picked). `README.md` links
+  to it rather than duplicating it (see Step 7).
+
+For each system, create `systems/<system>/claude.md` from existing infrastructure
+with all required sections filled (including the **Backends** section). Move
+concrete scheduler scripts to `scripts/<system>/`. Copy the live env snapshot
+into `systems/<system>/` if used. Where a section can't be filled, ask me.
+
+Create `docs/design.md` (or migrate an existing design write-up into it — do not
+discard real content). If the repo has no design material yet, scaffold it with
+the section headings that fit the project and tell me what needs filling in;
+don't invent algorithm descriptions the code doesn't support.
+
+## Step 4 — Set up (or convert) the test infrastructure
+
+The gate depends on tests being **tiered by label** and **selectable by backend**.
+- **No test infra:** propose a minimal setup and confirm before creating — a
+  registration point (e.g. `tests/CMakeLists.txt` + a small harness include), a
+  couple starter tests, the two-tier labeling, and the backend suffix convention.
+  Don't fabricate tests for absent code; scaffold the structure + one
+  representative test and tell me what to add.
+- **Test infra exists:** convert (don't replace) to the tiered-label scheme. Map
+  each test into **`regression`** (full end-to-end runs composing the whole
+  pipeline; the gate) or **`unit`** (utilities, kernels, single-component/phase
+  tests; diagnostic). Apply labels at registration, group name-lists so tiers are
+  obvious, give tests a backend suffix (illustrative: `MPI_SERIAL`) so
+  `-R <backend>` selects one, and parameterize multi-rank tests over the required
+  counts (a `<PROJ>_TEST_MPI_RANKS` defaulting to 1–6). Ask me about any test
+  whose tier is unclear; never promote into the gate without confirmation.
+- Record a comment block in the test file explaining the tiers, backends, and how
+  to run each (`ctest -L <label> -R <backend>`).
+- A failing/flaky test must **not** be silently excluded to green the gate —
+  label it `unit`, record it in README **Known Issues**, and tell me.
+
+Wire the gate wrapper(s) and CI to exactly this label + backend + rank set so
+CLAUDE.md, the wrappers, CI, and the test file agree.
+
+## Step 5 — Set up (or migrate) the examples
+
+Runnable example/driver programs under `examples/`:
+- One example per ordered subdirectory `NN_name/` (illustrative: `01_basic`,
+  `02_full_pipeline`), each with its own build file and a single source; shared
+  helpers in `examples/common/`; a top-level `examples/CMakeLists.txt` aggregates
+  the subdirectories.
+- Build behind a toggle (e.g. spack `+examples`, or a CMake option) so they don't
+  bloat the default build; they must build in both build modes.
+- Examples run via the per-system "Running non-test binaries" path (§6): ask for
+  name + args and plug into the run/batch templates.
+- **Each example's accepted arguments are documented in `README.md` and kept in
+  sync.**
+- **Migration:** move existing demo/driver programs into this structure; if none,
+  scaffold one minimal example exercising the primary entry point and ask what
+  else to add. Don't fabricate elaborate examples — confirm scope. New sources
+  carry the license/header block.
+
+## Step 6 — Wire the gate into CI
+
+- **CI exists:** update it so the ship gate (the `regression` label at the
+  required backend(s) + ranks) runs in CI, single-sourced with CLAUDE.md, the
+  test file, and the wrappers — ideally by invoking the same
+  `run_<gate>_minset.*` wrapper or the same `ctest` command, not a divergent copy.
+- **No CI:** scaffold a minimal CI job for the repo's host (GitHub Actions /
+  GitLab CI / etc.) that builds and runs the gate, and ask me to confirm the
+  runner/environment assumptions (HPC schedulers usually can't run in hosted CI —
+  if so, scope CI to what *can* run there, e.g. a Serial build + the gate at low
+  ranks, and say so explicitly).
+- Don't let CI and the documented gate drift: if they must differ (e.g. CI runs a
+  subset), state the difference in CLAUDE.md.
+
+## Step 7 — Restructure `README.md`
+
+Reorganize (don't discard) into: a **usage/API** section (entry points, key
+types, typical usage, a minimal end-to-end example, and per-example argument
+docs); **Dependencies and Build Notes** (non-obvious constraints; long-standing
+*design* limitations as subsections); **Future Optimizations** (may start empty);
+**Known Issues** (may start empty) for deferred *defects* — each noting what
+fails, how it reproduces, and whether it predates current work, kept distinct
+from Future Optimizations and from the design-limitation subsections; and any
+existing references/resources, preserved. Migrate "known bug / doesn't work yet"
+notes from Step 0 into Known Issues.
+
+Also add a short **documentation/design-reference section** — placed where it fits
+naturally (next to the design/architecture material, or immediately after the
+intro if there is none) — that points readers at **`docs/design.md`** for the
+detailed descriptions of the algorithms and design decisions used in the
+repository. Keep it to a few lines: a link plus a one-line note on what lives
+there versus what stays in the README, so the two don't drift into duplicates.
+
+## Step 8 — Verify consistency and report
+
+Cross-check before reporting:
+- Hostname table in `CLAUDE.md` matches the resolver `case`.
+- Gate definition (tier label + backend(s) + ranks) matches across `CLAUDE.md`,
+  the test file, the wrapper(s), and CI.
+- Each `systems/<system>/claude.md` in the table exists with all required sections
+  (including Backends); each referenced script exists; the `examples/` aggregator
+  includes every example subdir; `tasks/TEMPLATE.md` exists.
+- `docs/design.md` exists and `README.md` links to it; no hostname-keyed machine
+  instructions leaked into `docs/`, and no project design prose leaked into
+  `systems/`.
+- `profile.local.sh` is gitignored and not committed; `profile.defaults.sh` is
+  committed.
+- New files carry the license/SPDX header.
+
+Then summarize: created vs migrated (and from where), the
+`<Project>/<proj>/<PROJ>` tokens chosen, every ambiguity you resolved with me
+(and how), and any that remain — especially the minimum test set, per-system
+env-activation commands, per-system backends, any test whose tier you need me to
+confirm, which examples to keep/add, and the CI runner assumptions.
+
+Do not begin large edits until you've completed Step 0 and walked me through any
+ambiguity that blocks a faithful migration. Do not consult any external project
+at any point — this prompt is the complete specification.

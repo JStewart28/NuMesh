@@ -1,6 +1,9 @@
 # Ignore directories
-build
+build*
 .vscode
+
+# Per-checkout build profile overrides — never commit these
+scripts/**/profile.local.sh
 
 # Prerequisites
 *.d
@@ -34,3 +37,6 @@ build
 *.exe
 *.out
 *.app
+
+# Crash dumps (Flux/MPI aborts drop these in the repo root)
+*.core
