@@ -144,10 +144,13 @@ namespace Tessera
 //      coordinator therefore learns the verdict from the edge's OWNER and
 //      replies to every co-sharer. Identical routing to refineImpl() Phase 2a
 //      with `refining` replaced by the owner's mask bit.
-//   B. MIDPOINT GID ASSIGNMENT. Unchanged from refineImpl() Phase 2: the
+//   B. MIDPOINT GID ASSIGNMENT. As in refineImpl() Phase 2: the
 //      midpoint owner is the lowest incident face owner; owners count their
-//      midpoints, MPI_Exscan a contiguous global block onto the pre-split global
-//      vertex count, assign, and SEND the gid to all co-sharers, so both sides
+//      midpoints, MPI_Exscan a contiguous global block above the pre-split
+//      global MAX VERTEX GID (not above the vertex count -- see the comment at
+//      the exscan: once collapseEdges() has removed a vertex the gid space is
+//      sparse and the count aliases a live gid), assign, and SEND the gid to all
+//      co-sharers, so both sides
 //      agree without relying on identical local ordering. That is what makes
 //      SplitResult::midpoints a complete split-edge map with the same contract
 //      and the same shape as RefineResult::midpoints -- checkMidpointAgreement
@@ -383,7 +386,23 @@ splitEdgesImpl( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
                 myMid.push_back( kv.first );
         std::sort( myMid.begin(), myMid.end() );
 
-        const long long globalV = globalOwnedVertices( mesh );
+        // THE BLOCK SITS ABOVE THE GLOBAL MAX VERTEX GID, NOT ABOVE THE VERTEX
+        // COUNT -- the same rule step 3c uses for child faces, and for the same
+        // reason. The count was equivalent for as long as nothing removed a
+        // vertex, and collapseEdges() removes vertices: compact() PRESERVES the
+        // surviving gids, so after one collapse the vertex gid space is sparse
+        // and its maximum exceeds the count. Basing the block on the count then
+        // hands a new midpoint a gid a LIVE vertex still holds, which welds two
+        // unrelated parts of the surface together -- V stops growing, Euler
+        // breaks by one per split, and an edge appears between two nearly
+        // antipodal points. Found by test_collapse_edges' composed
+        // split/flip/collapse loop (tasks/edge-collapse.md check 14).
+        long long localMaxV = -1;
+        for ( int i = 0; i < nOwnedV; ++i )
+            localMaxV = std::max( localMaxV, static_cast<long long>( v_gid( i ) ) );
+        long long globalMaxV = -1;
+        MPI_Allreduce( &localMaxV, &globalMaxV, 1, MPI_LONG_LONG, MPI_MAX,
+                       comm );
         long long myCount = static_cast<long long>( myMid.size() );
         long long baseOff = 0;
         MPI_Exscan( &myCount, &baseOff, 1, MPI_LONG_LONG, MPI_SUM, comm );
@@ -392,7 +411,7 @@ splitEdgesImpl( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
 
         for ( std::size_t i = 0; i < myMid.size(); ++i )
             midGid[myMid[i]] = static_cast<GlobalId>(
-                globalV + baseOff + static_cast<long long>( i ) );
+                globalMaxV + 1 + baseOff + static_cast<long long>( i ) );
 
         // Deliver owned midpoint gids to co-sharers, so both sides of a shared
         // bisected edge agree with no reliance on identical local ordering.

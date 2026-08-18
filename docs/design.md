@@ -1137,6 +1137,177 @@ old endpoints and be handed to the rebuild's round D as if it were current.
 `splitEdges()` never meets that because it hands the rebuild a freshly built
 owned-only mesh.
 
+## Edge collapse
+
+`collapseEdges()` (`Tessera_EdgeCollapse.hpp`) merges the two endpoints of a
+marked edge into one vertex: the two incident faces, the edge, and one of each
+coincident pair of edges are deleted, for **V−1, E−3, F−2** — Euler preserved.
+It is the fourth and last of the remesh-family edits and the only one that
+**removes degrees of freedom**. Without it a remesher is monotone: it can refine
+where a metric demands resolution but never coarsen where it does not, so the mesh
+grows without bound and a long run dies on memory or on timestep. It is also half
+of the standard quality-repair pair — collapse removes the short edges and slivers
+that no amount of flipping fixes.
+
+Four problems had to be answered, and each answer is a decision worth stating
+rather than a detail.
+
+### Where coarsening attaches to the data model
+
+Before collapse the data model had **no coarsening path at all**: `FaceField::Level`
+and `EdgeField::Level` only ever rose, `refine()` was split-only,
+`RefinementMode::Conforming` tracked a `ClosureParent` with no inverse, and nothing
+anywhere removed an entity.
+
+**Collapse is a remesh-family operation and requires a mesh with no transient
+closure and no hanging nodes.** It is defined on a pristine mesh and on one edited
+by `splitEdges()`/`flipEdges()`/`collapseEdges()`; it is **not** defined on a mesh
+produced by `refine()`, in either refinement mode. Under `Conforming` the visible
+layer is a transient closure whose children reference retired red parents, and
+collapsing across it would have to un-close first; under `HangingNode2to1` there
+are T-junctions and the link condition is not even well posed at one. The
+`EditFamily` guard enforces it. `Level` on the merged pair's surviving edge takes
+the `min` of the two and is **advisory** thereafter, per the family's contract.
+
+This is the decision that makes the feature tractable at all. **The alternative — a
+true inverse to `refine()`, un-refining a red split back to its parent — is
+explicitly out of scope.** It is a different and much larger feature: it needs the
+parent's identity retained past the split, sibling co-residency maintained across
+`migrate()`, and an inverse to the closure. It is also *not what a metric remesher
+wants*, because it can only coarsen along the refinement tree, and a metric does
+not respect that tree. Recorded as future work.
+
+### The link condition needs a two-ring, and is answered by coordinators
+
+Collapsing `(a,b)` with incident faces `(a,b,c)` and `(b,a,d)` is topologically
+valid iff `link(a) ∩ link(b) == {c, d}`. If some other vertex `x` is adjacent to
+both endpoints, the edges `(a,x)` and `(b,x)` become coincident: two distant parts
+of the surface are welded together and the result is non-manifold in a way no later
+check untangles.
+
+Evaluating that needs the **full one-ring of both endpoints** — a two-ring around
+the edge — so `collapseEdges()` requires halo depth ≥ 2. The guard **throws iff
+`0 < mesh.haloDepth() < 2`**, not `>= 2`: depth `0` means *never distributed*, a
+replicated mesh straight out of the builder where every entity is local and no ring
+is missing, and rejecting it would reject exactly the hand-built soup fixtures the
+link-condition and fold tests need. `buildVertexStencil()` already polices depth
+this way, treating 0 as unconstrained and any positive value as the real bound;
+following it was preferred to inventing a second convention.
+
+**Correctness does not rest on local ring residency — only the precondition does.**
+Depth `d` guarantees the `d`-ring of every *owned* vertex, and the owner of the edge
+`(a,b)` may own **neither endpoint**: an owned face can have all three corners as
+ghosts, which is the case edge flip had to design around. So both one-rings are
+assembled from **vertex-coordinator advertisements**: every rank advertises each of
+its owned faces to the coordinator of each of its three corners, so the coordinator
+of `v` holds every owned face incident on `v` and therefore `ring(v)` exactly, at
+any depth. The depth requirement is a documented precondition with its own throw and
+its own test, and no correctness argument leans on it.
+
+**The vertex link test is necessary but not sufficient, and the gap is closed
+rather than left as folklore.** On a mesh that is a single tetrahedron — or anywhere
+the merge would fuse two triangles into one — every vertex link test passes and the
+result nonetheless carries two faces with the same three corners. The deciding
+coordinator holds both endpoints' incident faces already, so it rewrites the dying
+endpoint's faces and rejects the candidate if the rewritten face set has a duplicate
+face key. Same counter (`rejectedLinkCondition`), no extra round.
+
+### Conflicts: a deterministic independent set, not shortest-first
+
+Two collapses whose neighbourhoods touch conflict — applying one changes whether
+the other is valid, and applying both can produce garbage. Serial reference codes
+process **shortest-first**, re-evaluating validity after each acceptance; that is
+inherently sequential and its result depends on the processing order.
+
+**One deterministic maximal independent set per call.** Each candidate carries the
+priority `(squared length ascending, EdgeKey ascending)` — shortest first, exactly
+matching the serial *preference* — and is accepted only if it holds the strictly
+best priority among all candidates incident on either endpoint's one-ring. The
+relation is symmetric, so the accepted set is pairwise non-conflicting: no two
+accepted collapses share a vertex, an edge or a face, and the V/E/F deltas are
+exactly additive (`verticesRemoved == accepted`, `edgesRemoved == 3·accepted`,
+`facesRemoved == 2·accepted`). The priority contains **no gid** — gids come from an
+`MPI_Exscan` and are not the same values at a different rank count, which is the
+finding that forced `splitEdges()`' diagonal tie-break away from the closure's
+lower-midpoint-gid rule — and every length goes through `edgeLen2Canonical()` so
+two ranks comparing the same edge get bit-identical doubles. This is `flipEdges()`'
+rule with the length ordering **reversed**: shortest-first here, longest-first
+there.
+
+**The consequence for consumers is the same as for the flip, and sharper.** The
+accepted set is a strict *subset* of what a serial shortest-first pass would take,
+reached in fewer passes: on the subdivision-2 icosphere with all 480 edges marked,
+8 are accepted, because accepting one excludes every candidate in its two-ring. A
+consumer porting from a serial remesher must compare **statistics** — face count,
+quality distribution, edge-length histogram — and never edit sets. A caller wanting
+more progress calls again and watches `accepted`; twenty rounds take that same mesh
+from 320 faces to 174.
+
+### Cross-rank owner-decides, and what the rewrite has to touch
+
+The one-rings may span several ranks even at depth 2, and the merged vertex's
+identity and position must be agreed before any rank rewrites connectivity. The
+identity needs no agreement round at all: **the surviving vertex is
+`min(gid(a), gid(b))`**, which is `EdgeKey::id[0]` because a key is canonical, and
+which also orients `policy.t`.
+
+The protocol is five coordinator rounds on the existing machinery
+(`detail::edgeCoordRank` for an edge, `gid % size` for a vertex, `allToAllV`).
+Every owned face advertises its three edges to their **edge** coordinators and its
+three corners to their **vertex** coordinators; every owned vertex and every owned
+edge advertises itself to its endpoints' vertex coordinators; and the owner of each
+marked edge advertises the verdict, presence being the verdict as in
+`splitEdges()`. The edge coordinator for `(a,b)` then holds both incident faces and
+so `a`, `b`, `c`, `d` and their positions — enough for the boundary test, the
+priority and the merged position — and asks the two vertex coordinators one
+question each, whose reply carries the endpoint's ring, its owner, every owned face
+and owned edge incident on it *with owners*, and the **geometric verdict**. The
+fold and quality tests are evaluated *there* because the vertex coordinator is the
+only place where every surviving face incident on an endpoint is known. There is no
+shared advertisement helper with `flipEdges()`: `detail::FlipAdvert` is private to
+that header and carries a flip-specific payload, and a shared abstraction over two
+payloads that differ was not worth destabilising an operation that is green at ten
+registrations.
+
+Two things about the apply step are easy to get wrong, and both were.
+
+**Only the two incident faces are tombstoned; the collapsed edge and the coincident
+pairs are not.** `compact()` drops every vertex and edge that no surviving face
+references, so getting the *face* set right is sufficient — and tombstoning an edge
+that a surviving face still names trips `compact()`'s **global** closure check and
+throws. What is genuinely required is the **connectivity rewrite**: every surviving
+face's `Verts` and `Edges` must name the surviving gid of each merged pair, or the
+tombstone set does not close.
+
+**All three AoSoAs are resized down to their owned counts before the rebuild.** The
+halo rebuild seeds its gid → tuple map from every locally held entity, owned *and*
+ghost, and only re-fetches the ones that are **missing** — so a rank holding a
+ghost copy of a rewritten edge would keep the old endpoints, and the CSR build
+indexes a dense gid → local array and writes out of bounds. That is the heap
+corruption edge flip hit as `double free or corruption (out)`. Collapse drops its
+ghost **vertices** too, which the flip deliberately did not: a collapse *moves* the
+surviving vertex, so a ghost copy of it holds a stale position no round of the
+rebuild would correct. Then `compact()` runs, and **nothing after it** — it already
+ends with `rebuildHalo( mesh, halo, effectiveHaloDepth( halo ) )`, so a second
+rebuild would be a redundant collective rather than a safety net.
+
+### The gid-space consequence for `splitEdges()`
+
+Adding a coarsening path made one latent assumption elsewhere false. `splitEdges()`
+based its new midpoint **vertex** gids on an `MPI_Exscan` over the pre-split global
+vertex **count**, while basing child *face* gids on the global max face gid + 1 —
+with a comment explaining that a retired parent leaves the face gid space sparse.
+Vertex gids were dense-and-count-equal for as long as nothing removed a vertex.
+`collapseEdges()` removes vertices and `compact()` **preserves** the survivors'
+gids, so after one collapse the vertex gid space is sparse and its maximum exceeds
+the count: the next `splitEdges()` handed a midpoint a gid that a live vertex still
+held, aliasing two unrelated vertices. The symptom is a mesh welded across itself —
+`V` stops growing, the Euler number breaks by exactly one per split, and an edge
+appears between two nearly antipodal points. Fixed by using the same max-gid rule
+as the child faces. `refine()`'s midpoint base has the same shape but is not
+reachable: it belongs to the hierarchical family, so it can never see a mesh a
+collapse has coarsened.
+
 ## Compaction
 
 Every editor described so far only ever **adds** entities: `refine()` and
