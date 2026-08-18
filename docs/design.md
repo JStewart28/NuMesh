@@ -1558,6 +1558,79 @@ void readMesh( MeshT& mesh, MeshHalo<typename MeshT::memory_space>& halo,
               const std::string& stem );
 ```
 
+### Time series: the master `.xmf` (`Tessera_XdmfSeries.hpp`)
+
+A single-shot `writeMesh()` sidecar is a lone `GridType="Uniform"` grid, so N frames
+are N *unrelated* datasets in Paraview: no time slider, N pipeline objects to toggle
+by hand. Paraview's XDMF readers are not file-series readers and will not infer a
+sequence from numeric filenames, so the grouping has to be stated in the light data.
+The idiomatic mechanism is an XDMF **temporal collection** —
+`<Grid GridType="Collection" CollectionType="Temporal">` wrapping one full child
+`<Grid>` per timestep, each with its own `<Time Value=>`, `<Topology>` and
+`<Geometry>` — which is what an adaptively remeshing series needs, since `Nv`/`Nf`
+genuinely differ frame to frame. A child grid with no `<Time>` has been reported to
+crash Paraview, so the `<Time>` element is mandatory, not decorative.
+
+`writeMesh()` cannot know a series exists: it gets a stem and a time, no frame index
+and no state between calls, and the *caller* invents the stems. So the grouping is a
+caller-held object:
+
+```cpp
+// Stateless, MPI-free, pure text. Writes <masterStem>.xmf as a temporal collection
+// naming every step, via <masterStem>.xmf.tmp + rename so a Paraview reload never
+// sees a half-written master. Throws std::runtime_error on empty `steps` or any
+// fopen/rename failure -- there is no best-effort partial master.
+struct XdmfTimeStep { XdmfFrame frame; double time; };
+void writeXdmfSeries( const std::string& masterStem,
+                      const std::vector<XdmfTimeStep>& steps );
+
+class MeshSeries                       // accumulates frames, rewrites the master
+{
+    explicit MeshSeries( std::string masterStem );
+    template <class MeshT>             // collective on mesh.comm()
+    void write( const MeshT& mesh, const std::string& frameStem, double time );
+    std::size_t numFrames() const;     // rank-uniform
+    const std::string& masterStem() const;
+};
+```
+
+Four properties, each a deliberate choice:
+
+- **The master is rewritten every frame, not once at the end.** A temporal collection
+  is not append-friendly — the closing `</Grid></Domain></Xdmf>` must move. Leaving
+  the file unterminated until finalize leaves invalid XML that Paraview refuses
+  outright (worse than the status quo), and writing it only in a finalize call leaves
+  a killed run — routine on long HPC jobs — with no master at all. So the master on
+  disk always describes the frames that actually exist. Cost: O(frames) rank-0 text
+  per frame, immaterial against a collective HDF5 write, but O(frames²) cumulative.
+- **Frame stems stay caller-owned.** The master lists each frame's file explicitly, so
+  frame names need not be numeric or ordered, and a downstream solver keeps whatever
+  naming it already has. The one constraint this forces is enforced loudly rather than
+  worked around: an `.xmf` references its `.h5` by **basename**, so the master must sit
+  in the same directory as every frame it names, and `write()` throws otherwise. So
+  does a non-increasing `time`. Both checks run on **every rank before any I/O**, so
+  the throw is symmetric and cannot deadlock, and a rejected frame leaves the master
+  byte-unchanged.
+- **The step accumulator is rank-uniform.** Every rank appends the frame's metadata, so
+  `numFrames()` and the monotonic-time check mean the same thing everywhere; a
+  rank-dependent accessor would be a footgun. Cost: one replicated vector of a few
+  strings and integers per frame.
+- **Per-frame sidecars are kept and the `.h5` layout is unchanged.** `readMesh()` still
+  reads any single frame, and each frame stays individually openable. The output
+  directory therefore holds N+1 openable `.xmf` files; the master is the one to open,
+  and it is the only one with no frame index in its name.
+
+Each child grid repeats its full topology and geometry rather than sharing it by
+XInclude/XPointer: that is correct for an adaptive mesh and is the path with the
+fewest reader bugs (hoisting shared data into the `<Domain>` is reported to break).
+The XML stays light — every child is ~10 lines referencing HDF5, and heavy data never
+enters it. `MeshSeries` also appends one `"<frameStem> <time>"` line per frame to
+`<masterStem>.xmfindex`, the restart record for reopening an existing series.
+
+In Paraview, only the *temporal* XDMF3 reader (`Xdmf3ReaderT`) walks a temporal
+collection; a master that opens showing one timestep is a reader-selection issue, and
+`grep -c '<Time Value=' <master>.xmf` distinguishes that from a genuinely short file.
+
 **On-disk layout** (single file `<stem>.h5`, groups `/vertices`, `/edges`,
 `/faces`, each row `i` = one entity's owned-block hyperslab):
 

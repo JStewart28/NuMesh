@@ -89,4 +89,4 @@ Test names carry a backend suffix so `-R <BACKEND>` selects one:
 mesh_partition_SERIAL_np2   mesh_partition_HIP_np4
 ```
 
-Backend availability per system: see [build-and-run.md](build-and-run.md#compute-backends).
+Backend availability per system: see [compile-and-run.md](compile-and-run.md#compute-backends).

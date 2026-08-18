@@ -139,3 +139,110 @@ gets asserted-on in-repo — worth asserting the attribute block there, since th
 throwaway probe that covered it in T1 is not committed. V1 — R3's fix stays
 one-function-wide: every child grid's element spellings now come from
 `detail::writeXdmfGridImpl()` alone.
+
+## T2
+
+Tested at commit `0645f88` plus this change; spack env
+`~/spack_envs/tuolumne_trilinos/`; jobs `f3T2qc15CLWB` (first np1-3 pass),
+`f3T2rdKgDbd1` (np2, cleanup temporarily suppressed, for hand inspection) and
+`f3T2sWHo5ZMy` (final np1-3 pass on the reverted source). All three are 100%
+pass; the whole build tree compiles.
+
+**Final signatures.** Exactly as the design stated them, with no deviation:
+
+```cpp
+// Tessera_Xdmf.hpp
+struct Tessera::XdmfTimeStep { XdmfFrame frame; double time; };
+void Tessera::writeXdmfSeries( const std::string& masterStem,
+                               const std::vector<XdmfTimeStep>& steps );
+
+// Tessera_XdmfSeries.hpp  (new; included from Tessera.hpp after Tessera_Xdmf.hpp)
+std::string detail::xdmfDirname( const std::string& path );   // "" when no dir
+
+class Tessera::MeshSeries
+{
+  public:
+    explicit MeshSeries( std::string masterStem );
+    template <class MeshT>
+    void write( const MeshT& mesh, const std::string& frameStem, double time );
+    std::size_t numFrames() const;
+    const std::string& masterStem() const;
+  private:
+    void appendIndexLine( const std::string& frameStem, double time ) const;
+    std::string _masterStem;
+    std::vector<XdmfTimeStep> _steps;
+};
+```
+
+`writeXdmfSeries()` goes through the public `detail::writeXdmfGrid( fp, frame, 4,
+s.time )` overload, never `writeXdmfGridImpl`, per T1's note. `MeshSeries::write()`
+calls the public timed `writeMesh( mesh, frameStem, time )`, never
+`detail::writeMeshH5()`, so `TESSERA_SCOPED_TIMER( TIMER_WRITE_MESH )` still spans
+each frame. The master rewrite and the `.xmfindex` append sit **outside** that
+timer, which is the measurement R4 asks for: rewrite creep shows up as rank-0
+wall-clock with `TIMER_WRITE_MESH` flat.
+
+**Decisions.**
+
+- **`xdmfDirname()` is a new `detail` helper, not a reuse of `xdmfBasename()`.**
+  It lives in `Tessera_XdmfSeries.hpp` beside its only caller rather than in
+  `Tessera_Xdmf.hpp` beside `xdmfBasename()`, because touching the single-grid
+  path was out of scope. It returns `""` for a bare stem, so a bare master stem
+  and a bare frame stem compare equal (the common in-cwd case) and any `sub/`
+  prefix on either side compares unequal.
+- **The `.xmfindex` append is loud on failure too**, throwing rather than
+  degrading quietly, and is opened/closed per frame so the line is on disk before
+  `write()` returns. It shares its directory with the master, so a filesystem
+  that cannot take the index cannot take the master either — the two failures do
+  not come apart in practice.
+- **`fclose` is checked, not just `fopen`.** A short write on a full filesystem
+  surfaces at `fclose`, and a silently truncated master is exactly the
+  quiet-degradation this design forbids. So `writeXdmfSeries()` throws on
+  `fopen`, `fclose` and `rename`, each message naming the path.
+- **The collection grid keeps `Name="Tessera"`** — same name as every child, per
+  the Conventions table.
+
+**Bugs only running revealed: none in the new code.** One environment trap did
+cost a cycle: the checked-out `build-tuolumne/` held a `CMakeCache.txt` created in
+a *different* checkout (`.../Tessera-ai-test/build-tuolumne`), so `cmake .` refused
+with "current CMakeCache.txt directory ... is different than the directory ...
+where CMakeCache.txt was created" and `make <newtarget>` reported "No rule to make
+target". A stale build dir carried between checkouts must be cleared and
+re-configured with `bash ../run_cmake_toulumne.sh`; it is not a code or CMake
+error.
+
+**Departures from the stated Do steps.** One, in the test rather than the library:
+the exit criterion's positive assertions are all count- or set-based, and a
+count-based assertion can pass on XML that is subtly wrong in shape. So the master
+was also **read by hand once**, by temporarily replacing the test's rank-0 cleanup
+guard with `if ( rank == 0 && false )`, rebuilding, running np2 alone (job
+`f3T2rdKgDbd1`), and inspecting `build-tuolumne/tests/*_np2.xmf`. It is the
+specified shape: one `Collection`/`Temporal` wrapper at indent 2, three
+`GridType="Uniform"` children at indent 4 with `<Time Value="0"/>`,
+`<Time Value="0.5"/>`, `<Time Value="1.25"/>`, each naming only its own
+`..._frame<i>.h5`, and each carrying the same four attributes in the same order —
+`v_gid`, `f_level`, `vu0`, `fu0`. Only `_frame0..2` files existed, confirming the
+two rejected `write()` calls threw before any I/O. The `.xmfindex` held the three
+`"<stem> <time>"` lines T4 will consume. That edit is reverted, the final np1-3
+job ran on the reverted source, and the test leaves no files behind.
+
+Worth recording for T4: the user-field display names the writer derives are
+`vu0` and `fu0` — the `"v"`/`"f"` centering prefix plus `u<j>`, as the design's
+T4 step 3 states — now confirmed against emitted XML rather than read off the
+writer.
+
+**Affects:** T3 — `MeshSeries` is exactly the API T3 was written against, so its
+**Do** steps need no adjustment; one addition, that `MeshSeries` also writes
+`<masterStem>.xmfindex`, so T3's exit criterion should expect that file beside
+each master and the example's output directory now holds one extra file per
+series. T4 — the `.xmfindex` format is now pinned: one line per frame,
+`"<frameStem> %.17g\n"`, frame stem verbatim as the caller passed it (a path, not
+a basename), appended in write order. The vertex/face user-field display-name rule
+is confirmed as `vu<j>`/`fu<j>`. V1 — nothing changes: the master reuses
+`detail::writeXdmfGridImpl()` for every child, so R3's fix stays one function
+wide, and `Version="3.0"`-with-XDMF2-spellings is untouched and still V1's to
+judge. The master's timestep count for R2's distinguishing measurement is
+`grep -c '<Time Value=' <master>.xmf`, and the test already pins that count to
+the number of frames written. R1 — its stated diagnostic (identical
+`<Attribute Name=` set, same order, across children) is now a committed
+assertion, so a drift would be caught in CI rather than in Paraview.

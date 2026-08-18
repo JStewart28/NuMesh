@@ -1,11 +1,19 @@
 # Edge collapse
 
-**Status:** NOT STARTED. Largest of the eleven gap tasks; do it **last** of the
-four topological edits. **Read the "Editing families" section of
-[edge-split.md](edge-split.md) first.**
+**Status:** NOT STARTED. Largest of the eleven gap tasks, and the **last** of the
+four topological edits — [edge-split.md](edge-split.md),
+[mesh-compaction.md](mesh-compaction.md) and [edge-flip.md](edge-flip.md) have all
+landed, so every prerequisite is in tree. **Read the "Editing families" section of
+[edge-split.md](edge-split.md) first**, and the `**Affects:**` bullets in the
+progress logs of [edge-flip.md](edge-flip.md) and
+[mesh-compaction.md](mesh-compaction.md) — both name findings that change what this
+task can assume.
 
-**Verified against `08dd346`** (branch `conforming-refinement`) — the code this task
-cites was re-read at that commit.
+**Verified against `82c02df`** (branch `edge-collapse`) — the code this task cites
+was re-read at that commit, where `src/Tessera_EdgeSplit.hpp`,
+`src/Tessera_EdgeFlip.hpp`, `src/Tessera_Compact.hpp`,
+`src/Tessera_EditFamily.hpp` and configurable halo depth all exist. (It was
+originally stamped against `08dd346`, which predates all four.)
 
 ## Problem
 
@@ -67,10 +75,25 @@ else. Violating it welds two distant parts of the surface together and produces 
 non-manifold mesh that no later check will untangle.
 
 Evaluating it needs the **full one-rings of both endpoints**, i.e. a two-ring
-around the edge. **Requires [halo-depth.md](halo-depth.md) at `depth >= 2`.**
-`collapseEdges` must therefore **check `mesh.haloDepth() >= 2` and throw** if not —
-this is precisely the class of silent-seam bug the depth task exists to close, so
-do not let it recur here.
+around the edge. **Requires [halo-depth.md](halo-depth.md) at `depth >= 2`**, and
+`collapseEdges` enforces it: **throw iff `0 < mesh.haloDepth() < 2`**, naming the
+required and the actual depth. This is precisely the class of silent-seam bug the
+depth task exists to close, so do not let it recur here.
+
+The guard is `0 <` and not `>= 2` because **`haloDepth() == 0` means "never
+distributed"** — a replicated mesh straight out of the builder, where every entity
+is local and no ring is missing (`src/Tessera_Mesh.hpp:171–177`). `>= 2` would
+reject exactly that mesh, which is the fixture the hand-built soup checks need.
+`buildVertexStencil()` already polices depth this way, treating 0 as unconstrained
+and any positive value as the real bound (`src/Tessera_Stencil.hpp:92`); follow it
+rather than inventing a second convention.
+
+**Correctness does not rest on local ring residency, only the precondition does.**
+Depth `d` guarantees the `d`-ring of every **owned vertex**, and the owner of edge
+`(a,b)` need own neither `a` nor `b` — an owned face can have all three corners as
+ghosts, which is the case [edge-flip.md](edge-flip.md) had to design around. So the
+one-rings are assembled from **vertex-coordinator advertisements** (Problem 4
+step 2), which are exact by construction at any depth.
 
 ### Problem 3 — conflicts, and why not shortest-first
 
@@ -103,26 +126,68 @@ vertex's identity must be agreed before any rank rewrites connectivity.
 Protocol, built on the existing edge coordinator (`detail::edgeCoordRank`,
 `allToAllV`), the same machinery `refine()`'s 2:1 balance uses:
 
-1. **Advertise** per owned face, per edge: `(EdgeKey, faceGid, ownerRank,
-   oppositeVertexGid, oppositeVertexPosition)` — identical to
-   [edge-flip.md](edge-flip.md) step 1, so factor that pack/route into a shared
-   `detail` helper rather than duplicating it.
-2. **The edge owner assembles the candidate**: `a`, `b`, `c`, `d`, their positions,
-   and the two one-rings (available locally at depth 2). It evaluates the link
-   condition, the geometric tests, and computes the priority.
+1. **Advertise**, per owned face: to each of its three **edge** coordinators
+   `(EdgeKey, faceGid, ownerRank, oppositeVertexGid, oppositeVertexPosition)`, and
+   to each of its three **corner** coordinators the face's three corner gids. The
+   edge advertisement is the same *shape* as [edge-flip.md](edge-flip.md) step 1
+   but **there is no shared helper to reuse**: `detail::FlipAdvert`
+   (`src/Tessera_EdgeFlip.hpp:281`) is private to that header and its payload
+   carries one opposite corner, which is not what this task needs. Declare a
+   `detail::CollapseAdvert` here. Do **not** refactor `Tessera_EdgeFlip.hpp` to
+   extract a common helper — it is green at ten registrations and a shared
+   abstraction over two payloads that differ is not worth destabilising it.
+2. **The candidate is assembled from coordinator state, not from local residency.**
+   The edge coordinator for `(a,b)` holds both incident faces' advertisements, hence
+   `a`, `b`, `c`, `d` and their positions, so it evaluates the geometric tests and
+   computes the priority. The **link condition** is answered by the *vertex*
+   coordinators: a corner coordinator holds every owned face incident on its
+   vertex, so `link(a)` and `link(b)` are exact there by construction at any depth.
+   The edge coordinator queries both and accepts only on
+   `link(a) ∩ link(b) == {c, d}` — the same round shape as
+   [edge-flip.md](edge-flip.md)'s duplicate-edge query, and for the same reason:
+   the deciding coordinator is in general a third rank holding neither face.
 3. **Independent-set round.** Each *vertex* coordinator collects the candidates
    incident on its vertex, and replies to each with whether it holds the best
    priority. An edge is accepted iff both endpoints' coordinators say yes. One
-   `allToAllV` round trip.
+   `allToAllV` round trip. Priority is
+   `(squared length ascending, EdgeKey ascending)`, containing **no gid**, and every
+   length goes through `Tessera::edgeLen2Canonical()`
+   (`src/Tessera_RefineClosure.hpp:212`) so two ranks comparing the same edge get
+   bit-identical doubles regardless of endpoint order. That is
+   [edge-flip.md](edge-flip.md)'s rule with the length ordering **reversed** —
+   shortest-first here, longest-first there — and reusing its shape is what makes
+   check 5 reachable.
 4. **Apply.** The surviving vertex is `min(gid(a), gid(b))` — deterministic and
-   rank-independent — moved to `policy.position(a, b)`. Every rank holding a face
-   or edge that references the dying gid rewrites it to the surviving gid; that set
-   is exactly the ranks in the dying vertex's one-ring, reachable through the
-   vertex coordinator. The two incident faces, the collapsed edge, and one of each
-   coincident edge pair are **tombstoned** (per
+   rank-independent — moved to the position at parameter `policy.t` along `(a,b)`,
+   through the policy hook. Every rank holding a face or edge that references the
+   dying gid rewrites it to the surviving gid; that set is exactly the ranks in the
+   dying vertex's one-ring, reachable through the vertex coordinator. Only the **two
+   incident faces** are **tombstoned** (per
    [mesh-compaction.md](mesh-compaction.md)).
-5. **`compact()`**, then `rebuildHalo()` at the incoming depth. `collapseEdges`
-   returns a compact, fully-haloed mesh — a caller must never see tombstones.
+
+   **Do not tombstone the collapsed edge or the coincident edge pairs.** `compact()`
+   drops every vertex and edge that no surviving face references
+   (`src/Tessera_HaloRebuild.hpp:783–797`), so getting the *face* set right is
+   sufficient — and tombstoning an edge that a surviving face still names trips
+   `compact()`'s **global** closure check and throws. What is genuinely required is
+   the connectivity rewrite: every surviving face's `Verts` and `Edges` must name
+   the surviving gid of each merged pair, or the tombstone set does not close.
+
+   **Drop stale ghost tuples before the rebuild.** Because this operation rewrites
+   entities **in place**, it must `resizeEdges( numOwnedEdges() )` and
+   `resizeFaces( numOwnedFaces() )` first. `rebuildHalo()` seeds its gid → tuple map
+   from every locally held edge, owned *and ghost*, and only re-fetches the ones
+   that are missing — so a rank holding a ghost copy of a rewritten edge keeps the
+   **old** endpoints, and the CSR build indexes a dense gid → local array and writes
+   out of bounds, corrupting the heap. This is not tidiness; it is the bug
+   [edge-flip.md](edge-flip.md) hit as a `double free or corruption (out)` at np2
+   before printing a single case line. Ghost *vertices* are left alone.
+5. **`compact()`, and nothing after it.** `compact()` already ends with
+   `rebuildHalo( mesh, halo, effectiveHaloDepth( halo ) )`
+   (`src/Tessera_Compact.hpp:432`), so the incoming depth is preserved without a
+   second call — adding one is a redundant collective, not a safety net.
+   `collapseEdges` returns a compact, fully-haloed mesh at the depth it was handed;
+   a caller must never see tombstones.
 
 ### API
 
@@ -147,6 +212,16 @@ struct DefaultCollapsePolicy
     double maxNormalRotation = 0.5;
     //! Reject if any surviving incident face's radius ratio falls below this.
     double minQuality = 0.05;
+
+    //! Merged position: out[0..dim) = (1-t)*a[d] + t*b[d]. `a` is the LOWER-gid
+    //! endpoint, so t is oriented by gid and not by local index — that is what
+    //! makes the result rank-count invariant.
+    void interpolatePosition( double* out, const double* a, const double* b,
+                              double t, int dim ) const;
+    //! Blend one scalar component of the vertex user field at ABSOLUTE member
+    //! index M, same M convention as DefaultRefinePolicy. Default (1-t)*a + t*b.
+    template <std::size_t M>
+    double interpolateVertexField( double a, double b, double t ) const;
 };
 
 //! Collapse the marked edges. `edgeMask.size() == mesh.numOwnedEdges()`; the
@@ -160,9 +235,16 @@ CollapseResult collapseEdges( MeshT& mesh,
                               const Policy& policy = Policy{} );
 ```
 
-User field values at the merged vertex come from the same `RefinePolicy`-style
-blend used for midpoints, at parameter `t`. Reuse the existing policy plumbing so
-every user field is handled automatically.
+**The policy carries its own `t`-aware hooks; `RefinePolicy` cannot be reused
+verbatim.** `DefaultRefinePolicy::interpolatePosition( mid, a, b, dim )` and
+`interpolateVertexField<M>( a, b )` are hard-coded 0.5 averages with **no `t`
+argument** (`src/Tessera_RefinePolicy.hpp:72` onward), so a collapse at
+`t != 0.5` is not expressible through them. The two hooks above mirror that
+interface with `t` added, keeping the per-field override pattern
+`DefaultRefinePolicy` documents (derive, shadow `interpolateVertexField`, dispatch
+on `M` with `if constexpr`) so every user field is still handled automatically and
+a consumer's existing refine policy transfers by inspection. Drive them over the
+vertex user fields with the same member-index walk `splitEdges()` uses.
 
 ### Non-goals
 
@@ -237,7 +319,10 @@ New `tests/test_collapse_edges.cpp`, registered at **TIER `regression`**, backen
 ## Exit criterion
 
 - `test_collapse_edges` green at **SERIAL and HIP, ranks 1–5**, and the full gate
-  still green with nothing relabelled.
+  still green with nothing relabelled. The gate stands at **250/250** with
+  [edge-flip.md](edge-flip.md) landed, so this task's ten registrations make the
+  expected figure **260/260**; a smaller total means something was relabelled or
+  dropped.
 - Checks 2, 3 and 7 pass — the three ways a collapse silently corrupts a mesh are
   each detected and reported through a named counter.
 - Check 5 passes: the accepted set is rank-count invariant.
@@ -256,15 +341,33 @@ New `tests/test_collapse_edges.cpp`, registered at **TIER `regression`**, backen
 
 ## Where this sits
 
-**Requires [halo-depth.md](halo-depth.md) — this is the one task with a hard
-dependency on it**, for `depth >= 2` (the link condition, Problem 2);
-`rebuildHalo()` itself already exists in tree (`Tessera_HaloRebuild.hpp`,
-`25980f2`). Also requires [mesh-compaction.md](mesh-compaction.md) (`compact()`)
-and [edge-split.md](edge-split.md) (Editing families). Shares its advertisement
-pack/route helper with [edge-flip.md](edge-flip.md) — land that first so the helper
-exists. See the ordering diagram in [halo-depth.md](halo-depth.md).
+**Every prerequisite is landed.** [halo-depth.md](halo-depth.md) — this is the one
+task with a hard dependency on it — supplies `depth >= 2` for the link-condition
+precondition (Problem 2); [mesh-compaction.md](mesh-compaction.md) supplies
+`compact()`; [edge-split.md](edge-split.md) supplies Editing families and the
+coordinator idiom; [edge-flip.md](edge-flip.md) supplies the advertisement *pattern*
+and three findings recorded in its `**Affects:**` bullet, but **no shared helper**
+(Problem 4 step 1). See the ordering diagram in
+[halo-depth.md](halo-depth.md).
 
 ## Progress log
 
 - 2026-08-07 — Task written, then re-checked against `08dd346` after pulling
   `../tessera`. Nothing implemented.
+
+- 2026-08-18 — **Reconciled against the four prerequisites' progress logs, which
+  had all landed since the `08dd346` stamp. Nothing implemented.** Corrected above:
+  the shared advertisement helper the task promised does not exist and this task
+  declares its own `detail::CollapseAdvert` (Problem 4 step 1); the depth guard is
+  `0 < haloDepth() < 2`, not `>= 2`, which would have rejected the replicated
+  builder mesh the soup fixtures use (Problem 2); the link condition comes from
+  vertex-coordinator advertisements rather than local depth-2 residency, because
+  the edge owner may own neither endpoint (Problem 2, Problem 4 step 2); only the
+  two incident **faces** are tombstoned and the coincident edges are left to
+  `compact()`, with the connectivity rewrite named as the real requirement
+  (Problem 4 step 4); ghost edge/face tuples are dropped before the rebuild, per
+  edge-flip's heap-corruption bug (Problem 4 step 4); the trailing `rebuildHalo()`
+  is deleted as a double rebuild (Problem 4 step 5); `DefaultCollapsePolicy` gained
+  its own `t`-aware hooks because `DefaultRefinePolicy`'s take no `t`, and step 4's
+  undeclared `policy.position( a, b )` is gone (API); the expected gate figure is
+  260/260 (Exit criterion).
